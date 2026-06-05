@@ -198,14 +198,15 @@ class TestSmokeAgentInstantiation:
         assert "file_read" in agent.registry
         assert "file_write" in agent.registry
 
-    def test_agent_no_tools_creates_empty_registry(self) -> None:
-        """Agent with no tools has an empty registry."""
+    def test_agent_no_tools_has_only_auto_injected_tools(self) -> None:
+        """Agent with no tools still has load_skill auto-injected."""
         cfg = _minimal_spectre_config(tools=[])
         with patch("sr2_spectre.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
-        assert len(agent.registry) == 0
+        assert "load_skill" in agent.registry
+        assert len(agent.registry) == 1
 
     def test_agent_registers_all_built_in_tools(self) -> None:
         """All shipped built-in tools can be registered without error."""

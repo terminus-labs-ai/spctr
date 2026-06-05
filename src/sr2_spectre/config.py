@@ -96,6 +96,14 @@ class AgentConfig(BaseModel):
     name: str = "spectre"
     tools: list[ToolConfig] = Field(default_factory=list)
     skills: list[SkillConfig] = Field(default_factory=list)
+    skills_dirs: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Directories to scan for skill files. Each directory is globed "
+            "for markdown/text files with YAML frontmatter containing "
+            "name/description. Supports ~ and ${VAR} interpolation."
+        ),
+    )
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     tool_result_max_bytes: int = Field(default=65536)
 

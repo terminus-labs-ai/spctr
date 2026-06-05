@@ -371,8 +371,9 @@ class TestAgentInitialize:
         # Must not raise
         await agent.initialize()
 
-        # Registry unchanged (no tools added)
-        assert len(agent.registry) == 0
+        # Only load_skill (auto-injected) should be present; no MCP tools added
+        assert "load_skill" in agent.registry
+        assert len(agent.registry) == 1
 
     async def test_initialize_multiple_bridges_all_registered(self):
         """initialize() registers ALL bridges returned by a single client."""

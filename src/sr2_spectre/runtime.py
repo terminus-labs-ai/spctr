@@ -18,7 +18,7 @@ from sr2_spectre.config import SpectreConfig
 from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
 from sr2_spectre.session import Session
 from sr2_spectre.skills.builtin import DEFAULT_SKILLS
-from sr2_spectre.skills.core import SkillRegistry, load_skill_from_path
+from sr2_spectre.skills.core import SkillRegistry, discover_skills, load_skill_from_path
 from sr2_spectre.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -261,6 +261,9 @@ class Runtime:
         loads any additional skills declared in agent.skills[] from disk
         using load_skill_from_path.
 
+        Also discovers skills from agent.skills_dirs[] via directory scanning
+        with frontmatter parsing.
+
         Auto-injects the load_skill tool so the agent can discover and load
         skills at runtime.
         """
@@ -269,7 +272,23 @@ class Runtime:
             self.skill_registry.register(skill)
         logger.info("Registered %d default skill(s)", len(DEFAULT_SKILLS))
 
-        # 2. Load config-declared skill files
+        # 2. Discover skills from skills_dirs (bulk loading)
+        if config.agent.skills_dirs:
+            discovered = discover_skills(config.agent.skills_dirs)
+            for skill in discovered:
+                self.skill_registry.register(skill)
+                logger.info(
+                    "Discovered skill '%s' (v%s) from skills_dirs",
+                    skill.name,
+                    skill.version,
+                )
+            logger.info(
+                "Discovered %d skill(s) from skills_dirs (%s)",
+                len(discovered),
+                ", ".join(config.agent.skills_dirs),
+            )
+
+        # 3. Load config-declared skill files (per-file override path)
         for skill_cfg in config.agent.skills:
             try:
                 skill = load_skill_from_path(
@@ -288,7 +307,7 @@ class Runtime:
                     skill_cfg.path,
                 )
 
-        # 3. Auto-inject load_skill tool
+        # 4. Auto-inject load_skill tool
         self._auto_inject_load_skill()
 
     def _auto_inject_load_skill(self) -> None:

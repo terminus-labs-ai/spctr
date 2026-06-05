@@ -31,7 +31,6 @@ from sr2_spectre.planning.models import (
     TaskStatus,
     get_frontmatter_class,
 )
-from sr2_spectre.planning.resolver import PlanResolver, PlanResolverError
 
 __all__ = [
     "LayerBudget",
@@ -50,3 +49,21 @@ __all__ = [
     "TaskStatus",
     "get_frontmatter_class",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Lazy imports for PlanResolver (avoids pulling in sr2.config.models at
+# import time, which breaks in environments where sr2 is out of sync).
+# ---------------------------------------------------------------------------
+
+def __getattr__(name: str):
+    if name in ("PlanResolver", "PlanResolverError"):
+        from sr2_spectre.planning.resolver import (
+            PlanResolver,
+            PlanResolverError,
+        )
+        # Cache in module globals so repeated access is fast.
+        globals()["PlanResolver"] = PlanResolver
+        globals()["PlanResolverError"] = PlanResolverError
+        return globals()[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
