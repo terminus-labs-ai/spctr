@@ -1,9 +1,10 @@
-"""PR review workflow — merge gate, claim routing, and approve path (FR4-FR6).
+"""PR review workflow — merge gate, claim routing, reject path, and approve path (FR4-FR7).
 
 Implements the reviewer-side workflow for the agent-driven PR merge flow:
 - FR4: Claim routing enforcement (an agent must never review its own PR).
 - FR5: Three-part merge gate (test suite → solid-review → judgment).
 - FR6: Approve path — apply declared+verified LIVE-CONFIG, merge PR, close beads.
+- FR7: Reject path — findings back to author, capped 3-round loop, bd human escalation.
 
 This module is pure logic — no bash, no external process spawning.
 The cron-dispatched agent invokes these checks as part of its Reviewer
@@ -286,3 +287,165 @@ def scan_diff_for_config_changes(diff: str) -> list[ConfigChange]:
                     break
 
     return changes
+
+
+# ---------------------------------------------------------------------------
+# FR7 — Reject path: findings back to author, capped 3-round loop
+# ---------------------------------------------------------------------------
+
+MAX_REVIEW_ROUNDS: int = 3
+"""Default cap on reject rounds before escalating to Diego via bd human."""
+
+
+class RejectAction(enum.Enum):
+    """Outcome of a reject decision: bounce back to author or escalate."""
+
+    BOUNCE = "BOUNCE"
+    ESCALATE = "ESCALATE"
+
+
+def should_escalate(review_round: int, max_rounds: int = MAX_REVIEW_ROUNDS) -> bool:
+    """Determine whether to escalate to Diego instead of bouncing.
+
+    After `max_rounds` rejected review rounds, the reviewer flags `bd human`
+    for Diego rather than bouncing the impl bead back to the author again.
+
+    Args:
+        review_round: The current review round number (1-indexed).
+        max_rounds: Maximum rounds before escalation (default 3).
+
+    Returns:
+        True if the round count has reached or exceeded the cap.
+    """
+    return review_round >= max_rounds
+
+
+def build_reject_body(
+    findings: list[GateFinding],
+    review_round: int,
+) -> str:
+    """Format gate findings into a PR review body for `gh pr review --request-changes`.
+
+    Produces a structured markdown body that the reviewer posts to the PR.
+    Each finding is listed with its gate step and message. The review round
+    is noted so the author knows how many attempts remain.
+
+    Args:
+        findings: List of GateFinding objects from the failed gate step(s).
+        review_round: Current review round number (1-indexed).
+
+    Returns:
+        Formatted markdown string for the PR review comment.
+    """
+    lines: list[str] = []
+    lines.append(f"**Verdict: REJECT** — Round {review_round}/{MAX_REVIEW_ROUNDS}")
+    lines.append("")
+
+    if findings:
+        lines.append("## Findings")
+        lines.append("")
+        for i, finding in enumerate(findings, 1):
+            lines.append(f"{i}. **{finding.step}**: {finding.message}")
+        lines.append("")
+    else:
+        lines.append("Gate failed but no specific findings were recorded.")
+        lines.append("")
+
+    if review_round >= MAX_REVIEW_ROUNDS:
+        lines.append(
+            "> ⚠ This review has been rejected "
+            f"{MAX_REVIEW_ROUNDS} times. Escalating to Diego via `bd human`."
+        )
+    else:
+        lines.append(
+            f"Please address the findings above and push a fix to the same branch. "
+            f"Remaining attempts: {MAX_REVIEW_ROUNDS - review_round}."
+        )
+
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class RejectOutcome:
+    """Structured output of a reject decision.
+
+    Attributes:
+        action: BOUNCE (reassign to author) or ESCALATE (flag bd human).
+        review_round_after: The incremented round counter after this rejection.
+        author_agent: Name of the author agent to receive the bounce.
+        impl_bead_id: The implementation bead ID to reassign or escalate.
+        review_bead_id: The review bead ID to close.
+        pr_number: GitHub PR number (stays open on reject).
+        findings: All gate findings from this review round.
+        reject_body: Formatted markdown for the PR review comment.
+        escalation_message: Human-readable escalation note (only when ESCALATE).
+    """
+
+    action: RejectAction
+    review_round_after: int
+    author_agent: str
+    impl_bead_id: str
+    review_bead_id: str
+    pr_number: int
+    findings: list[GateFinding]
+    reject_body: str
+    escalation_message: str | None = None
+
+
+def handle_reject(
+    review_round: int,
+    max_rounds: int = MAX_REVIEW_ROUNDS,
+    *,
+    author_agent: str,
+    impl_bead_id: str,
+    review_bead_id: str,
+    pr_number: int,
+    findings: list[GateFinding],
+) -> RejectOutcome:
+    """Process a gate rejection and decide whether to bounce or escalate.
+
+    On a reject:
+    - Rounds 1..N-1: Bounce the impl bead back to the author with findings
+      in notes, increment the round counter, close the review bead.
+    - Round N (cap): Post findings to PR, flag `bd human` for Diego instead
+      of bouncing again. Close the review bead.
+
+    The PR stays open in both cases.
+
+    Args:
+        review_round: Current review round number (1-indexed).
+        max_rounds: Maximum rounds before escalation (default 3).
+        author_agent: Name of the author agent (e.g., "tali").
+        impl_bead_id: Implementation bead ID (e.g., "spc-50").
+        review_bead_id: Review bead ID (e.g., "spc-51").
+        pr_number: GitHub PR number.
+        findings: Gate findings from the failed review.
+
+    Returns:
+        RejectOutcome with the action, incremented round, and formatted body.
+    """
+    reject_body = build_reject_body(findings=findings, review_round=review_round)
+    escalate = should_escalate(review_round, max_rounds)
+
+    if escalate:
+        round_after = review_round  # Don't increment past the cap
+        escalation_msg = (
+            f"PR #{pr_number} rejected {review_round} times (cap: {max_rounds}). "
+            f"Impl bead {impl_bead_id} (author: {author_agent}) needs human intervention. "
+            f"Findings: {'; '.join(f.message for f in findings)}"
+        )
+    else:
+        round_after = review_round + 1
+        escalation_msg = None
+
+    return RejectOutcome(
+        action=RejectAction.ESCALATE if escalate else RejectAction.BOUNCE,
+        review_round_after=round_after,
+        author_agent=author_agent,
+        impl_bead_id=impl_bead_id,
+        review_bead_id=review_bead_id,
+        pr_number=pr_number,
+        findings=findings,
+        reject_body=reject_body,
+        escalation_message=escalation_msg,
+    )
