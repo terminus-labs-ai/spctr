@@ -268,3 +268,84 @@ class TestBuiltinSkill:
         assert "sr2-conventions" in registry
         assert registry.get_content("sr2-conventions") is not None
         assert len(registry.get_content("sr2-conventions")) > 100  # substantial content
+
+
+# ---------------------------------------------------------------------------
+# Built-in SOLID Review skill
+# ---------------------------------------------------------------------------
+
+class TestSolidReviewSkill:
+    """Built-in solid-review skill ships with correct content."""
+
+    def test_solid_review_skill_exists(self):
+        from sr2_spectre.skills.builtin import get_solid_review_skill
+
+        skill = get_solid_review_skill()
+        assert skill.name == "solid-review"
+        assert "SOLID" in skill.description or "solid" in skill.description.lower()
+        assert skill.version == "0.1.0"
+
+    def test_solid_review_content_has_key_sections(self):
+        from sr2_spectre.skills.builtin import get_solid_review_skill
+
+        skill = get_solid_review_skill()
+        content = skill.content
+
+        # Verify review lenses are covered
+        assert "Single Responsibility" in content
+        assert "Open/Closed" in content
+        assert "Liskov" in content
+        assert "Interface Segregation" in content
+        assert "Dependency Inversion" in content
+        assert "DRY" in content
+
+    def test_solid_review_content_has_scope_guidance(self):
+        """The skill instructs agents to accept a scope argument."""
+        from sr2_spectre.skills.builtin import get_solid_review_skill
+
+        skill = get_solid_review_skill()
+        content = skill.content
+
+        assert "scope" in content.lower()
+        assert "git diff" in content or "diff" in content.lower()
+
+    def test_solid_review_content_has_output_format(self):
+        """The skill includes an output format template."""
+        from sr2_spectre.skills.builtin import get_solid_review_skill
+
+        skill = get_solid_review_skill()
+        content = skill.content
+
+        assert "BLUF" in content
+        assert "prioritize" in content.lower() or "priority" in content.lower()
+
+    def test_solid_review_tags(self):
+        from sr2_spectre.skills.builtin import get_solid_review_skill
+
+        skill = get_solid_review_skill()
+        assert "review" in skill.tags
+        assert "solid" in skill.tags
+        assert "dry" in skill.tags
+        assert "architecture" in skill.tags
+        assert "audit" in skill.tags
+
+    def test_default_skills_includes_solid_review(self):
+        from sr2_spectre.skills.builtin import DEFAULT_SKILLS
+
+        names = [s.name for s in DEFAULT_SKILLS]
+        assert "sr2-conventions" in names
+        assert "solid-review" in names
+        assert len(DEFAULT_SKILLS) >= 2
+
+    def test_solid_review_registers_cleanly(self):
+        """The solid-review skill registers in a registry without errors."""
+        from sr2_spectre.skills.builtin import get_solid_review_skill
+
+        registry = SkillRegistry()
+        skill = get_solid_review_skill()
+        registry.register(skill)
+
+        assert "solid-review" in registry
+        content = registry.get_content("solid-review")
+        assert content is not None
+        assert len(content) > 500  # substantial review framework
