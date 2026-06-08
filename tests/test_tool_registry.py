@@ -1,5 +1,4 @@
 """Tests for ToolRegistry."""
-import asyncio
 import pytest
 from sr2_spectre.tools.registry import ToolRegistry
 
@@ -25,7 +24,8 @@ def test_register_and_list() -> None:
     assert "add" in reg.list_names()
 
 
-def test_execute_sync_tool() -> None:
+@pytest.mark.asyncio
+async def test_execute_sync_tool() -> None:
     reg = ToolRegistry()
     reg.register(
         name="add",
@@ -33,9 +33,7 @@ def test_execute_sync_tool() -> None:
         input_schema={},
         fn=_sync_add,
     )
-    result = asyncio.get_event_loop().run_until_complete(
-        reg.execute("add", {"a": 2, "b": 3})
-    )
+    result = await reg.execute("add", {"a": 2, "b": 3})
     assert result == "5"
 
 
