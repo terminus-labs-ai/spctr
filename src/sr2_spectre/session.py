@@ -62,6 +62,21 @@ class Session:
         self.history: list[Message] = []
         self._lock = asyncio.Lock()
 
+        # Run context — set by the Interface at start(); None until then.
+        self._run_context: RunContext | None = None
+
+        # Build the run_context_provider callback that reads self._run_context
+        # at resolve time (not at construction time).  SR2 stores the callable
+        # and passes it to resolvers via Dependencies.run_context_provider.
+        def _run_context_provider() -> dict[str, str] | None:
+            ctx = self._run_context
+            if ctx is None:
+                return None
+            return {
+                "mode": ctx.mode,
+                "source": ctx.source or "",
+            }
+
         # SR2 owns context compilation, tool definition injection, and LLM calls
         self.sr2 = SR2(
             pipeline_config=config.pipeline,
@@ -72,10 +87,8 @@ class Session:
             tracer=tracer,
             tool_executor=self._execute_tool,
             active_frame_provider=active_frame_provider,
+            run_context_provider=_run_context_provider,
         )
-
-        # Run context — set by the Interface at start(); None until then.
-        self._run_context: RunContext | None = None
 
     @property
     def run_context(self) -> RunContext | None:
