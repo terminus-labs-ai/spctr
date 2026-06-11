@@ -9,6 +9,9 @@ Phase 4 polish features:
 - Markdown rendering via rich (falls back gracefully if rich is unavailable)
 
 Usage: sr2-spectre config.yaml --interface tui
+
+Note: positional arguments must come before options.  The TUI does not
+require a prompt — it reads input interactively.
 """
 from __future__ import annotations
 

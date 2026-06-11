@@ -1,6 +1,6 @@
 """Single-shot interface — run one turn, print response, exit.
 
-Usage: sr2-spectre --interface single_shot "What is 2+2?"
+Usage: sr2-spectre config.yaml "What is 2+2?" --interface single_shot
 """
 from __future__ import annotations
 

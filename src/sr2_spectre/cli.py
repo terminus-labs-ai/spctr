@@ -1,9 +1,12 @@
 """CLI entry point for sr2-spectre.
 
 Usage:
-    sr2-spectre config.yaml --interface single_shot "What is the weather?"
+    sr2-spectre config.yaml "What is the weather?" --interface single_shot
     sr2-spectre config.yaml --interface tui
     sr2-spectre config show [--no-provenance] [--sr2-home PATH]
+
+Note: positional arguments (config, prompt) must appear contiguously before
+options.  The prompt positional is consumed only by single_shot mode.
 """
 from __future__ import annotations
 
@@ -137,6 +140,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="sr2-spectre",
         description="SR2 Spectre — full agent runtime powered by SR2",
+        epilog=(
+            "Examples:\n"
+            "  sr2-spectre config.yaml 'What is the weather?' --interface single_shot\n"
+            "  sr2-spectre config.yaml --interface tui\n"
+            "  sr2-spectre config.yaml 'Hello' --trace\n"
+            "\n"
+            "Note: positional arguments (config, prompt) must appear before\n"
+            "options.  The prompt positional is consumed only by single_shot mode.\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "config",
