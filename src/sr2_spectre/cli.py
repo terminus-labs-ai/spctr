@@ -153,7 +153,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "config",
-        help="Path to YAML config file (required)",
+        nargs="?",
+        default=None,
+        help="Path to YAML config file (optional when --agent is set)",
     )
     parser.add_argument(
         "--agent",
@@ -269,8 +271,11 @@ async def run_async(argv: list[str] | None = None) -> None:
         config_path = resolve_agent_config_path(
             args.agent, agents_dir=Path(args.agents_dir) if args.agents_dir else None
         )
-    else:
+    elif args.config:
         config_path = args.config
+    else:
+        print("Error: either --agent or a positional config path is required.", file=sys.stderr)
+        sys.exit(2)
 
     logger.info("SR2 Spectre starting")
 
@@ -302,6 +307,8 @@ async def run_async(argv: list[str] | None = None) -> None:
     interface_kwargs: dict[str, Any] = {}
     if interface_name == "single_shot" and args.prompt:
         interface_kwargs["prompt"] = " ".join(args.prompt)
+    if interface_name == "discord" and config.discord is not None:
+        interface_kwargs["config"] = config.discord
 
     await agent.initialize()
 
