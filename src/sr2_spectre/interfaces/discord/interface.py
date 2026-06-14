@@ -100,11 +100,79 @@ class DiscordInterface:
         # Run the bot — this blocks until the bot is stopped
         await self._adapter.run()
 
+    async def _resolve_target_channel(
+        self,
+        message: Any,
+        channel_id: int,
+        channel_obj: Any,
+    ) -> int:
+        """Resolve the target channel ID for the response.
+
+        When auto_thread is disabled, returns the message's channel ID
+        (the identity path).
+
+        When auto_thread is enabled:
+        - If the message is already in a thread, return the thread ID.
+        - If the message is in a parent channel and no thread session
+          exists yet, create a thread and return the thread ID.
+        - If the message is in a parent channel and a thread session
+          already exists, return the existing thread ID.
+
+        Args:
+            message: discord.Message object.
+            channel_id: The message's channel ID.
+            channel_obj: The message's channel object.
+
+        Returns:
+            The channel ID to send responses to.
+        """
+        if not self.config.auto_thread:
+            return channel_id
+
+        # If we're already inside a thread, use it as-is
+        if self._adapter and self._adapter.is_thread_channel(channel_obj):
+            return channel_id
+
+        # We're in a parent channel — check if there's an existing thread
+        # for this channel's session
+        existing = self._session_map.get_thread_for_parent(channel_id)
+        if existing is not None:
+            return existing
+
+        # No thread yet — create one anchored on the user's message
+        message_id = getattr(message, "id", None)
+        if message_id is None or self._adapter is None:
+            return channel_id
+
+        # Build thread name from the first line of the message
+        content = getattr(message, "content", "")
+        first_line = content.strip().split("\n")[0][:70]
+        thread_name = first_line or "SR2 conversation"
+
+        thread_id = await self._adapter.create_thread(
+            channel_id, thread_name, message_id
+        )
+        if thread_id is not None:
+            self._session_map.link_parent_thread(channel_id, thread_id)
+            return thread_id
+
+        # Thread creation failed — fall back to parent channel
+        logger.warning(
+            "Thread creation failed, falling back to parent channel %d",
+            channel_id,
+        )
+        return channel_id
+
     async def _process_message(self, message: Any) -> None:
         """Process an incoming Discord message.
 
         Extracts channel_id, content, and author from the discord.Message
         object, then routes through the handler logic.
+
+        When auto_thread is enabled, determines the effective channel ID:
+        if the message is already in a thread, use the thread ID;
+        if the message is in a parent channel, create a thread and route
+        to the thread ID.
 
         Args:
             message: discord.Message object from discord.py.
@@ -113,9 +181,12 @@ class DiscordInterface:
             return
 
         # Extract plain data from discord.Message
-        channel_id = getattr(message, "channel", None)
-        if channel_id is not None:
-            channel_id = getattr(channel_id, "id", None)
+        channel_obj = getattr(message, "channel", None)
+        if channel_obj is None:
+            logger.warning("Could not extract channel from message")
+            return
+
+        channel_id = getattr(channel_obj, "id", None)
         if channel_id is None:
             logger.warning("Could not extract channel_id from message")
             return
@@ -138,8 +209,13 @@ class DiscordInterface:
             await self._handle_command(command, rest, channel_id)
             return
 
+        # Determine effective channel for threading
+        target_channel_id = await self._resolve_target_channel(
+            message, channel_id, channel_obj
+        )
+
         # Regular message — process through the agent
-        await self._process_through_agent(content, channel_id)
+        await self._process_through_agent(content, target_channel_id)
 
     async def _handle_command(
         self,

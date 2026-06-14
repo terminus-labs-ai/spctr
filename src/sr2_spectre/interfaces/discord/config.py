@@ -46,6 +46,10 @@ class DiscordConfig(BaseModel):
                               message instead).
         tool_embed_enabled: Whether to send tool execution updates as
                             Discord embeds.
+        auto_thread: If True, automatically create a channel thread when
+                     a new conversation starts in a parent channel and
+                     route all replies into that thread instead of the
+                     parent channel. Defaults to False.
     """
     token: str = ""
     channels: list[int] = Field(default_factory=list)
@@ -53,6 +57,7 @@ class DiscordConfig(BaseModel):
     max_message_length: int = 2000
     edit_stream_interval: float = 1.0
     tool_embed_enabled: bool = True
+    auto_thread: bool = False
 
     @field_validator("token", mode="before")
     @classmethod

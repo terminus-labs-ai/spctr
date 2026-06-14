@@ -242,3 +242,66 @@ class DiscordBotAdapter:
         except Exception as exc:
             logger.error("Failed to send embed to channel %d: %s", channel_id, exc)
             return None
+
+    async def create_thread(
+        self,
+        channel_id: int,
+        name: str,
+        message_id: int,
+    ) -> int | None:
+        """Create a public thread from an existing message.
+
+        Creates a public thread anchored on the given message in the
+        parent channel. Returns the thread's channel ID, or None on failure.
+
+        Args:
+            channel_id: Parent channel ID.
+            name: Thread name (Discord limit: 100 chars).
+            message_id: ID of the message to anchor the thread on.
+
+        Returns:
+            Thread channel ID, or None if creation failed.
+        """
+        if self._bot is None:
+            return None
+
+        channel = self._bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self._bot.fetch_channel(channel_id)
+            except Exception as exc:
+                logger.error("Could not fetch channel %d: %s", channel_id, exc)
+                return None
+
+        try:
+            # Trim to Discord's 100-char thread name limit
+            thread_name = name[:100]
+            thread = await channel.create_thread(
+                name=thread_name,
+                message=message_id,
+                auto_archive_duration=1440,  # 24 hours
+            )
+            thread_id = getattr(thread, "id", None)
+            if thread_id is not None:
+                logger.info(
+                    "Created thread %s (ID: %d) in channel %d",
+                    thread_name, thread_id, channel_id,
+                )
+            return thread_id
+        except Exception as exc:
+            logger.error(
+                "Failed to create thread in channel %d: %s", channel_id, exc
+            )
+            return None
+
+    def is_thread_channel(self, channel: Any) -> bool:
+        """Check if a discord.py channel object is a Thread.
+
+        Args:
+            channel: A discord.py channel object.
+
+        Returns:
+            True if the channel is a Discord thread.
+        """
+        discord = _import_discord()
+        return isinstance(channel, discord.Thread)
