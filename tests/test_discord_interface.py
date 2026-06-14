@@ -63,7 +63,7 @@ def _make_mock_message(
     return message
 
 
-def _make_mock_adapter() -> MagicMock:
+def _make_mock_adapter(is_thread: bool = False) -> MagicMock:
     """Create a fully async-compatible mock adapter."""
     mock_adapter = MagicMock()
     mock_adapter.bot_id = 11111
@@ -74,6 +74,7 @@ def _make_mock_adapter() -> MagicMock:
     mock_adapter.edit_message = AsyncMock()
     mock_adapter.send_embed = AsyncMock()
     mock_adapter.set_message_handler = MagicMock()
+    mock_adapter.is_thread_channel = MagicMock(return_value=is_thread)
     return mock_adapter
 
 
@@ -449,3 +450,108 @@ async def test_cancel_pending_stream_edit_clears_future() -> None:
 
     assert future.cancelled()
     assert interface._pending_stream_edit is None
+
+
+# ---------------------------------------------------------------------------
+# Thread-aware mention bypass
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_mention_bypassed_in_thread_with_active_session() -> None:
+    """Inside a thread where the agent has an active session, skip the mention check.
+
+    When auto_thread is enabled and mention_only is True, the first message
+    in a parent channel must mention the bot. But once inside a thread with
+    an active session, follow-up messages should not require a mention.
+    """
+    thread_id = 99999
+    interface = DiscordInterface(DiscordConfig(mention_only=True))
+    agent = _make_mock_agent([AgentTextDelta(text="Follow-up answer"), AgentDone()])
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter(is_thread=True)
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        # Pre-create the session so the thread is recognized as "active"
+        interface._session_map.get_or_create(thread_id)
+
+        # Message WITHOUT mention in the thread
+        msg = _make_mock_message(content="what about the other thing?", channel_id=thread_id)
+        await interface._process_message(msg)
+
+        # Should have responded (mention bypassed because active thread session)
+        assert mock_adapter.send_message.called
+
+
+@pytest.mark.asyncio
+async def test_mention_still_required_in_thread_without_session() -> None:
+    """A thread with no active session still requires a mention.
+
+    If the bot hasn't started a conversation in a thread (no session exists),
+    mention_only still applies.
+    """
+    thread_id = 77777
+    interface = DiscordInterface(DiscordConfig(mention_only=True))
+    agent = _make_mock_agent()
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter(is_thread=True)
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        # No session created for this thread_id
+        msg = _make_mock_message(content="hello", channel_id=thread_id)
+        await interface._process_message(msg)
+
+        # Should NOT respond — no session, still needs mention
+        assert not mock_adapter.send_message.called
+
+
+@pytest.mark.asyncio
+async def test_mention_still_required_in_parent_channel() -> None:
+    """Parent channels always require a mention when mention_only is True,
+    regardless of whether a thread session exists for them.
+    """
+    parent_id = 11111
+    thread_id = 22222
+    interface = DiscordInterface(DiscordConfig(mention_only=True))
+    agent = _make_mock_agent()
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        # Parent channel is NOT a thread
+        mock_adapter = _make_mock_adapter(is_thread=False)
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        # Even though a thread session exists linked to this parent,
+        # the parent channel itself still requires mention
+        interface._session_map.get_or_create(thread_id)
+        interface._session_map.link_parent_thread(parent_id, thread_id)
+
+        msg = _make_mock_message(content="no mention here", channel_id=parent_id)
+        await interface._process_message(msg)
+
+        assert not mock_adapter.send_message.called
+
+
+@pytest.mark.asyncio
+async def test_mention_bypass_not_applied_when_mention_only_false() -> None:
+    """When mention_only is False, the bypass is irrelevant — all messages respond."""
+    interface = DiscordInterface(DiscordConfig(mention_only=False))
+    agent = _make_mock_agent([AgentTextDelta(text="OK"), AgentDone()])
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter(is_thread=False)
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        # No session, not a thread, mention_only=False → still responds
+        msg = _make_mock_message(content="anything at all", channel_id=55555)
+        await interface._process_message(msg)
+
+        assert mock_adapter.send_message.called

@@ -205,8 +205,18 @@ class DiscordInterface:
         bot_id = self._adapter.bot_id
         bot_mentions = self._adapter.bot_mentions
 
-        # Check if we should respond to this message
-        if not should_respond(content, self.config.mention_only, bot_id, bot_mentions):
+        # Skip mention check if we're inside a thread where the agent
+        # already has an active session — the conversation was started by
+        # a mention (or mention_only was off), no need to mention again.
+        in_active_thread = (
+            self._adapter
+            and self._adapter.is_thread_channel(channel_obj)
+            and channel_id in self._session_map.active()
+        )
+
+        if not should_respond(
+            content, self.config.mention_only and not in_active_thread, bot_id, bot_mentions
+        ):
             return
 
         # Parse slash commands
