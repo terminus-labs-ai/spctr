@@ -52,6 +52,11 @@ class DiscordBotAdapter:
         self._bot: Any = None
         self._running = False
         self._task: asyncio.Task | None = None
+        # Set via set_message_handler(); read by the on_message closure built
+        # in start(). MUST live here, not in start() — start() runs AFTER the
+        # interface wires the handler, so resetting it there drops every
+        # message (handler clobbered back to None).
+        self._on_message_handler: Any = None
 
     @property
     def bot_id(self) -> int | None:
@@ -94,9 +99,6 @@ class DiscordBotAdapter:
         async def on_ready() -> None:
             user = self._bot.user
             logger.info("Discord bot logged in as %s (ID: %s)", user.name, user.id)
-
-        # Store the handler reference so the interface can set it
-        self._on_message_handler = None
 
         @self._bot.event
         async def on_message(message: Any) -> None:

@@ -71,6 +71,8 @@ class Runtime:
             "model": model_cfg.model,
             "base_url": model_cfg.base_url,
         }
+        if model_cfg.api_key:
+            llm_kwargs["api_key"] = model_cfg.api_key
         if model_cfg.params:
             llm_kwargs.update(model_cfg.params)
         self.llm = LiteLLMCallable(**llm_kwargs)

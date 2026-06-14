@@ -25,6 +25,7 @@ from pydantic import BaseModel, Field
 from sr2.config.models import PipelineConfig
 
 from sr2_spectre.config_merge import merge_configs
+from sr2_spectre.interfaces.discord.config import DiscordConfig
 from sr2_spectre.path_resolution import ConfigPathError, resolve_path
 
 
@@ -60,6 +61,7 @@ class ModelConfig(BaseModel):
     """
     model: str
     base_url: str | None = None
+    api_key: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -117,6 +119,7 @@ class SpectreConfig(BaseModel):
     agent: AgentConfig
     models: dict[str, ModelConfig]
     pipeline: PipelineConfig
+    discord: DiscordConfig | None = None
 
 
 class CircularExtendsError(Exception):

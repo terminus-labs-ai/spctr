@@ -6,9 +6,25 @@ SpectreConfig (or loaded as a standalone config block).
 """
 from __future__ import annotations
 
+import os
+import re
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+_VAR_RE = re.compile(r"\$\{([^}]+)\}")
+
+
+def _resolve_env(raw: str) -> str:
+    """Resolve ${VAR} tokens in a string using os.environ.
+
+    Unresolved tokens are left as-is (non-fatal for token strings).
+    """
+    def _replace(match: re.Match) -> str:
+        name = match.group(1)
+        return os.environ.get(name, match.group(0))
+
+    return _VAR_RE.sub(_replace, raw)
 
 
 class DiscordConfig(BaseModel):
@@ -37,3 +53,11 @@ class DiscordConfig(BaseModel):
     max_message_length: int = 2000
     edit_stream_interval: float = 1.0
     tool_embed_enabled: bool = True
+
+    @field_validator("token", mode="before")
+    @classmethod
+    def _resolve_token_env(cls, v: str) -> str:
+        """Resolve ${VAR} tokens in the bot token."""
+        if isinstance(v, str):
+            return _resolve_env(v)
+        return v

@@ -65,3 +65,23 @@ async def test_bot_id_is_none_before_connection() -> None:
         assert adapter.bot_id is None
     finally:
         await adapter.stop()
+
+
+async def test_start_preserves_a_handler_set_beforehand() -> None:
+    """start() must NOT clobber a handler wired before it.
+
+    The interface calls set_message_handler() and THEN adapter.start(); a
+    stray ``self._on_message_handler = None`` inside start() silently dropped
+    every inbound message. Regression guard: the handler survives start().
+    """
+    adapter = _adapter()
+
+    async def handler(_message) -> None:  # pragma: no cover - identity check only
+        pass
+
+    adapter.set_message_handler(handler)
+    try:
+        await adapter.start()
+        assert adapter._on_message_handler is handler
+    finally:
+        await adapter.stop()

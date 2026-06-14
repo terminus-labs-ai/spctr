@@ -379,7 +379,10 @@ class DiscordInterface:
         """
         from sr2.models import Message, TextBlock
 
-        self._agent.history = []
+        # Agent.history is a getter-only property (delegates to Session) — never
+        # assign to it. Setting session_id rebuilds a fresh Session (empty
+        # history) under the shared Runtime, which both resets history and
+        # points the agent at this channel's frame.
         self._agent.session_id = session.session_id
 
         for entry in session.history:
