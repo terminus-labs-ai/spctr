@@ -389,3 +389,63 @@ async def test_tool_embeds_sent_when_enabled() -> None:
 
         # Should have sent embeds for tool start and result
         assert mock_adapter.send_embed.called
+
+
+# ---------------------------------------------------------------------------
+# Streaming edit race condition
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_streaming_edit_does_not_overwrite_final_message() -> None:
+    """The last streaming edit (with '...') must not overwrite the finalized message.
+
+    Regression test: when the stream ends quickly, a pending ensure_future
+    from _maybe_edit_stream could resolve after finalization and overwrite
+    the clean final text with the '...' version.
+    """
+    import asyncio
+
+    interface = DiscordInterface(
+        DiscordConfig(edit_stream_interval=0.1, max_message_length=2000)
+    )
+    events = [
+        AgentTextDelta(text="Hey"),
+        AgentDone(tool_calls_executed=0),
+    ]
+    agent = _make_mock_agent(events)
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="heya", channel_id=54321)
+        await interface._process_message(msg)
+
+        # The LAST edit_message call must be the clean final text (no "...")
+        edit_calls = mock_adapter.edit_message.call_args_list
+        assert len(edit_calls) > 0
+        final_content = edit_calls[-1][0][2]
+        assert final_content == "Hey", (
+            f"Final message was '{final_content}' — the '...' streaming edit "
+            f"overwrote the clean final text (race condition not fixed)"
+        )
+        assert "..." not in final_content
+
+
+@pytest.mark.asyncio
+async def test_cancel_pending_stream_edit_clears_future() -> None:
+    """_cancel_pending_stream_edit cancels the tracked future."""
+    import asyncio
+
+    interface = DiscordInterface()
+
+    # Simulate a pending future
+    future: asyncio.Future[None] = asyncio.get_event_loop().create_future()
+    interface._pending_stream_edit = future
+
+    interface._cancel_pending_stream_edit()
+
+    assert future.cancelled()
+    assert interface._pending_stream_edit is None

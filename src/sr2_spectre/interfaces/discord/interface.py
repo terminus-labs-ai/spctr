@@ -55,6 +55,7 @@ class DiscordInterface:
         self._adapter: DiscordBotAdapter | None = None
         self._session_map = SessionMap()
         self._running = False
+        self._pending_stream_edit: asyncio.Future[None] | None = None
 
     async def start(self, agent: "Agent") -> None:
         """Initialize the Discord interface and start the bot.
@@ -126,6 +127,12 @@ class DiscordInterface:
         Returns:
             The channel ID to send responses to.
         """
+        logger.info(
+            "resolve_target: auto_thread=%s, channel_id=%d, channel_type=%s",
+            self.config.auto_thread,
+            channel_id,
+            type(channel_obj).__name__,
+        )
         if not self.config.auto_thread:
             return channel_id
 
@@ -294,6 +301,10 @@ class DiscordInterface:
             {"role": "assistant", "content": [{"type": "text", "text": final_text}]}
         )
 
+        # Cancel any pending streaming edit — it would overwrite our
+        # finalized message with the "..." version (race condition).
+        self._cancel_pending_stream_edit()
+
         # Send final message(s) — chunked if too long
         if thinking_id is not None and self._adapter:
             chunks = chunk_message(final_text, self.config.max_message_length)
@@ -410,6 +421,14 @@ class DiscordInterface:
         )
         await self._adapter.send_embed(channel_id, embed)
 
+    def _cancel_pending_stream_edit(self) -> None:
+        """Cancel any pending streaming edit future to prevent it from
+        overwriting a finalized message.
+        """
+        if self._pending_stream_edit is not None and not self._pending_stream_edit.done():
+            self._pending_stream_edit.cancel()
+            self._pending_stream_edit = None
+
     def _maybe_edit_stream(
         self,
         channel_id: int,
@@ -421,6 +440,8 @@ class DiscordInterface:
         """Edit the streaming message if enough time has passed.
 
         Uses asyncio.ensure_future to avoid blocking the event loop.
+        The pending future is tracked so it can be cancelled before
+        finalization or when a newer edit supersedes it.
 
         Args:
             channel_id: Discord channel ID.
@@ -437,9 +458,12 @@ class DiscordInterface:
 
         now = loop.time()
         if last_edit_time is None or (now - last_edit_time) >= self.config.edit_stream_interval:
+            # Cancel any previous pending edit — this newer one supersedes it
+            self._cancel_pending_stream_edit()
+
             truncated = current_text + "..."
             truncated = truncated[: self.config.max_message_length]
-            asyncio.ensure_future(
+            self._pending_stream_edit = asyncio.ensure_future(
                 self._adapter.edit_message(channel_id, message_id, truncated)
             )
 
