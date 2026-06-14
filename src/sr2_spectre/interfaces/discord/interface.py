@@ -116,11 +116,12 @@ class DiscordInterface:
         (the identity path).
 
         When auto_thread is enabled:
-        - If the message is already in a thread, return the thread ID.
-        - If the message is in a parent channel and no thread session
-          exists yet, create a thread and return the thread ID.
-        - If the message is in a parent channel and a thread session
-          already exists, return the existing thread ID.
+        - If the message is already in a thread, return the thread ID
+          (continuation of that conversation).
+        - If the message is in a parent channel, ALWAYS create a fresh
+          thread and return its ID. Each parent-channel mention is a new
+          conversation. (Reusing one thread per parent funnels distinct
+          topics into the first thread — the wrong-topic bug, obsidian-a3q.)
 
         Args:
             message: discord.Message object.
@@ -139,17 +140,11 @@ class DiscordInterface:
         if not self.config.auto_thread:
             return channel_id
 
-        # If we're already inside a thread, use it as-is
+        # If we're already inside a thread, use it as-is (continuation)
         if self._adapter and self._adapter.is_thread_channel(channel_obj):
             return channel_id
 
-        # We're in a parent channel — check if there's an existing thread
-        # for this channel's session
-        existing = self._session_map.get_thread_for_parent(channel_id)
-        if existing is not None:
-            return existing
-
-        # No thread yet — create one anchored on the user's message
+        # We're in a parent channel — every mention starts a NEW thread.
         message_id = getattr(message, "id", None)
         if message_id is None or self._adapter is None:
             return channel_id
@@ -163,7 +158,6 @@ class DiscordInterface:
             channel_id, thread_name, message_id
         )
         if thread_id is not None:
-            self._session_map.link_parent_thread(channel_id, thread_id)
             return thread_id
 
         # Thread creation failed — fall back to parent channel

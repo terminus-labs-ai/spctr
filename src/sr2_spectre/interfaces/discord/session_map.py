@@ -46,14 +46,14 @@ class SessionMap:
     Provides O(1) lookup by channel_id. Thread-safe for single-threaded
     async use (discord.py runs in a single thread per bot instance).
 
-    When auto_thread is enabled, each parent channel may have an associated
-    thread. The parent->thread mapping is stored separately so that new
-    messages in the parent channel can be routed to the existing thread.
+    When auto_thread is enabled, each parent-channel mention spawns its own
+    fresh thread (one conversation per thread). The interface does NOT keep a
+    parent->thread link — reusing a single thread per parent funnels distinct
+    topics into the first thread (the wrong-topic bug, obsidian-a3q).
     """
 
     def __init__(self) -> None:
         self._sessions: dict[int, ChannelSession] = {}
-        self._parent_threads: dict[int, int] = {}
 
     def get_or_create(self, channel_id: int) -> ChannelSession:
         """Get the session for a channel, creating one if it doesn't exist."""
@@ -77,27 +77,3 @@ class SessionMap:
     def clear(self) -> None:
         """Clear all sessions (called on shutdown)."""
         self._sessions.clear()
-        self._parent_threads.clear()
-
-    def get_thread_for_parent(self, parent_channel_id: int) -> int | None:
-        """Return the thread ID associated with a parent channel, or None.
-
-        Args:
-            parent_channel_id: The parent channel's Discord ID.
-
-        Returns:
-            Thread channel ID if one has been linked, or None.
-        """
-        return self._parent_threads.get(parent_channel_id)
-
-    def link_parent_thread(self, parent_channel_id: int, thread_id: int) -> None:
-        """Link a thread to its parent channel.
-
-        Subsequent messages in the parent channel will be routed to this
-        thread for session tracking.
-
-        Args:
-            parent_channel_id: The parent channel's Discord ID.
-            thread_id: The thread's channel ID.
-        """
-        self._parent_threads[parent_channel_id] = thread_id

@@ -2,10 +2,10 @@
 
 Covers:
 1.  DiscordConfig.auto_thread field
-2.  SessionMap parent->thread linking
-3.  DiscordBotAdapter.create_thread and is_thread_channel
-4.  DiscordInterface._resolve_target_channel logic
-5.  Full flow: message in parent -> thread created -> replies in thread
+2.  DiscordBotAdapter.create_thread and is_thread_channel
+3.  DiscordInterface._resolve_target_channel logic — every parent mention
+    spawns a fresh thread (no parent->thread reuse; obsidian-a3q)
+4.  Full flow: message in parent -> thread created -> replies in thread
 """
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ import pytest
 from sr2_spectre.events import AgentDone, AgentTextDelta
 from sr2_spectre.interfaces.discord.config import DiscordConfig
 from sr2_spectre.interfaces.discord.interface import DiscordInterface
-from sr2_spectre.interfaces.discord.session_map import SessionMap
 
 
 # ---------------------------------------------------------------------------
@@ -42,40 +41,6 @@ class TestAutoThreadConfig:
         assert config.auto_thread is True
         assert config.token == "bot-token"
         assert config.mention_only is True
-
-
-# ---------------------------------------------------------------------------
-# SessionMap threading
-# ---------------------------------------------------------------------------
-
-class TestSessionMapThreading:
-    def test_get_thread_for_parent_returns_none_by_default(self) -> None:
-        sm = SessionMap()
-        assert sm.get_thread_for_parent(123) is None
-
-    def test_link_and_get_parent_thread(self) -> None:
-        sm = SessionMap()
-        sm.link_parent_thread(123, 999)
-        assert sm.get_thread_for_parent(123) == 999
-
-    def test_different_parents_different_threads(self) -> None:
-        sm = SessionMap()
-        sm.link_parent_thread(100, 901)
-        sm.link_parent_thread(200, 902)
-        assert sm.get_thread_for_parent(100) == 901
-        assert sm.get_thread_for_parent(200) == 902
-
-    def test_overwrite_parent_thread_link(self) -> None:
-        sm = SessionMap()
-        sm.link_parent_thread(123, 999)
-        sm.link_parent_thread(123, 998)
-        assert sm.get_thread_for_parent(123) == 998
-
-    def test_clear_removes_parent_thread_links(self) -> None:
-        sm = SessionMap()
-        sm.link_parent_thread(123, 999)
-        sm.clear()
-        assert sm.get_thread_for_parent(123) is None
 
 
 # ---------------------------------------------------------------------------
@@ -225,13 +190,12 @@ async def test_auto_thread_enabled_creates_thread_for_parent_channel() -> None:
         assert call_kwargs[0][1] == "Help me with factorio"  # name
         assert call_kwargs[0][2] == 777  # message_id
 
-        # Verify parent->thread link was stored
-        assert interface._session_map.get_thread_for_parent(123) == 99999
-
 
 @pytest.mark.asyncio
-async def test_auto_thread_existing_thread_reused() -> None:
-    """When a thread already exists for the parent, reuse it instead of creating a new one."""
+async def test_auto_thread_parent_mention_always_creates_new_thread() -> None:
+    """Every parent-channel mention spawns a fresh thread — distinct topics
+    must NOT funnel into a prior thread (regression: obsidian-a3q wrong-topic).
+    """
     interface = DiscordInterface(DiscordConfig(auto_thread=True))
     agent = _make_mock_agent()
 
@@ -240,19 +204,25 @@ async def test_auto_thread_existing_thread_reused() -> None:
     ) as MockAdapter:
         mock_adapter = _make_mock_adapter()
         mock_adapter.is_thread_channel.return_value = False
+        # Each create_thread call returns a distinct thread ID
+        mock_adapter.create_thread.side_effect = [11111, 22222]
         MockAdapter.return_value = mock_adapter
         await interface.start(agent)
 
-        # Pre-link a thread
-        interface._session_map.link_parent_thread(123, 88888)
-
-        msg = _make_mock_message(channel_id=123)
-        target = await interface._resolve_target_channel(
-            msg, msg.channel.id, msg.channel
+        # First topic in the parent channel
+        msg1 = _make_mock_message(content="topic A", channel_id=123, message_id=1)
+        target1 = await interface._resolve_target_channel(
+            msg1, msg1.channel.id, msg1.channel
         )
-        assert target == 88888
-        # Should NOT create a new thread
-        assert not mock_adapter.create_thread.called
+        # Second, different topic in the SAME parent channel
+        msg2 = _make_mock_message(content="topic B", channel_id=123, message_id=2)
+        target2 = await interface._resolve_target_channel(
+            msg2, msg2.channel.id, msg2.channel
+        )
+
+        assert target1 == 11111
+        assert target2 == 22222  # NOT routed back into topic A's thread
+        assert mock_adapter.create_thread.call_count == 2
 
 
 @pytest.mark.asyncio

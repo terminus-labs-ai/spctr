@@ -389,18 +389,16 @@ async def test_slash_ask_resolves_thread_channel() -> None:
 
         await interface.start(agent)
 
-        # Pre-link so the resolver returns the existing thread
-        interface._session_map.link_parent_thread(parent_id, thread_id)
-
         msg = _make_mock_message(content="/ask what is the weather?", channel_id=parent_id)
         await interface._process_message(msg)
 
-        # send_message should target the THREAD, not the parent
+        # The parent-channel mention creates a fresh thread; send_message
+        # should target that THREAD, not the parent.
         send_calls = mock_adapter.send_message.call_args_list
         for call in send_calls:
             target_channel = call[0][0]
             assert target_channel == thread_id, (
-                f"/ask sent to channel {target_id} instead of thread {thread_id}"
+                f"/ask sent to channel {target_channel} instead of thread {thread_id}"
             )
 
 
@@ -618,10 +616,9 @@ async def test_mention_still_required_in_parent_channel() -> None:
 
         await interface.start(agent)
 
-        # Even though a thread session exists linked to this parent,
-        # the parent channel itself still requires mention
+        # A parent channel with no mention must not respond, regardless of
+        # any prior thread activity.
         interface._session_map.get_or_create(thread_id)
-        interface._session_map.link_parent_thread(parent_id, thread_id)
 
         msg = _make_mock_message(content="no mention here", channel_id=parent_id)
         await interface._process_message(msg)
