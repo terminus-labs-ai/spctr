@@ -87,11 +87,8 @@ class DiscordBotAdapter:
         intents = discord.Intents.default()
         intents.message_content = True  # Required to read message content
 
-        self._bot = discord.Bot(intents=intents)
+        self._bot = discord.Client(intents=intents)
         self._running = True
-
-        # Register the on_message handler
-        self._bot.remove_command("help")  # Remove default help to avoid conflicts
 
         @self._bot.event
         async def on_ready() -> None:
@@ -105,7 +102,6 @@ class DiscordBotAdapter:
         async def on_message(message: Any) -> None:
             # Skip bot's own messages
             if message.author == self._bot.user:
-                await self._bot.process_commands(message)
                 return
 
             # Skip DMs if channels are configured (server-only mode)
@@ -118,8 +114,6 @@ class DiscordBotAdapter:
 
             if self._on_message_handler is not None:
                 await self._on_message_handler(message)
-
-            await self._bot.process_commands(message)
 
     def set_message_handler(self, handler: Any) -> None:
         """Set the message handler callback for incoming messages.
