@@ -276,9 +276,14 @@ class DiscordBotAdapter:
         try:
             # Trim to Discord's 100-char thread name limit
             thread_name = name[:100]
+
+            # create_thread expects a Snowflake (object with .id attribute),
+            # not a bare int. Fetch the actual message from the channel.
+            message = await channel.fetch_message(message_id)
+
             thread = await channel.create_thread(
                 name=thread_name,
-                message=message_id,
+                message=message,
                 auto_archive_duration=1440,  # 24 hours
             )
             thread_id = getattr(thread, "id", None)
