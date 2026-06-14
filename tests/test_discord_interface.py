@@ -368,9 +368,59 @@ async def test_slash_ask_routes_to_agent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_embeds_sent_when_enabled() -> None:
-    """Tool start/result events trigger embed messages when tool_embed_enabled=True."""
+async def test_tool_events_collapsed_into_single_log_message() -> None:
+    """Tool start/result events accumulate in one tool-log message (edited in place),
+    not sent as individual embeds.
+
+    Regression: previously each tool event sent a separate embed message,
+    forcing the user to scroll past them to find the answer.
+    """
     interface = DiscordInterface(DiscordConfig(tool_embed_enabled=True))
+    events = [
+        AgentToolStart(tool_id="t1", name="grep", input={"pattern": "test"}),
+        AgentToolResult(tool_id="t1", name="grep", content="found it", is_error=False),
+        AgentToolStart(tool_id="t2", name="file_read", input={"path": "x.py"}),
+        AgentToolResult(tool_id="t2", name="file_read", content="contents", is_error=False),
+        AgentTextDelta(text="Done"),
+        AgentDone(),
+    ]
+    agent = _make_mock_agent(events)
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="search for something")
+        await interface._process_message(msg)
+
+        # Tool log: 1 send (first tool) + 3 edits (subsequent tools) = 4 adapter calls
+        # send_embed should NOT be called (collapsed into plain message)
+        assert not mock_adapter.send_embed.called
+
+        # The tool-log message was created once and edited for each subsequent event
+        send_calls = [c for c in mock_adapter.send_message.call_args_list]
+        # First send is "⏳ Thinking...", second is the tool log
+        assert mock_adapter.send_message.call_count >= 2
+
+        # Verify the tool log content accumulated all events
+        # Find the tool-log send call (not the "⏳ Thinking..." one)
+        tool_log_send = None
+        for call in send_calls:
+            content = call[0][1]
+            if content != "⏳ Thinking...":
+                tool_log_send = content
+                break
+        assert tool_log_send is not None
+        assert "▶" in tool_log_send  # tool start marker
+        assert "`grep`" in tool_log_send
+
+
+@pytest.mark.asyncio
+async def test_tool_log_suppressed_when_disabled() -> None:
+    """When tool_embed_enabled=False, no tool log messages are sent."""
+    interface = DiscordInterface(DiscordConfig(tool_embed_enabled=False))
     events = [
         AgentToolStart(tool_id="t1", name="search", input={"q": "test"}),
         AgentToolResult(tool_id="t1", name="search", content="result", is_error=False),
@@ -388,8 +438,13 @@ async def test_tool_embeds_sent_when_enabled() -> None:
         msg = _make_mock_message(content="search for something")
         await interface._process_message(msg)
 
-        # Should have sent embeds for tool start and result
-        assert mock_adapter.send_embed.called
+        # Only the "⏳ Thinking..." message should be sent (no tool log)
+        send_calls = mock_adapter.send_message.call_args_list
+        thinking_sends = [c for c in send_calls if c[0][1] == "⏳ Thinking..."]
+        assert len(thinking_sends) == 1
+        # No additional messages beyond thinking + final answer path
+        non_thinking_sends = [c for c in send_calls if c[0][1] != "⏳ Thinking..."]
+        assert len(non_thinking_sends) == 0
 
 
 # ---------------------------------------------------------------------------
