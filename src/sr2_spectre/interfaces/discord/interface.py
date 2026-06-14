@@ -56,10 +56,9 @@ class DiscordInterface:
         self._session_map = SessionMap()
         self._running = False
         self._pending_stream_edit: asyncio.Future[None] | None = None
-        # Per-channel tool-log message ID — all tool events accumulate in one message
-        self._tool_log_ids: dict[int, int | None] = {}
-        # In-memory content tracking for tool-log edits (avoids fetching from Discord)
-        self._tool_log_content: dict[int, str] = {}
+        # Per-channel tool activity lines — prepended to the thinking message
+        # during streaming, then replaced by the final response on completion.
+        self._tool_lines: dict[int, list[str]] = {}
 
     async def start(self, agent: "Agent") -> None:
         """Initialize the Discord interface and start the bot.
@@ -227,7 +226,10 @@ class DiscordInterface:
         command, rest = parse_slash_command(content)
 
         if command is not None:
-            await self._handle_command(command, rest, channel_id)
+            target = await self._resolve_target_channel(
+                message, channel_id, channel_obj
+            )
+            await self._handle_command(command, rest, target)
             return
 
         # Determine effective channel for threading
@@ -293,9 +295,8 @@ class DiscordInterface:
         thinking_id = getattr(thinking_msg, "id", None) if thinking_msg else None
         session.pending_message_id = thinking_id
 
-        # Reset tool log for this channel — each agent turn gets a fresh log
-        self._tool_log_ids[channel_id] = None
-        self._tool_log_content.pop(channel_id, None)
+        # Reset tool lines for this channel — each agent turn gets a fresh log
+        self._tool_lines[channel_id] = []
 
         # Restore channel history into the agent
         self._restore_history(session)
@@ -396,21 +397,21 @@ class DiscordInterface:
         event: AgentToolStart,
         channel_id: int,
     ) -> None:
-        """Render a tool-start event by appending to the tool-log message.
+        """Render a tool-start event by appending a line to the thinking message.
 
-        All tool events for a single agent turn accumulate in one message
-        (edited in place) instead of sending a separate embed per event.
+        Tool activity lines accumulate in the thinking message itself so
+        everything stays in one message — no separate tool-log to scroll past.
 
         Args:
             event: The AgentToolStart event.
             channel_id: Discord channel ID.
         """
-        if not self.config.tool_embed_enabled or self._adapter is None:
+        if not self.config.tool_embed_enabled:
             return
 
         line = f"▶ `{event.name}`"
-        log_id = self._tool_log_ids.get(channel_id)
-        await self._append_tool_log(channel_id, log_id, line)
+        self._tool_lines.setdefault(channel_id, []).append(line)
+        self._flush_tool_lines(channel_id)
 
 
     async def _render_tool_result(
@@ -418,65 +419,52 @@ class DiscordInterface:
         event: AgentToolResult,
         channel_id: int,
     ) -> None:
-        """Render a tool-result event by appending to the tool-log message.
+        """Render a tool-result event by appending a line to the thinking message.
 
-        All tool events for a single agent turn accumulate in one message
-        (edited in place) instead of sending a separate embed per event.
+        Tool activity lines accumulate in the thinking message itself so
+        everything stays in one message — no separate tool-log to scroll past.
 
         Args:
             event: The AgentToolResult event.
             channel_id: Discord channel ID.
         """
-        if not self.config.tool_embed_enabled or self._adapter is None:
+        if not self.config.tool_embed_enabled:
             return
 
         icon = "✖" if event.is_error else "✓"
         tool_name = event.name or "tool"
         line = f"{icon} `{tool_name}`"
-        log_id = self._tool_log_ids.get(channel_id)
-        await self._append_tool_log(channel_id, log_id, line)
+        self._tool_lines.setdefault(channel_id, []).append(line)
+        self._flush_tool_lines(channel_id)
 
-    async def _append_tool_log(
-        self,
-        channel_id: int,
-        log_id: int | None,
-        line: str,
-    ) -> None:
-        """Append a line to the tool-log message, creating it if needed.
+    def _flush_tool_lines(self, channel_id: int) -> None:
+        """Edit the thinking message to include accumulated tool lines.
 
-        If no tool-log message exists yet for this channel, sends a new
-        message. Otherwise edits the existing one with the new line
-        appended. The message is chunked if it exceeds max_message_length.
+        Prepends tool activity lines to the current streaming text and
+        schedules a non-blocking edit of the thinking message. This keeps
+        everything in a single message — no separate tool-log.
 
         Args:
             channel_id: Discord channel ID.
-            log_id: Current tool-log message ID, or None.
-            line: New line to append.
         """
         if self._adapter is None:
             return
 
-        # Build accumulated content
-        existing = ""
-        if log_id is not None:
-            # Fetch current content — we track it in memory for reliability
-            existing = self._tool_log_content.get(channel_id, "")
+        session = self._session_map.get_or_create(channel_id)
+        thinking_id = session.pending_message_id
+        if thinking_id is None:
+            return
 
-        new_content = (existing + "\n" + line).strip()
+        lines = self._tool_lines.get(channel_id, [])
+        tool_block = "\n".join(lines)
+        # Build content: tool lines + separator + "Thinking..."
+        content = tool_block + "\n\n⏳ Thinking..."
+        content = content[: self.config.max_message_length]
 
-        # Truncate to Discord limit if needed
-        if len(new_content) > self.config.max_message_length:
-            new_content = new_content[-self.config.max_message_length + 3:] + "..."
-
-        # Store for next append
-        self._tool_log_content[channel_id] = new_content
-
-        if log_id is not None:
-            await self._adapter.edit_message(channel_id, log_id, new_content)
-        else:
-            msg = await self._adapter.send_message(channel_id, new_content)
-            new_id = getattr(msg, "id", None) if msg else None
-            self._tool_log_ids[channel_id] = new_id
+        loop = asyncio.get_event_loop()
+        asyncio.ensure_future(
+            self._adapter.edit_message(channel_id, thinking_id, content)
+        )
 
     def _cancel_pending_stream_edit(self) -> None:
         """Cancel any pending streaming edit future to prevent it from

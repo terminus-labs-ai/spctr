@@ -368,12 +368,49 @@ async def test_slash_ask_routes_to_agent() -> None:
 
 
 @pytest.mark.asyncio
-async def test_tool_events_collapsed_into_single_log_message() -> None:
-    """Tool start/result events accumulate in one tool-log message (edited in place),
-    not sent as individual embeds.
+async def test_slash_ask_resolves_thread_channel() -> None:
+    """/ask resolves the target channel through _resolve_target_channel,
+    so it routes to the thread when auto_thread is enabled.
+
+    Regression: previously /ask sent to the raw message channel (parent),
+    bypassing thread resolution. This caused messages to split across
+    parent and thread.
+    """
+    parent_id = 11111
+    thread_id = 22222
+    interface = DiscordInterface(DiscordConfig(auto_thread=True))
+    agent = _make_mock_agent([AgentTextDelta(text="Answer"), AgentDone()])
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter(is_thread=False)
+        MockAdapter.return_value = mock_adapter
+        # Pre-link the parent to a thread
+        mock_adapter.create_thread = AsyncMock(return_value=thread_id)
+
+        await interface.start(agent)
+
+        # Pre-link so the resolver returns the existing thread
+        interface._session_map.link_parent_thread(parent_id, thread_id)
+
+        msg = _make_mock_message(content="/ask what is the weather?", channel_id=parent_id)
+        await interface._process_message(msg)
+
+        # send_message should target the THREAD, not the parent
+        send_calls = mock_adapter.send_message.call_args_list
+        for call in send_calls:
+            target_channel = call[0][0]
+            assert target_channel == thread_id, (
+                f"/ask sent to channel {target_id} instead of thread {thread_id}"
+            )
+
+
+@pytest.mark.asyncio
+async def test_tool_events_merged_into_thinking_message() -> None:
+    """Tool start/result events accumulate in the thinking message itself,
+    not a separate tool-log message.
 
     Regression: previously each tool event sent a separate embed message,
-    forcing the user to scroll past them to find the answer.
+    then a separate tool-log message. Now everything lives in one message.
     """
     interface = DiscordInterface(DiscordConfig(tool_embed_enabled=True))
     events = [
@@ -395,26 +432,25 @@ async def test_tool_events_collapsed_into_single_log_message() -> None:
         msg = _make_mock_message(content="search for something")
         await interface._process_message(msg)
 
-        # Tool log: 1 send (first tool) + 3 edits (subsequent tools) = 4 adapter calls
-        # send_embed should NOT be called (collapsed into plain message)
+        # send_embed should NOT be called (no embeds, plain text in thinking msg)
         assert not mock_adapter.send_embed.called
 
-        # The tool-log message was created once and edited for each subsequent event
+        # Only ONE send_message call: the "⏳ Thinking..." placeholder.
+        # Tool lines are flushed via edit_message, not separate sends.
         send_calls = [c for c in mock_adapter.send_message.call_args_list]
-        # First send is "⏳ Thinking...", second is the tool log
-        assert mock_adapter.send_message.call_count >= 2
+        assert mock_adapter.send_message.call_count == 1
+        assert send_calls[0][0][1] == "⏳ Thinking..."
 
-        # Verify the tool log content accumulated all events
-        # Find the tool-log send call (not the "⏳ Thinking..." one)
-        tool_log_send = None
-        for call in send_calls:
-            content = call[0][1]
-            if content != "⏳ Thinking...":
-                tool_log_send = content
-                break
-        assert tool_log_send is not None
-        assert "▶" in tool_log_send  # tool start marker
-        assert "`grep`" in tool_log_send
+        # The thinking message was edited to include tool lines
+        edit_calls = mock_adapter.edit_message.call_args_list
+        tool_edits = [c for c in edit_calls if "▶" in c[0][2]]
+        assert len(tool_edits) > 0, "Expected at least one edit containing tool lines"
+
+        # Verify tool lines accumulated (last tool edit should have all events)
+        last_tool_content = tool_edits[-1][0][2]
+        assert "`grep`" in last_tool_content
+        assert "`file_read`" in last_tool_content
+        assert "✓" in last_tool_content  # tool success marker
 
 
 @pytest.mark.asyncio
