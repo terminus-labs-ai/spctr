@@ -159,3 +159,37 @@ class TestEpilogCorrectness:
                 break
         else:
             pytest.fail("No single_shot usage line found in module docstring")
+
+
+# ---------------------------------------------------------------------------
+# --agent shorthand without a positional config (systemd service form)
+# ---------------------------------------------------------------------------
+
+class TestParseArgsAgentWithoutPositional:
+    """The positional config is OPTIONAL when --agent is given.
+
+    run_async resolves the config from --agent (agents dir) and only requires
+    the positional when --agent is absent. The systemd unit uses this form:
+        sr2-spectre --agent edi --interface discord
+    Regression guard for obsidian-87f (Discord-as-service).
+    """
+
+    def test_agent_only_no_positional(self) -> None:
+        """--agent X --interface Y must parse with config defaulting to None."""
+        args = _parse_args(["--agent", "edi", "--interface", "discord"])
+        assert args.config is None
+        assert args.agent == "edi"
+        assert args.interface == "discord"
+        assert args.prompt == []
+
+    def test_agent_only_minimal(self) -> None:
+        """Bare --agent with no positional and no other options parses."""
+        args = _parse_args(["--agent", "tali"])
+        assert args.config is None
+        assert args.agent == "tali"
+
+    def test_positional_config_still_works_without_agent(self) -> None:
+        """The positional form is unaffected: config set, agent None."""
+        args = _parse_args(["config.yaml", "--interface", "tui"])
+        assert args.config == "config.yaml"
+        assert args.agent is None
