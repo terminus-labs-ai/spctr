@@ -452,6 +452,48 @@ async def test_tool_events_merged_into_thinking_message() -> None:
 
 
 @pytest.mark.asyncio
+async def test_interleaved_text_and_tools_do_not_clobber() -> None:
+    """In-progress edits show tool lines AND streamed text together.
+
+    Regression (the "edited back and forth" bug): the tool path rendered
+    "tool lines + Thinking..." while the text path rendered "text + ...",
+    each on the SAME thinking message. Interleaved events made the message
+    flip between tool-only and text-only content. Now both funnel through a
+    single renderer, so any in-progress edit carrying the streamed text must
+    also still carry the accumulated tool lines.
+    """
+    interface = DiscordInterface(DiscordConfig(tool_embed_enabled=True))
+    events = [
+        AgentToolStart(tool_id="t1", name="grep", input={"pattern": "x"}),
+        AgentToolResult(tool_id="t1", name="grep", content="hit", is_error=False),
+        AgentTextDelta(text="Answer"),
+        AgentDone(),
+    ]
+    agent = _make_mock_agent(events)
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="search then answer", channel_id=4242)
+        await interface._process_message(msg)
+
+        edit_contents = [c[0][2] for c in mock_adapter.edit_message.call_args_list]
+
+        # Every IN-PROGRESS edit (marked with "...") that shows the streamed
+        # text must also retain the tool line — never one without the other.
+        in_progress_with_text = [c for c in edit_contents if "Answer..." in c]
+        assert in_progress_with_text, "Expected an in-progress edit carrying the streamed text"
+        for content in in_progress_with_text:
+            assert "`grep`" in content, (
+                f"In-progress edit dropped tool lines: {content!r} "
+                f"(the back-and-forth clobber bug)"
+            )
+
+
+@pytest.mark.asyncio
 async def test_tool_log_suppressed_when_disabled() -> None:
     """When tool_embed_enabled=False, no tool log messages are sent."""
     interface = DiscordInterface(DiscordConfig(tool_embed_enabled=False))

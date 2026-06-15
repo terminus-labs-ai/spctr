@@ -59,6 +59,11 @@ class DiscordInterface:
         # Per-channel tool activity lines — prepended to the thinking message
         # during streaming, then replaced by the final response on completion.
         self._tool_lines: dict[int, list[str]] = {}
+        # Per-channel accumulated streamed text. Shared state so the unified
+        # progress renderer can show tool lines AND text together — without it,
+        # the tool path and text path clobber each other's content on the same
+        # message (the "edited back and forth" bug).
+        self._stream_text: dict[int, str] = {}
 
     async def start(self, agent: "Agent") -> None:
         """Initialize the Discord interface and start the bot.
@@ -149,8 +154,12 @@ class DiscordInterface:
         if message_id is None or self._adapter is None:
             return channel_id
 
-        # Build thread name from the first line of the message
+        # Build thread name from the first line of the message,
+        # stripping bot mentions so "<@123456> deploy prod" → "deploy prod"
         content = getattr(message, "content", "")
+        if self._adapter:
+            for mention in self._adapter.bot_mentions:
+                content = content.replace(mention, "")
         first_line = content.strip().split("\n")[0][:70]
         thread_name = first_line or "SR2 conversation"
 
@@ -289,8 +298,10 @@ class DiscordInterface:
         thinking_id = getattr(thinking_msg, "id", None) if thinking_msg else None
         session.pending_message_id = thinking_id
 
-        # Reset tool lines for this channel — each agent turn gets a fresh log
+        # Reset tool lines and streamed text for this channel — each agent
+        # turn gets a fresh log.
         self._tool_lines[channel_id] = []
+        self._stream_text[channel_id] = ""
 
         # Restore channel history into the agent
         self._restore_history(session)
@@ -432,31 +443,57 @@ class DiscordInterface:
         self._flush_tool_lines(channel_id)
 
     def _flush_tool_lines(self, channel_id: int) -> None:
-        """Edit the thinking message to include accumulated tool lines.
+        """Re-render the thinking message after a tool event.
 
-        Prepends tool activity lines to the current streaming text and
-        schedules a non-blocking edit of the thinking message. This keeps
-        everything in a single message — no separate tool-log.
+        Delegates to the unified progress renderer so tool lines and the
+        accumulated streamed text are shown TOGETHER in one message — they
+        no longer clobber each other.
 
         Args:
             channel_id: Discord channel ID.
         """
-        if self._adapter is None:
-            return
-
         session = self._session_map.get_or_create(channel_id)
-        thinking_id = session.pending_message_id
-        if thinking_id is None:
+        self._render_progress(channel_id, session.pending_message_id)
+
+    def _render_progress(
+        self,
+        channel_id: int,
+        thinking_id: int | None,
+    ) -> None:
+        """Render combined progress (tool lines + streamed text) to the thinking message.
+
+        Single source of truth for the in-progress message. Both the tool
+        path and the text-delta path funnel through here, so the message
+        always shows everything accumulated so far instead of flipping
+        between tool-only and text-only content.
+
+        The edit is scheduled on the tracked ``_pending_stream_edit`` future
+        so finalization (or a newer progress render) can cancel a stale edit
+        before it lands — the same race guard the text path already used.
+
+        Args:
+            channel_id: Discord channel ID.
+            thinking_id: ID of the thinking placeholder message.
+        """
+        if thinking_id is None or self._adapter is None:
             return
 
         lines = self._tool_lines.get(channel_id, [])
-        tool_block = "\n".join(lines)
-        # Build content: tool lines + separator + "Thinking..."
-        content = tool_block + "\n\n⏳ Thinking..."
+        text = self._stream_text.get(channel_id, "")
+
+        parts: list[str] = []
+        if lines:
+            parts.append("\n".join(lines))
+        # Show the streamed text so far with an in-progress marker; fall back
+        # to the placeholder when no text has arrived yet.
+        parts.append(text + "..." if text else "⏳ Thinking...")
+
+        content = "\n\n".join(parts)
         content = content[: self.config.max_message_length]
 
-        loop = asyncio.get_event_loop()
-        asyncio.ensure_future(
+        # Supersede any pending edit — this render reflects the latest state.
+        self._cancel_pending_stream_edit()
+        self._pending_stream_edit = asyncio.ensure_future(
             self._adapter.edit_message(channel_id, thinking_id, content)
         )
 
@@ -492,19 +529,18 @@ class DiscordInterface:
         if message_id is None or self._adapter is None:
             return
 
+        # Always record the latest text so a tool flush in between throttled
+        # edits still renders the up-to-date streamed text.
+        self._stream_text[channel_id] = current_text
+
         if self.config.edit_stream_interval <= 0:
             return  # Streaming edits disabled
 
         now = loop.time()
         if last_edit_time is None or (now - last_edit_time) >= self.config.edit_stream_interval:
-            # Cancel any previous pending edit — this newer one supersedes it
-            self._cancel_pending_stream_edit()
-
-            truncated = current_text + "..."
-            truncated = truncated[: self.config.max_message_length]
-            self._pending_stream_edit = asyncio.ensure_future(
-                self._adapter.edit_message(channel_id, message_id, truncated)
-            )
+            # Render combined progress (tool lines + this text) through the
+            # single tracked future.
+            self._render_progress(channel_id, message_id)
 
     def _restore_history(self, session: "ChannelSession") -> None:
         """Restore channel history into the agent's history list.
