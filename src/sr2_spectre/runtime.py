@@ -25,6 +25,27 @@ from sr2_spectre.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 
+def _tool_accepts_workspace_root(class_path: str) -> bool:
+    """Return True if the tool class's __init__ accepts a workspace_root kwarg.
+
+    Used to inject the workspace floor only into tools that support it,
+    avoiding a TypeError when a non-confining tool (e.g. FileReadTool) is
+    handed an unexpected kwarg once SR2_WORKSPACE is set.
+    """
+    import importlib
+    import inspect
+
+    try:
+        module_path, class_name = class_path.rsplit(".", 1)
+        cls = getattr(importlib.import_module(module_path), class_name)
+        params = inspect.signature(cls.__init__).parameters
+    except (ImportError, AttributeError, ValueError, TypeError):
+        return False
+    # Only an EXPLICIT named parameter counts. A bare object.__init__ reports
+    # *args/**kwargs, which would falsely match every argument-less tool.
+    return "workspace_root" in params
+
+
 class Runtime:
     """Shared sub-runtime for all frames.
 
@@ -49,11 +70,17 @@ class Runtime:
             from pathlib import Path
             self.workspace_root = str(Path(workspace_raw).resolve())
 
-        # Register tools from config, injecting workspace_root into
-        # tools that support confinement (FileWriteTool, EditTool, TerminalTool).
+        # Register tools from config, injecting workspace_root ONLY into tools
+        # whose constructor accepts it (FileWriteTool, EditTool, TerminalTool).
+        # Blanket injection crashes tools that don't take the kwarg (e.g.
+        # FileReadTool) the moment SR2_WORKSPACE is set.
         for tool_cfg in config.agent.tools:
             tool_config = dict(tool_cfg.config)
-            if self.workspace_root is not None and "workspace_root" not in tool_config:
+            if (
+                self.workspace_root is not None
+                and "workspace_root" not in tool_config
+                and _tool_accepts_workspace_root(tool_cfg.class_path)
+            ):
                 tool_config["workspace_root"] = self.workspace_root
             self.registry.register_from_class_path(tool_cfg.class_path, tool_config)
 

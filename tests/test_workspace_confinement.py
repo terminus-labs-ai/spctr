@@ -441,3 +441,35 @@ class TestRuntimeWorkspaceWiring:
         spec = runtime.registry._tools["file_write"]
         tool_instance = spec.fn.__self__
         assert tool_instance.workspace_root == explicit_workspace.resolve()
+
+    def test_runtime_does_not_inject_into_non_confining_tool(
+        self, tmp_path, monkeypatch
+    ):
+        """With SR2_WORKSPACE set, a tool whose __init__ rejects workspace_root
+        (e.g. FileReadTool) must still build — workspace_root is only injected
+        into tools that accept it. Blanket injection crashed every run."""
+        workspace = tmp_path / "worktree"
+        workspace.mkdir()
+        monkeypatch.setenv("SR2_WORKSPACE", str(workspace))
+
+        config_dict = self._make_minimal_config(
+            tools=[
+                {
+                    "name": "file_read",
+                    "class_path": "sr2_spectre.tools.builtins.file_read.FileReadTool",
+                },
+                {
+                    "name": "file_write",
+                    "class_path": "sr2_spectre.tools.builtins.file_write.FileWriteTool",
+                },
+            ]
+        )
+
+        # Must not raise TypeError building file_read.
+        runtime = self._build_runtime(config_dict)
+
+        # Confining tool got the floor; non-confining tool did not.
+        fw = runtime.registry._tools["file_write"].fn.__self__
+        fr = runtime.registry._tools["file_read"].fn.__self__
+        assert fw.workspace_root == workspace.resolve()
+        assert not hasattr(fr, "workspace_root")
