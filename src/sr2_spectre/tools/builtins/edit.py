@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from pathlib import Path
 
 
 class EditTool:
@@ -12,6 +13,9 @@ class EditTool:
     ``replace_all`` is true, every occurrence is replaced. A zero-match or an
     ambiguous (multi-match without ``replace_all``) request raises ``ValueError``
     and leaves the file untouched.
+
+    When *workspace_root* is set, paths resolving outside the workspace
+    are rejected with ValueError (FR3 — workspace floor).
     """
 
     name = "edit"
@@ -43,8 +47,18 @@ class EditTool:
         "required": ["path", "old_string", "new_string"],
     }
 
-    def __init__(self) -> None:
-        pass
+    def __init__(self, workspace_root: str | None = None) -> None:
+        """Initialize the edit tool.
+
+        Args:
+            workspace_root: When set, paths resolving outside this root
+                are rejected with ValueError. When None, no enforcement
+                (back-compat for standalone runs without SR2_WORKSPACE).
+        """
+        if workspace_root is not None:
+            self.workspace_root: Path | None = Path(workspace_root).resolve()
+        else:
+            self.workspace_root = None
 
     async def __call__(
         self,
@@ -53,6 +67,8 @@ class EditTool:
         new_string: str,
         replace_all: bool = False,
     ) -> str:
+        self._check_path(path)
+
         if not os.path.exists(path):
             raise FileNotFoundError(f"No such file: {path}")
 
@@ -60,6 +76,29 @@ class EditTool:
         return await loop.run_in_executor(
             None, _edit_file, path, old_string, new_string, replace_all
         )
+
+    def _check_path(self, path: str) -> None:
+        """Reject paths resolving outside the workspace root.
+
+        Relative paths are resolved against the workspace root (not cwd).
+        When workspace_root is None (not configured), skip enforcement.
+        """
+        if self.workspace_root is None:
+            return
+
+        p = Path(path)
+        if p.is_absolute():
+            resolved = p.resolve()
+        else:
+            resolved = (self.workspace_root / p).resolve()
+
+        try:
+            resolved.relative_to(self.workspace_root)
+        except ValueError:
+            raise ValueError(
+                f"Path {resolved} is outside workspace {self.workspace_root}. "
+                f"All file edits must be within the workspace root."
+            )
 
 
 def _edit_file(

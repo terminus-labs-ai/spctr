@@ -7,6 +7,7 @@ One Runtime instance serves N per-frame Sessions, each with its own SR2.
 from __future__ import annotations
 
 import logging
+import os
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -41,9 +42,20 @@ class Runtime:
         self.config = config
         self.registry = ToolRegistry()
 
-        # Register tools from config
+        # Resolve workspace root for confinement (FR1)
+        self.workspace_root: str | None = None
+        workspace_raw = os.environ.get("SR2_WORKSPACE")
+        if workspace_raw:
+            from pathlib import Path
+            self.workspace_root = str(Path(workspace_raw).resolve())
+
+        # Register tools from config, injecting workspace_root into
+        # tools that support confinement (FileWriteTool, EditTool, TerminalTool).
         for tool_cfg in config.agent.tools:
-            self.registry.register_from_class_path(tool_cfg.class_path, tool_cfg.config)
+            tool_config = dict(tool_cfg.config)
+            if self.workspace_root is not None and "workspace_root" not in tool_config:
+                tool_config["workspace_root"] = self.workspace_root
+            self.registry.register_from_class_path(tool_cfg.class_path, tool_config)
 
         # Auto-inject complete_step when a plan resolver is configured.
         # complete_step + plan resolver are one feature unit: if the pipeline
