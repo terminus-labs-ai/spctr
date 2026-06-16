@@ -18,6 +18,7 @@ from sr2_spectre.interfaces.discord.handler import (
     parse_slash_command,
     probe_harbinger_status,
     should_respond,
+    strip_bot_mention,
 )
 
 
@@ -280,3 +281,34 @@ class TestProbeHarbingerStatus:
 
         out = await probe_harbinger_status(runner=fake_runner)
         assert len(out) <= 2000
+
+
+# ---------------------------------------------------------------------------
+# strip_bot_mention()
+# ---------------------------------------------------------------------------
+
+class TestStripBotMention:
+    def test_strips_leading_mention_string(self) -> None:
+        out = strip_bot_mention("<@111> /hb", ["<@111>"], 111)
+        assert out == "/hb"
+
+    def test_strips_nickname_mention_form(self) -> None:
+        out = strip_bot_mention("<@!111> /hb", None, 111)
+        assert out == "/hb"
+
+    def test_no_mention_returns_stripped_content(self) -> None:
+        out = strip_bot_mention("/hb", ["<@111>"], 111)
+        assert out == "/hb"
+
+    def test_mention_only_no_command(self) -> None:
+        out = strip_bot_mention("<@111>", ["<@111>"], 111)
+        assert out == ""
+
+    def test_mention_in_middle_not_stripped(self) -> None:
+        # Only a *leading* bot mention is stripped (it's the command prefix).
+        out = strip_bot_mention("hey <@111> look", ["<@111>"], 111)
+        assert out == "hey <@111> look"
+
+    def test_enables_slash_parse_after_strip(self) -> None:
+        cmd, rest = parse_slash_command(strip_bot_mention("<@111> /hb", ["<@111>"], 111))
+        assert cmd == "hb"

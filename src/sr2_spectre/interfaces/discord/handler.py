@@ -63,6 +63,28 @@ def should_respond(
 SLASH_COMMANDS = {"ask", "reset", "status", "help", "hb"}
 
 
+def strip_bot_mention(
+    content: str,
+    bot_mentions: list[str] | None,
+    bot_id: int | None,
+) -> str:
+    """Strip a leading bot @mention so a following slash command can parse.
+
+    In mention_only mode Discord delivers content like ``<@ID> /hb``; the
+    slash parser needs the leading mention removed or it treats the whole
+    thing as plain text. Only a *leading* mention is stripped.
+    """
+    stripped = content.strip()
+    candidates: list[str] = [m for m in (bot_mentions or []) if m]
+    if bot_id is not None:
+        candidates.append(f"<@{bot_id}>")
+        candidates.append(f"<@!{bot_id}>")
+    for mention in candidates:
+        if stripped.startswith(mention):
+            return stripped[len(mention):].strip()
+    return stripped
+
+
 def parse_slash_command(content: str) -> tuple[str | None, str]:
     """Parse a slash command from message content.
 

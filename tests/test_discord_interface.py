@@ -270,6 +270,36 @@ async def test_slash_hb_posts_probe_without_agent() -> None:
         assert not thinking_sent
 
 
+@pytest.mark.asyncio
+async def test_slash_hb_works_with_mention_prefix_in_mention_only() -> None:
+    """In mention_only mode, '@bot /hb' must still hit the probe fast-path.
+
+    Reproduces the live failure: mention_only=true delivers '<@id> /hb',
+    which only parses as a slash command after the mention is stripped.
+    """
+    interface = DiscordInterface(DiscordConfig(mention_only=True))
+    agent = _make_mock_agent()
+
+    with patch(
+        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter"
+    ) as MockAdapter, patch(
+        "sr2_spectre.interfaces.discord.interface.probe_harbinger_status",
+        new=AsyncMock(return_value="```\nLive slots: busy=0\n```"),
+    ) as mock_probe:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        # bot_id 11111 / mention "<@11111>" come from _make_mock_adapter.
+        msg = _make_mock_message(content="<@11111> /hb", channel_id=999)
+        await interface._process_message(msg)
+
+        mock_probe.assert_awaited_once()
+        sent = mock_adapter.send_message.call_args[0][1]
+        assert "Live slots: busy=0" in sent
+
+
 # ---------------------------------------------------------------------------
 # Agent stream integration
 # ---------------------------------------------------------------------------

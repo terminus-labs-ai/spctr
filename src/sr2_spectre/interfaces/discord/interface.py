@@ -33,6 +33,7 @@ from sr2_spectre.interfaces.discord.handler import (
     parse_slash_command,
     probe_harbinger_status,
     should_respond,
+    strip_bot_mention,
 )
 from sr2_spectre.interfaces.discord.session_map import SessionMap
 
@@ -226,8 +227,12 @@ class DiscordInterface:
         ):
             return
 
-        # Parse slash commands
-        command, rest = parse_slash_command(content)
+        # Parse slash commands. Strip a leading bot @mention first so that
+        # slash commands work in mention_only mode (where Discord delivers
+        # "<@bot_id> /cmd" rather than a bare "/cmd").
+        command, rest = parse_slash_command(
+            strip_bot_mention(content, bot_mentions, bot_id)
+        )
 
         if command is not None:
             target = await self._resolve_target_channel(
