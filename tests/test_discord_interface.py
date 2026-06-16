@@ -238,6 +238,38 @@ async def test_slash_help_sends_help_text() -> None:
         assert "/ask" in call_args[0][1]
 
 
+@pytest.mark.asyncio
+async def test_slash_hb_posts_probe_without_agent() -> None:
+    """/hb runs the Harbinger probe and posts it, bypassing the agent."""
+    interface = DiscordInterface(DiscordConfig())
+    agent = _make_mock_agent()
+
+    with patch(
+        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter"
+    ) as MockAdapter, patch(
+        "sr2_spectre.interfaces.discord.interface.probe_harbinger_status",
+        new=AsyncMock(return_value="```\nLive slots: busy=1\n```"),
+    ) as mock_probe:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="/hb", channel_id=777)
+        await interface._process_message(msg)
+
+        mock_probe.assert_awaited_once()
+        sent = mock_adapter.send_message.call_args[0][1]
+        assert "Live slots: busy=1" in sent
+        # Bypasses the LLM: the agent path would first post "⏳ Thinking…"
+        # and send multiple messages; the probe posts exactly one.
+        assert mock_adapter.send_message.call_count == 1
+        thinking_sent = any(
+            "Thinking" in c.args[1] for c in mock_adapter.send_message.call_args_list
+        )
+        assert not thinking_sent
+
+
 # ---------------------------------------------------------------------------
 # Agent stream integration
 # ---------------------------------------------------------------------------

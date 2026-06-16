@@ -31,6 +31,7 @@ from sr2_spectre.interfaces.discord.handler import (
     chunk_message,
     handle_command,
     parse_slash_command,
+    probe_harbinger_status,
     should_respond,
 )
 from sr2_spectre.interfaces.discord.session_map import SessionMap
@@ -256,6 +257,14 @@ class DiscordInterface:
             rest: Remainder of message content.
             channel_id: Discord channel ID.
         """
+        # /hb — probe Harbinger via the CLI, bypassing the LLM entirely.
+        if command == "hb":
+            output = await probe_harbinger_status()
+            if self._adapter is not None:
+                for chunk in chunk_message(output, self.config.max_message_length):
+                    await self._adapter.send_message(channel_id, chunk)
+            return
+
         response = handle_command(command, rest)
 
         if command == "reset":

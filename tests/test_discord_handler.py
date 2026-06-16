@@ -16,6 +16,7 @@ from sr2_spectre.interfaces.discord.handler import (
     chunk_message,
     handle_command,
     parse_slash_command,
+    probe_harbinger_status,
     should_respond,
 )
 
@@ -104,6 +105,11 @@ class TestParseSlashCommand:
         assert cmd == "status"
         assert rest == ""
 
+    def test_slash_hb_command(self) -> None:
+        cmd, rest = parse_slash_command("/hb")
+        assert cmd == "hb"
+        assert rest == ""
+
 
 # ---------------------------------------------------------------------------
 # handle_command()
@@ -128,6 +134,11 @@ class TestHandleCommand:
         assert "/reset" in response
         assert "/status" in response
         assert "/help" in response
+        assert "/hb" in response
+
+    def test_hb_returns_none(self) -> None:
+        """/hb produces no sync text — handled async in the interface."""
+        assert handle_command("hb", "") is None
 
     def test_unknown_command_returns_none(self) -> None:
         assert handle_command("unknown", "stuff") is None
@@ -213,3 +224,59 @@ class TestBuildToolEmbed:
     def test_no_fields_when_optional_absent(self) -> None:
         embed = build_tool_embed("search", "completed")
         assert embed["fields"] is None
+
+
+# ---------------------------------------------------------------------------
+# probe_harbinger_status()
+# ---------------------------------------------------------------------------
+
+class TestProbeHarbingerStatus:
+    async def test_ok_wraps_stdout_in_code_block(self) -> None:
+        async def fake_runner(cmd, timeout_s):
+            return (0, "Harbinger status — live\nLive slots: busy=1", "")
+
+        out = await probe_harbinger_status(runner=fake_runner)
+        assert out.startswith("```")
+        assert out.rstrip().endswith("```")
+        assert "Live slots: busy=1" in out
+
+    async def test_default_command_is_harbinger_status(self) -> None:
+        seen = {}
+
+        async def fake_runner(cmd, timeout_s):
+            seen["cmd"] = cmd
+            return (0, "ok", "")
+
+        await probe_harbinger_status(runner=fake_runner)
+        assert seen["cmd"] == ["harbinger", "status"]
+
+    async def test_nonzero_exit_reports_failure(self) -> None:
+        async def fake_runner(cmd, timeout_s):
+            return (1, "", "boom: config not found")
+
+        out = await probe_harbinger_status(runner=fake_runner)
+        assert "failed" in out.lower()
+        assert "boom: config not found" in out
+
+    async def test_timeout_reports_timed_out(self) -> None:
+        async def fake_runner(cmd, timeout_s):
+            raise TimeoutError()
+
+        out = await probe_harbinger_status(runner=fake_runner, timeout_s=2.0)
+        assert "timed out" in out.lower()
+
+    async def test_spawn_error_reports_cleanly(self) -> None:
+        async def fake_runner(cmd, timeout_s):
+            raise FileNotFoundError("harbinger not on PATH")
+
+        out = await probe_harbinger_status(runner=fake_runner)
+        assert "harbinger" in out.lower()
+        # Does not raise; returns a string the bot can post.
+        assert isinstance(out, str)
+
+    async def test_long_output_truncated_to_discord_limit(self) -> None:
+        async def fake_runner(cmd, timeout_s):
+            return (0, "x" * 5000, "")
+
+        out = await probe_harbinger_status(runner=fake_runner)
+        assert len(out) <= 2000

@@ -11,6 +11,12 @@ discord.py objects to plain Python types for this handler.
 """
 from __future__ import annotations
 
+import asyncio
+import logging
+from typing import Awaitable, Callable
+
+logger = logging.getLogger("sr2_spectre.discord.handler")
+
 
 def should_respond(
     content: str,
@@ -54,7 +60,7 @@ def should_respond(
 # Slash commands
 # ---------------------------------------------------------------------------
 
-SLASH_COMMANDS = {"ask", "reset", "status", "help"}
+SLASH_COMMANDS = {"ask", "reset", "status", "help", "hb"}
 
 
 def parse_slash_command(content: str) -> tuple[str | None, str]:
@@ -88,6 +94,7 @@ HELP_TEXT = """\
 `/ask <message>` — Send a message to the agent (default behavior without command)
 `/reset` — Start a new conversation in this channel
 `/status` — Show current session info (session ID, message count)
+`/hb` — Probe Harbinger: live slots, run outcomes, done & blocked beads
 `/help` — Show this help message"""
 
 
@@ -112,7 +119,75 @@ def handle_command(command: str, rest: str) -> str | None:
         return "Status command — channel info rendered by interface layer."
     elif command == "help":
         return HELP_TEXT
+    # /hb produces no synchronous text — the interface runs it asynchronously
+    # via probe_harbinger_status() because it shells out to a subprocess.
     return None
+
+
+# ---------------------------------------------------------------------------
+# /hb — Harbinger status probe (runs the `harbinger status` CLI, no LLM)
+# ---------------------------------------------------------------------------
+
+DISCORD_MAX_LEN = 2000
+_FENCE = "```"
+
+# A runner takes (command, timeout_s) and returns (returncode, stdout, stderr).
+SubprocessRunner = Callable[[list[str], float], Awaitable[tuple[int, str, str]]]
+
+
+async def _default_runner(cmd: list[str], timeout_s: float) -> tuple[int, str, str]:
+    """Run a command, capturing stdout/stderr. Raises TimeoutError on timeout."""
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except (asyncio.TimeoutError, TimeoutError):
+        proc.kill()
+        await proc.wait()
+        raise
+    return (
+        proc.returncode or 0,
+        stdout.decode(errors="replace"),
+        stderr.decode(errors="replace"),
+    )
+
+
+def _wrap_code_block(body: str) -> str:
+    """Wrap text in a Discord code block, truncated to fit the length limit."""
+    budget = DISCORD_MAX_LEN - (len(_FENCE) * 2) - 2  # fences + two newlines
+    if len(body) > budget:
+        body = body[: budget - 1] + "…"
+    return f"{_FENCE}\n{body}\n{_FENCE}"
+
+
+async def probe_harbinger_status(
+    *,
+    runner: SubprocessRunner | None = None,
+    command: list[str] | None = None,
+    timeout_s: float = 15.0,
+) -> str:
+    """Run `harbinger status` and return a Discord-ready message.
+
+    Never raises: subprocess/timeout/spawn failures are turned into a short
+    warning string the bot can post. ``runner`` is injectable for tests.
+    """
+    run = runner or _default_runner
+    cmd = command or ["harbinger", "status"]
+    try:
+        rc, stdout, stderr = await run(cmd, timeout_s)
+    except (asyncio.TimeoutError, TimeoutError):
+        return f"⚠ `harbinger status` timed out after {timeout_s:.0f}s"
+    except (FileNotFoundError, OSError) as e:
+        logger.warning("harbinger probe failed to spawn: %s", e)
+        return f"⚠ could not run `harbinger`: {e}"
+
+    if rc != 0:
+        detail = (stderr or stdout or "").strip() or "(no output)"
+        return f"⚠ `harbinger status` failed (rc={rc}):\n" + _wrap_code_block(detail)
+    return _wrap_code_block(stdout.strip() or "(no output)")
 
 
 # ---------------------------------------------------------------------------
