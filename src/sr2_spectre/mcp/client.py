@@ -4,6 +4,7 @@ from __future__ import annotations
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 
 from sr2_spectre.mcp.tool_bridge import MCPToolBridge
 
@@ -16,10 +17,10 @@ class MCPClient:
     """Connects to an MCP server and exposes its tools as MCPToolBridge instances.
 
     Args:
-        server_type: "stdio" or "http"
+        server_type: "stdio", "http" (SSE), or "streamable-http"
         **transport_kwargs:
             stdio: command (list[str]), args (list[str]=[]), env (dict={})
-            http:  url (str)
+            http / streamable-http:  url (str)
     """
 
     def __init__(self, server_type: str, **transport_kwargs: object) -> None:
@@ -47,12 +48,18 @@ class MCPClient:
                     extra_args = list(args)
                 params = StdioServerParameters(command=cmd_str, args=extra_args, env=env or None)
                 transport_ctx = stdio_client(params)
+            elif self._server_type in ("streamable-http", "streamable_http"):
+                url = self._transport_kwargs["url"]
+                transport_ctx = streamablehttp_client(url=url)
             else:
                 url = self._transport_kwargs["url"]
                 transport_ctx = sse_client(url=url)
 
             self._transport_ctx = transport_ctx
-            read, write = await transport_ctx.__aenter__()
+            # streamablehttp_client yields a 3-tuple (read, write, get_session_id);
+            # sse_client/stdio_client yield 2. Positional slice tolerates both.
+            entered = await transport_ctx.__aenter__()
+            read, write = entered[0], entered[1]
 
             session_ctx = ClientSession(read, write)
             self._session_ctx = session_ctx

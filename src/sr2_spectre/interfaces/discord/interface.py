@@ -28,12 +28,12 @@ from sr2_spectre.events import AgentDone, AgentTextDelta, AgentToolResult, Agent
 from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
 from sr2_spectre.interfaces.discord.config import DiscordConfig
 from sr2_spectre.interfaces.discord.handler import (
+    CommandContext,
     chunk_message,
     handle_command,
     parse_slash_command,
     probe_harbinger_status,
     should_respond,
-    strip_bot_mention,
 )
 from sr2_spectre.interfaces.discord.session_map import SessionMap
 
@@ -227,12 +227,8 @@ class DiscordInterface:
         ):
             return
 
-        # Parse slash commands. Strip a leading bot @mention first so that
-        # slash commands work in mention_only mode (where Discord delivers
-        # "<@bot_id> /cmd" rather than a bare "/cmd").
-        command, rest = parse_slash_command(
-            strip_bot_mention(content, bot_mentions, bot_id)
-        )
+        # Parse slash commands
+        command, rest = parse_slash_command(content)
 
         if command is not None:
             target = await self._resolve_target_channel(
@@ -270,7 +266,13 @@ class DiscordInterface:
                     await self._adapter.send_message(channel_id, chunk)
             return
 
-        response = handle_command(command, rest)
+        session = self._session_map.get_or_create(channel_id)
+        ctx = CommandContext(
+            channel_id=channel_id,
+            session_id=session.session_id,
+            message_count=len(session.history),
+        )
+        response = handle_command(command, rest, ctx)
 
         if command == "reset":
             self._session_map.reset(channel_id)

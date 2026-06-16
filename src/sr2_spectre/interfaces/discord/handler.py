@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Awaitable, Callable
 
 logger = logging.getLogger("sr2_spectre.discord.handler")
@@ -57,33 +58,147 @@ def should_respond(
 
 
 # ---------------------------------------------------------------------------
-# Slash commands
+# Slash command registry
 # ---------------------------------------------------------------------------
 
-SLASH_COMMANDS = {"ask", "reset", "status", "help", "hb"}
+@dataclass(frozen=True)
+class CommandContext:
+    """Read-only context passed to slash command handlers.
 
+    Provides session state so commands like /status can render
+    per-channel information without importing discord.py or the
+    interface layer.
 
-def strip_bot_mention(
-    content: str,
-    bot_mentions: list[str] | None,
-    bot_id: int | None,
-) -> str:
-    """Strip a leading bot @mention so a following slash command can parse.
-
-    In mention_only mode Discord delivers content like ``<@ID> /hb``; the
-    slash parser needs the leading mention removed or it treats the whole
-    thing as plain text. Only a *leading* mention is stripped.
+    Attributes:
+        channel_id: Discord channel ID.
+        session_id: Spectre session ID for this channel.
+        message_count: Number of messages in the channel's history.
     """
-    stripped = content.strip()
-    candidates: list[str] = [m for m in (bot_mentions or []) if m]
-    if bot_id is not None:
-        candidates.append(f"<@{bot_id}>")
-        candidates.append(f"<@!{bot_id}>")
-    for mention in candidates:
-        if stripped.startswith(mention):
-            return stripped[len(mention):].strip()
-    return stripped
+    channel_id: int
+    session_id: str
+    message_count: int
 
+
+# Handler signature: (rest: str, ctx: CommandContext) -> str | None
+# Returns None for commands that don't produce a text response
+# (e.g., /ask which triggers the agent loop).
+SyncHandler = Callable[[str, CommandContext], str | None]
+
+
+@dataclass(frozen=True)
+class SlashCommand:
+    """Declarative slash command definition.
+
+    Attributes:
+        name: Command name (without leading /).
+        description: One-line description for /help text.
+        handler: Sync function that processes the command.
+    """
+    name: str
+    description: str
+    handler: SyncHandler
+
+
+# Registry of registered slash commands. Commands are looked up by name.
+# The set of known commands is derived from registry keys.
+_COMMAND_REGISTRY: dict[str, SlashCommand] = {}
+
+
+def register_command(cmd: SlashCommand) -> SlashCommand:
+    """Register a slash command in the global registry.
+
+    Can be used as a decorator or called directly.
+    """
+    _COMMAND_REGISTRY[cmd.name] = cmd
+    return cmd
+
+
+def get_registered_commands() -> dict[str, SlashCommand]:
+    """Return the full command registry (frozen snapshot)."""
+    return dict(_COMMAND_REGISTRY)
+
+
+# ---------------------------------------------------------------------------
+# Built-in command handlers
+# ---------------------------------------------------------------------------
+
+def _handle_ask(rest: str, ctx: CommandContext) -> str | None:
+    """ /ask — triggers the agent loop with `rest` as input. Returns None."""
+    return None
+
+
+def _handle_reset(rest: str, ctx: CommandContext) -> str | None:
+    """ /reset — resets the conversation for this channel."""
+    return "Conversation reset for this channel."
+
+
+def _handle_status(rest: str, ctx: CommandContext) -> str | None:
+    """ /status — renders real per-channel session info."""
+    lines = [
+        f"**Session:** `{ctx.session_id}`",
+        f"**Messages:** {ctx.message_count}",
+    ]
+    return "\n".join(lines)
+
+
+HELP_TEMPLATE = """\
+**Commands:**
+{command_list}"""
+
+
+def _build_help_text() -> str:
+    """Build /help text from the command registry, excluding internal commands."""
+    # /help itself is listed, but /hb is async-only and listed separately
+    entries: list[str] = []
+    for name, cmd in sorted(_COMMAND_REGISTRY.items()):
+        entries.append(f"`/{name}` — {cmd.description}")
+    # /hb is async (subprocess), not in the sync registry
+    entries.append("`/hb` — Probe Harbinger: live slots, run outcomes, done & blocked beads")
+    return HELP_TEMPLATE.format(command_list="\n".join(entries))
+
+
+def _handle_help(rest: str, ctx: CommandContext) -> str | None:
+    """ /help — shows available commands."""
+    return _build_help_text()
+
+
+# ---------------------------------------------------------------------------
+# Register built-in commands
+# ---------------------------------------------------------------------------
+
+register_command(SlashCommand(
+    name="ask",
+    description="Send a message to the agent (default behavior without command)",
+    handler=_handle_ask,
+))
+
+register_command(SlashCommand(
+    name="reset",
+    description="Start a new conversation in this channel",
+    handler=_handle_reset,
+))
+
+register_command(SlashCommand(
+    name="status",
+    description="Show current session info (session ID, message count)",
+    handler=_handle_status,
+))
+
+register_command(SlashCommand(
+    name="help",
+    description="Show this help message",
+    handler=_handle_help,
+))
+
+
+# Known slash commands (sync registry + async commands handled by the interface).
+# parse_slash_command checks this set; handle_command only dispatches registry commands.
+SLASH_COMMANDS: set[str] = set(_COMMAND_REGISTRY.keys()) | {"hb"}
+
+
+# ---------------------------------------------------------------------------
+# Slash command parsing & dispatch
+# ---------------------------------------------------------------------------
 
 def parse_slash_command(content: str) -> tuple[str | None, str]:
     """Parse a slash command from message content.
@@ -111,16 +226,7 @@ def parse_slash_command(content: str) -> tuple[str | None, str]:
     return None, content
 
 
-HELP_TEXT = """\
-**Commands:**
-`/ask <message>` — Send a message to the agent (default behavior without command)
-`/reset` — Start a new conversation in this channel
-`/status` — Show current session info (session ID, message count)
-`/hb` — Probe Harbinger: live slots, run outcomes, done & blocked beads
-`/help` — Show this help message"""
-
-
-def handle_command(command: str, rest: str) -> str | None:
+def handle_command(command: str, rest: str, ctx: CommandContext) -> str | None:
     """Process a slash command and return the response text, or None.
 
     Returns None for commands that don't produce a text response
@@ -129,21 +235,15 @@ def handle_command(command: str, rest: str) -> str | None:
     Args:
         command: The command name (already lowercase).
         rest: The remainder of the message after the command.
+        ctx: Command context with session info.
 
     Returns:
         Response string, or None if the command doesn't produce text.
     """
-    if command == "ask":
-        return None  # Triggers the agent loop with `rest` as input
-    elif command == "reset":
-        return "Conversation reset for this channel."
-    elif command == "status":
-        return "Status command — channel info rendered by interface layer."
-    elif command == "help":
-        return HELP_TEXT
-    # /hb produces no synchronous text — the interface runs it asynchronously
-    # via probe_harbinger_status() because it shells out to a subprocess.
-    return None
+    cmd = _COMMAND_REGISTRY.get(command)
+    if cmd is None:
+        return None
+    return cmd.handler(rest, ctx)
 
 
 # ---------------------------------------------------------------------------

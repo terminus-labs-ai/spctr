@@ -100,6 +100,8 @@ class Runtime:
         for mcp_cfg in config.agent.mcp_servers:
             if mcp_cfg.type == "stdio":
                 client = MCPClient(server_type="stdio", command=mcp_cfg.command, args=mcp_cfg.args, env=mcp_cfg.env)
+            elif mcp_cfg.type in ("streamable-http", "streamable_http"):
+                client = MCPClient(server_type="streamable-http", url=mcp_cfg.url)
             else:
                 client = MCPClient(server_type="http", url=mcp_cfg.url)
             self._mcp_clients.append(client)

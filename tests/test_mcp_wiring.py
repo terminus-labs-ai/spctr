@@ -275,6 +275,32 @@ class TestAgentInitMcpClients:
             url="http://localhost:9000/sse",
         )
 
+    def test_streamable_http_mcp_server_creates_streamable_client(self):
+        """__init__ with a streamable-http mcp_server creates an MCPClient with server_type='streamable-http'."""
+        from sr2_spectre.agent import Agent
+
+        cfg = _make_config(
+            mcp_servers=[
+                McpServerConfig(
+                    name="glyph",
+                    type="streamable-http",
+                    url="http://localhost:8080/mcp",
+                )
+            ]
+        )
+
+        with patch("sr2_spectre.session.SR2") as MockSR2, \
+             patch("sr2_spectre.runtime.MCPClient") as MockMCPClient:
+            MockSR2.return_value = MagicMock()
+            MockMCPClient.return_value = MagicMock()
+
+            agent = Agent(config=cfg)
+
+        MockMCPClient.assert_called_once_with(
+            server_type="streamable-http",
+            url="http://localhost:8080/mcp",
+        )
+
     def test_no_mcp_servers_creates_no_clients(self):
         """Req 8: __init__ with no mcp_servers never constructs an MCPClient."""
         from sr2_spectre.agent import Agent

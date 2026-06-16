@@ -3,22 +3,27 @@
 Covers:
 1.  should_respond() — mention filter logic
 2.  parse_slash_command() — command parsing
-3.  handle_command() — command response generation
-4.  chunk_message() — Discord length limit splitting
-5.  build_tool_embed() — embed payload construction
+3.  handle_command() — command response generation (registry-based)
+4.  CommandContext — session context for command handlers
+5.  SlashCommand registry — registration and discovery
+6.  chunk_message() — Discord length limit splitting
+7.  build_tool_embed() — embed payload construction
 """
 from __future__ import annotations
 
 import pytest
 
 from sr2_spectre.interfaces.discord.handler import (
+    CommandContext,
+    SlashCommand,
     build_tool_embed,
     chunk_message,
+    get_registered_commands,
     handle_command,
     parse_slash_command,
     probe_harbinger_status,
+    register_command,
     should_respond,
-    strip_bot_mention,
 )
 
 
@@ -113,23 +118,105 @@ class TestParseSlashCommand:
 
 
 # ---------------------------------------------------------------------------
+# CommandContext
+# ---------------------------------------------------------------------------
+
+class TestCommandContext:
+    def test_command_context_fields(self) -> None:
+        ctx = CommandContext(channel_id=123, session_id="discord-123", message_count=5)
+        assert ctx.channel_id == 123
+        assert ctx.session_id == "discord-123"
+        assert ctx.message_count == 5
+
+    def test_command_context_is_frozen(self) -> None:
+        ctx = CommandContext(channel_id=123, session_id="discord-123", message_count=5)
+        with pytest.raises(Exception):  # FrozenInstanceError
+            ctx.channel_id = 456  # type: ignore
+
+
+# ---------------------------------------------------------------------------
+# SlashCommand registry
+# ---------------------------------------------------------------------------
+
+class TestSlashCommandRegistry:
+    def test_builtin_commands_registered(self) -> None:
+        """Built-in commands are registered at module import time."""
+        cmds = get_registered_commands()
+        assert "ask" in cmds
+        assert "reset" in cmds
+        assert "status" in cmds
+        assert "help" in cmds
+        # /hb is async-only — not in the sync registry
+        assert "hb" not in cmds
+
+    def test_slash_command_dataclass(self) -> None:
+        cmd = SlashCommand(name="test", description="A test command", handler=lambda r, c: "ok")
+        assert cmd.name == "test"
+        assert cmd.description == "A test command"
+        assert cmd.handler("", CommandContext(0, "s", 0)) == "ok"
+
+    def test_register_command_returns_command(self) -> None:
+        """register_command returns the command for chaining."""
+        result = register_command(SlashCommand(
+            name="echo_test",
+            description="Echo test",
+            handler=lambda r, c: r,
+        ))
+        assert result.name == "echo_test"
+        # Clean up
+        del get_registered_commands()["echo_test"]
+
+    def test_get_registered_commands_returns_snapshot(self) -> None:
+        """Modifying the snapshot doesn't affect the registry."""
+        snapshot = get_registered_commands()
+        snapshot["fake"] = SlashCommand(
+            name="fake", description="fake", handler=lambda r, c: None
+        )
+        assert "fake" not in get_registered_commands()
+
+
+# ---------------------------------------------------------------------------
 # handle_command()
 # ---------------------------------------------------------------------------
+
+def _ctx(message_count: int = 0) -> CommandContext:
+    """Helper to create a default CommandContext."""
+    return CommandContext(
+        channel_id=12345,
+        session_id="discord-12345",
+        message_count=message_count,
+    )
+
 
 class TestHandleCommand:
     def test_ask_returns_none(self) -> None:
         """ /ask returns None (triggers agent loop)."""
-        assert handle_command("ask", "hello") is None
+        assert handle_command("ask", "hello", _ctx()) is None
 
     def test_reset_returns_confirmation(self) -> None:
-        assert handle_command("reset", "") is not None
-        assert "reset" in handle_command("reset", "").lower()
+        response = handle_command("reset", "", _ctx())
+        assert response is not None
+        assert "reset" in response.lower()
 
-    def test_status_returns_info(self) -> None:
-        assert handle_command("status", "") is not None
+    def test_status_returns_session_info(self) -> None:
+        """ /status renders real session info from context."""
+        ctx = CommandContext(channel_id=999, session_id="discord-999", message_count=7)
+        response = handle_command("status", "", ctx)
+        assert response is not None
+        assert "discord-999" in response
+        assert "7" in response
+        assert "Session" in response
+        assert "Messages" in response
+
+    def test_status_with_zero_messages(self) -> None:
+        """ /status works with zero messages."""
+        ctx = CommandContext(channel_id=1, session_id="discord-1", message_count=0)
+        response = handle_command("status", "", ctx)
+        assert response is not None
+        assert "0" in response
 
     def test_help_returns_help_text(self) -> None:
-        response = handle_command("help", "")
+        response = handle_command("help", "", _ctx())
         assert response is not None
         assert "/ask" in response
         assert "/reset" in response
@@ -139,10 +226,10 @@ class TestHandleCommand:
 
     def test_hb_returns_none(self) -> None:
         """/hb produces no sync text — handled async in the interface."""
-        assert handle_command("hb", "") is None
+        assert handle_command("hb", "", _ctx()) is None
 
     def test_unknown_command_returns_none(self) -> None:
-        assert handle_command("unknown", "stuff") is None
+        assert handle_command("unknown", "stuff", _ctx()) is None
 
 
 # ---------------------------------------------------------------------------
@@ -281,34 +368,3 @@ class TestProbeHarbingerStatus:
 
         out = await probe_harbinger_status(runner=fake_runner)
         assert len(out) <= 2000
-
-
-# ---------------------------------------------------------------------------
-# strip_bot_mention()
-# ---------------------------------------------------------------------------
-
-class TestStripBotMention:
-    def test_strips_leading_mention_string(self) -> None:
-        out = strip_bot_mention("<@111> /hb", ["<@111>"], 111)
-        assert out == "/hb"
-
-    def test_strips_nickname_mention_form(self) -> None:
-        out = strip_bot_mention("<@!111> /hb", None, 111)
-        assert out == "/hb"
-
-    def test_no_mention_returns_stripped_content(self) -> None:
-        out = strip_bot_mention("/hb", ["<@111>"], 111)
-        assert out == "/hb"
-
-    def test_mention_only_no_command(self) -> None:
-        out = strip_bot_mention("<@111>", ["<@111>"], 111)
-        assert out == ""
-
-    def test_mention_in_middle_not_stripped(self) -> None:
-        # Only a *leading* bot mention is stripped (it's the command prefix).
-        out = strip_bot_mention("hey <@111> look", ["<@111>"], 111)
-        assert out == "hey <@111> look"
-
-    def test_enables_slash_parse_after_strip(self) -> None:
-        cmd, rest = parse_slash_command(strip_bot_mention("<@111> /hb", ["<@111>"], 111))
-        assert cmd == "hb"

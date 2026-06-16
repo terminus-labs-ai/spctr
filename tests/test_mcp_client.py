@@ -42,6 +42,26 @@ def _make_transport_ctx(read: Any = None, write: Any = None) -> AsyncMock:
     return ctx
 
 
+def _make_streamable_transport_ctx(
+    read: Any = None, write: Any = None, get_session_id: Any = None
+) -> AsyncMock:
+    """Async context manager that yields a 3-tuple (read, write, get_session_id).
+
+    streamablehttp_client yields a third element (a get_session_id callable)
+    that sse_client/stdio_client do not. The client must tolerate it.
+    """
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(
+        return_value=(
+            read or AsyncMock(),
+            write or AsyncMock(),
+            get_session_id or MagicMock(return_value="sid-123"),
+        )
+    )
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    return ctx
+
+
 def _make_session_ctx(mock_session: AsyncMock) -> AsyncMock:
     """Async context manager that yields mock_session from __aenter__."""
     ctx = AsyncMock()
@@ -124,6 +144,44 @@ async def test_http_connect_returns_bridge_per_tool() -> None:
 
     assert len(bridges) == 1
     assert bridges[0].name == "http_tool"
+
+
+# ---------------------------------------------------------------------------
+# Requirement 2b: streamable-http connect — uses streamablehttp_client,
+# tolerates the 3-tuple (read, write, get_session_id) it yields
+# ---------------------------------------------------------------------------
+
+async def test_streamable_http_connect_returns_bridge_per_tool() -> None:
+    tools = [_make_mcp_tool("glyph_search"), _make_mcp_tool("glyph_lookup")]
+    mock_session = _make_mock_session(tools)
+    transport_ctx = _make_streamable_transport_ctx()
+    session_ctx = _make_session_ctx(mock_session)
+
+    with (
+        patch("sr2_spectre.mcp.client.streamablehttp_client", return_value=transport_ctx),
+        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+    ):
+        from sr2_spectre.mcp.client import MCPClient
+
+        client = MCPClient("streamable-http", url="http://localhost:8080/mcp")
+        bridges = await client.connect()
+
+    assert {b.name for b in bridges} == {"glyph_search", "glyph_lookup"}
+    # ClientSession must be built from the first two elements of the 3-tuple
+    read, write = transport_ctx.__aenter__.return_value[:2]
+
+
+async def test_streamable_http_connect_raises_mcp_connection_error_on_transport_failure() -> None:
+    from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
+
+    failing_ctx = AsyncMock()
+    failing_ctx.__aenter__ = AsyncMock(side_effect=ConnectionRefusedError("refused"))
+    failing_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("sr2_spectre.mcp.client.streamablehttp_client", return_value=failing_ctx):
+        client = MCPClient("streamable-http", url="http://dead-host/mcp")
+        with pytest.raises(MCPConnectionError):
+            await client.connect()
 
 
 # ---------------------------------------------------------------------------

@@ -489,6 +489,7 @@ class TestSmokeDiscordInterface:
     def test_discord_handler_slash_commands(self) -> None:
         """Slash command parsing and handling works correctly."""
         from sr2_spectre.interfaces.discord.handler import (
+            CommandContext,
             handle_command,
             parse_slash_command,
         )
@@ -508,7 +509,8 @@ class TestSmokeDiscordInterface:
         assert cmd is None
 
         # /help returns help text
-        response = handle_command("help", "")
+        ctx = CommandContext(channel_id=1, session_id="discord-1", message_count=0)
+        response = handle_command("help", "", ctx)
         assert response is not None
         assert "/ask" in response
 

@@ -68,7 +68,7 @@ class ModelConfig(BaseModel):
 class McpServerConfig(BaseModel):
     """Configuration for a single MCP server connection."""
     name: str
-    type: str                     # "stdio" or "http"
+    type: str                     # "stdio", "http" (SSE), or "streamable-http"
     command: list[str] = Field(default_factory=list)
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
