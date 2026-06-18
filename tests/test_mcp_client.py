@@ -5,6 +5,7 @@ import level — no real MCP server is required.
 """
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -523,3 +524,82 @@ async def test_close_is_idempotent() -> None:
         await client.connect()
         await client.close()
         await client.close()  # second call must not raise
+
+
+# ---------------------------------------------------------------------------
+# Requirement 16: close() suppresses a spurious CancelledError leaked by an
+# MCP transport's internal cancel scope on shutdown, but re-raises a genuine
+# external cancellation (so timeouts / SIGINT still work).
+# ---------------------------------------------------------------------------
+
+async def test_close_suppresses_spurious_cancel_on_session_aexit() -> None:
+    """A CancelledError from session __aexit__ that is NOT a cancellation of
+    this task (the transport's internal scope leaking) must be swallowed —
+    otherwise a successful run exits nonzero."""
+    mock_session = _make_mock_session([_make_mcp_tool()])
+    transport_ctx = _make_transport_ctx()
+
+    session_ctx = AsyncMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    session_ctx.__aexit__ = AsyncMock(side_effect=asyncio.CancelledError())
+
+    with (
+        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+    ):
+        from sr2_spectre.mcp.client import MCPClient
+
+        client = MCPClient("stdio", command=["srv"])
+        await client.connect()
+        await client.close()  # must not raise — this task is not cancelled
+
+    session_ctx.__aexit__.assert_awaited()
+
+
+async def test_close_suppresses_spurious_cancel_on_transport_aexit() -> None:
+    """Same suppression for a CancelledError leaked by transport __aexit__."""
+    mock_session = _make_mock_session([_make_mcp_tool()])
+
+    transport_ctx = AsyncMock()
+    transport_ctx.__aenter__ = AsyncMock(return_value=(AsyncMock(), AsyncMock()))
+    transport_ctx.__aexit__ = AsyncMock(side_effect=asyncio.CancelledError())
+
+    session_ctx = _make_session_ctx(mock_session)
+
+    with (
+        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+    ):
+        from sr2_spectre.mcp.client import MCPClient
+
+        client = MCPClient("stdio", command=["srv"])
+        await client.connect()
+        await client.close()  # must not raise
+
+    transport_ctx.__aexit__.assert_awaited()
+
+
+async def test_close_reraises_genuine_cancellation() -> None:
+    """When THIS task is genuinely being cancelled (task.cancelling() > 0), a
+    CancelledError from __aexit__ MUST propagate so cancellation still works."""
+    mock_session = _make_mock_session([_make_mcp_tool()])
+    transport_ctx = _make_transport_ctx()
+
+    session_ctx = AsyncMock()
+    session_ctx.__aenter__ = AsyncMock(return_value=mock_session)
+    session_ctx.__aexit__ = AsyncMock(side_effect=asyncio.CancelledError())
+
+    fake_task = MagicMock()
+    fake_task.cancelling.return_value = 1  # genuine external cancellation pending
+
+    with (
+        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("sr2_spectre.mcp.client.asyncio.current_task", return_value=fake_task),
+    ):
+        from sr2_spectre.mcp.client import MCPClient
+
+        client = MCPClient("stdio", command=["srv"])
+        await client.connect()
+        with pytest.raises(asyncio.CancelledError):
+            await client.close()

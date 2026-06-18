@@ -1,6 +1,8 @@
 """MCPClient — connects to an MCP server (stdio or http) and returns MCPToolBridges."""
 from __future__ import annotations
 
+import asyncio
+
 from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.client.stdio import StdioServerParameters, stdio_client
@@ -85,6 +87,8 @@ class MCPClient:
                 await self._session_ctx.__aexit__(None, None, None)
             except (RuntimeError, GeneratorExit):
                 pass  # Cancel scope mismatch on shutdown — ignore
+            except asyncio.CancelledError:
+                self._suppress_spurious_cancel()
             self._session_ctx = None
 
         if self._transport_ctx is not None:
@@ -92,4 +96,23 @@ class MCPClient:
                 await self._transport_ctx.__aexit__(None, None, None)
             except (RuntimeError, GeneratorExit):
                 pass  # stdio_client cancel scope crash on shutdown — ignore
+            except asyncio.CancelledError:
+                self._suppress_spurious_cancel()
             self._transport_ctx = None
+
+    @staticmethod
+    def _suppress_spurious_cancel() -> None:
+        """Swallow a CancelledError leaked by an MCP transport's internal anyio
+        cancel scope on shutdown — but re-raise if THIS task is genuinely being
+        cancelled, so real cancellation/timeouts still propagate.
+
+        The SSE / streamable-http transports wrap a background reader/writer in
+        an anyio task group. Tearing that group down inside ``__aexit__`` cancels
+        its scope; an in-flight HTTP request gets a CancelledError that anyio can
+        leak out of ``__aexit__`` even when nobody cancelled us. Left unhandled
+        it turns a successful run into a nonzero exit. ``task.cancelling()`` (>0)
+        distinguishes a genuine external cancel from this spurious internal one.
+        """
+        task = asyncio.current_task()
+        if task is not None and task.cancelling() > 0:
+            raise  # genuine external cancellation — must propagate
