@@ -120,6 +120,15 @@ class SpectreConfig(BaseModel):
     models: dict[str, ModelConfig]
     pipeline: PipelineConfig
     discord: DiscordConfig | None = None
+    provenance_store_path: str | None = Field(
+        default=None,
+        description=(
+            "Path to the SQLite provenance database for pipeline context "
+            "tracking (Entry/EntryOrigin lineage). Defaults to "
+            "~/.sr2-spectre/provenance.db. Set to empty string to disable "
+            "persistent provenance (fall back to in-memory)."
+        ),
+    )
 
 
 class CircularExtendsError(Exception):

@@ -12,6 +12,7 @@ import logging
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 if TYPE_CHECKING:
+    from sr2.pipeline.provenance import ProvenanceStore
     from sr2.pipeline.tracing import Tracer
 
 from sr2.config.models import ToolLoopLimitError
@@ -55,6 +56,7 @@ class Session:
         registry: ToolRegistry,
         tracer: "Tracer | None" = None,
         active_frame_provider: Callable[[str], str | None] | None = None,
+        provenance_store: "ProvenanceStore | None" = None,
     ) -> None:
         self.frame_id = frame_id
         self.config = config
@@ -77,7 +79,9 @@ class Session:
                 "source": ctx.source or "",
             }
 
-        # SR2 owns context compilation, tool definition injection, and LLM calls
+        # SR2 owns context compilation, tool definition injection, and LLM calls.
+        # When a shared provenance_store is provided (from Runtime), all sessions
+        # write pipeline provenance to the same persistent store.
         self.sr2 = SR2(
             pipeline_config=config.pipeline,
             llm={"default": llm},
@@ -88,6 +92,7 @@ class Session:
             tool_executor=self._execute_tool,
             active_frame_provider=active_frame_provider,
             run_context_provider=_run_context_provider,
+            provenance_store=provenance_store,
         )
 
     @property

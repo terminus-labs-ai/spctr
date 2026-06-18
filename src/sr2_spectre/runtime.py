@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from sr2.pipeline.provenance import ProvenanceStore
     from sr2.pipeline.tracing import Tracer
 
 from sr2.integrations.litellm import LiteLLMCallable
@@ -106,6 +108,11 @@ class Runtime:
                 client = MCPClient(server_type="http", url=mcp_cfg.url)
             self._mcp_clients.append(client)
 
+        # Persistent provenance store — shared across all sessions.
+        # Constructed here (path resolved), connected in initialize(), closed in aclose().
+        self._provenance_store: "ProvenanceStore | None" = None
+        self._provenance_store_path = self._resolve_provenance_path(config)
+
         # Build LLM callable — forward per-agent sampling params
         model_cfg = config.models["default"]
         llm_kwargs: dict = {
@@ -144,7 +151,24 @@ class Runtime:
             self._check_step_compaction_config(config)
 
     async def initialize(self) -> None:
-        """Connect all MCP clients and register their tool bridges into the registry."""
+        """Connect all MCP clients and register their tool bridges into the registry.
+
+        Also connects the persistent provenance store if configured.
+        """
+        # Connect persistent provenance store (before MCP so tool bridges
+        # can reference it if needed).
+        if self._provenance_store_path is not None:
+            from sr2.pipeline.stores.sqlite import SQLiteProvenanceStore
+
+            self._provenance_store = SQLiteProvenanceStore(
+                db_path=self._provenance_store_path
+            )
+            await self._provenance_store.connect()
+            logger.info(
+                "Connected persistent provenance store: %s",
+                self._provenance_store_path,
+            )
+
         for client in self._mcp_clients:
             try:
                 bridges = await client.connect()
@@ -171,6 +195,9 @@ class Runtime:
         When a PlanResolver is configured, the active_frame_provider is wired
         through so SR2 stamps block.meta["frame"] with the current task's frame
         id, enabling step-compaction to burn completed step context.
+
+        The shared provenance store (if initialized) is threaded through so
+        all sessions write pipeline provenance to the same persistent store.
         """
         return Session(
             frame_id=frame_id,
@@ -179,10 +206,17 @@ class Runtime:
             registry=self.registry,
             tracer=tracer,
             active_frame_provider=self._active_frame_provider,
+            provenance_store=self._provenance_store,
         )
 
     async def aclose(self) -> None:
-        """Close all MCP client transports. Safe to call even if initialize() was never called."""
+        """Close all MCP client transports and the provenance store.
+
+        Safe to call even if initialize() was never called.
+        """
+        if self._provenance_store is not None:
+            await self._provenance_store.close()
+            self._provenance_store = None
         for client in self._mcp_clients:
             await client.close()
 
@@ -296,6 +330,24 @@ class Runtime:
             "Add a step_compaction transformer to a pipeline layer (see "
             "sr2_spectre.planning.transformer:StepCompactionTransformer)."
         )
+
+    @staticmethod
+    def _resolve_provenance_path(config: SpectreConfig) -> str | None:
+        """Resolve the provenance store path from config.
+
+        Returns:
+            Absolute path string if persistent provenance is enabled,
+            None if disabled (empty string in config) or not set.
+        """
+        raw = config.provenance_store_path
+        if raw is None:
+            # Default: ~/.sr2-spectre/provenance.db
+            return str(Path.home() / ".sr2-spectre" / "provenance.db")
+        if raw == "":
+            # Explicitly disabled
+            return None
+        # User-provided path — resolve ~ and variables
+        return str(Path(raw).expanduser().resolve())
 
     def _bootstrap_skills(self, config: SpectreConfig) -> None:
         """Bootstrap the SkillRegistry with DEFAULT_SKILLS + config-declared skills.
