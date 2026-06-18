@@ -226,6 +226,9 @@ def _load_interface(interface_name: str, **kwargs: Any) -> Any:
 def _configure_logging(level: str, log_file: str) -> None:
     os.environ.setdefault("LITELLM_LOG", "WARNING")
 
+    import litellm
+    litellm.suppress_debug_info = True
+
     numeric = getattr(logging, level)
     file_path = Path(log_file)
     file_path.parent.mkdir(parents=True, exist_ok=True)
