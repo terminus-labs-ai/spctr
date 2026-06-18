@@ -1,14 +1,15 @@
-"""PR review workflow — merge gate, claim routing, reject path, and approve path (FR4-FR7).
+"""PR review workflow — merge gate, claim routing, reject path, approve path, and base freshness.
 
 Implements the reviewer-side workflow for the agent-driven PR merge flow:
 - FR4: Claim routing enforcement (an agent must never review its own PR).
 - FR5: Three-part merge gate (test suite → solid-review → judgment).
 - FR6: Approve path — apply declared+verified LIVE-CONFIG, merge PR, close beads.
 - FR7: Reject path — findings back to author, capped 3-round loop, bd human escalation.
+- Base freshness: Author rebases before PR; reviewer checks branch is not behind main.
 
 This module is pure logic — no bash, no external process spawning.
-The cron-dispatched agent invokes these checks as part of its Reviewer
-workflow, guided by squadron-rules.md.
+The cron-dispatched agent invokes these checks as part of its Author and
+Reviewer workflows, guided by squadron-rules.md.
 """
 
 from __future__ import annotations
@@ -449,3 +450,115 @@ def handle_reject(
         reject_body=reject_body,
         escalation_message=escalation_msg,
     )
+
+
+# ---------------------------------------------------------------------------
+# Base freshness — prevent stale PRs from reaching review
+# ---------------------------------------------------------------------------
+
+class RebaseStrategy(enum.Enum):
+    """How the author should handle a stale base before opening a PR."""
+
+    REBASE = "rebase"
+    """Rebase feature branch onto main. Default for clean linear history."""
+    FAIL = "fail"
+    """Refuse to open the PR if the base is not fast-forwardable."""
+
+
+class FreshnessVerdict(enum.Enum):
+    """Result of a base-freshness check on the PR branch."""
+
+    FRESH = "FRESH"
+    """Branch is up to date with main (or ahead). Safe to review."""
+    STALE = "STALE"
+    """Branch is behind main. Must rebase before review."""
+
+
+@dataclass(frozen=True)
+class FreshnessResult:
+    """Outcome of a base-freshness check.
+
+    Attributes:
+        verdict: FRESH (safe to proceed) or STALE (must rebase).
+        behind_by: Number of commits the branch is behind main.
+                   0 when FRESH.
+        ahead_by: Number of commits the branch is ahead of main.
+                  Should be >= 1 for a valid feature branch.
+        suggestion: Human-readable instruction for the agent.
+    """
+
+    verdict: FreshnessVerdict
+    behind_by: int
+    ahead_by: int
+    suggestion: str
+
+
+def _staleness_message(behind_by: int) -> str:
+    """Build the shared staleness message used by both check paths."""
+    return (
+        f"Branch is {behind_by} commit(s) behind main. "
+        f"Rebase onto main: git fetch origin && git rebase origin/main"
+    )
+
+
+def check_freshness(behind_by: int, ahead_by: int) -> FreshnessResult:
+    """Determine whether a PR branch is fresh enough to review.
+
+    A branch is FRESH when it is not behind main (behind_by == 0).
+    A branch is STALE when it is behind main — meaning commits merged
+    to main after the branch was created are missing from the branch,
+    and the PR diff would show false deletions of merged code.
+
+    Args:
+        behind_by: How many commits the branch is behind main.
+            Derived from ``git rev-list --count HEAD..origin/main``
+            (commits reachable from main but not from the current branch).
+            Pass as a positive count of missing commits.
+        ahead_by: How many commits the branch is ahead of main.
+            Derived from ``git rev-list --count origin/main..HEAD``
+            (commits on the branch not yet on main).
+
+    Returns:
+        FreshnessResult with verdict and agent-facing suggestion.
+    """
+    if behind_by <= 0:
+        return FreshnessResult(
+            verdict=FreshnessVerdict.FRESH,
+            behind_by=0,
+            ahead_by=ahead_by,
+            suggestion="Branch is up to date with main. Proceed with review.",
+        )
+
+    return FreshnessResult(
+        verdict=FreshnessVerdict.STALE,
+        behind_by=behind_by,
+        ahead_by=ahead_by,
+        suggestion=_staleness_message(behind_by),
+    )
+
+
+def author_rebase_check(
+    behind_by: int,
+    strategy: RebaseStrategy = RebaseStrategy.REBASE,
+) -> str | None:
+    """Pre-PR check for the author: should the branch be rebased?
+
+    Called by the author workflow before pushing/opening a PR.
+    Returns a suggestion string if rebasing is needed, or None if the
+    branch is already fresh.
+
+    Args:
+        behind_by: Number of commits the branch is behind main.
+            Derived from ``git rev-list --count HEAD..origin/main``.
+        strategy: How to handle staleness (rebase or fail).
+
+    Returns:
+        Instruction string if rebasing is needed, None if branch is fresh.
+    """
+    if behind_by <= 0:
+        return None
+
+    base = _staleness_message(behind_by)
+    if strategy == RebaseStrategy.REBASE:
+        return f"{base} Rebasing onto origin/main before pushing PR."
+    return f"{base} Refusing to open PR — rebase manually or fix the base."

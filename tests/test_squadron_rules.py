@@ -112,3 +112,49 @@ def test_three_part_merge_gate_mentioned():
     # Check for the three parts: tests, solid-review, judgment
     assert "test" in reviewer_text.lower(), "Should mention test suite"
     assert "solid-review" in reviewer_text.lower(), "Should mention solid-review"
+
+
+def test_author_workflow_includes_rebase_step():
+    """Author workflow must include a rebase-before-push step to prevent stale PRs."""
+    content = _read_squadron_rules()
+    author_text = _extract_section(content, "## Author workflow (PR)")
+    assert "rebase" in author_text.lower(), (
+        "Author workflow must include rebase onto main before pushing"
+    )
+    assert "origin/main" in author_text, (
+        "Author rebase step must target origin/main"
+    )
+
+
+def test_author_rebase_blocks_on_conflict():
+    """Author workflow must block the bead if rebase conflicts."""
+    content = _read_squadron_rules()
+    author_text = _extract_section(content, "## Author workflow (PR)")
+    assert "block" in author_text.lower(), (
+        "Author workflow must block bead on rebase conflict"
+    )
+
+
+def test_reviewer_workflow_includes_base_freshness():
+    """Reviewer workflow must check base freshness before running tests."""
+    content = _read_squadron_rules()
+    reviewer_text = _extract_section(content, "## Reviewer workflow (merge gate)")
+    assert "freshness" in reviewer_text.lower() or "stale" in reviewer_text.lower(), (
+        "Reviewer workflow must include base freshness check"
+    )
+    assert "behind" in reviewer_text.lower(), (
+        "Reviewer freshness check must detect branches behind main"
+    )
+
+
+def test_reviewer_freshness_rejects_stale_branch():
+    """Reviewer must reject a PR with a stale base."""
+    content = _read_squadron_rules()
+    reviewer_text = _extract_section(content, "## Reviewer workflow (merge gate)")
+    assert "REJECT" in reviewer_text or "reject" in reviewer_text.lower(), (
+        "Reviewer must reject stale branches"
+    )
+    # Should instruct author to rebase
+    assert "rebase" in reviewer_text.lower(), (
+        "Reviewer rejection of stale base must instruct author to rebase"
+    )
