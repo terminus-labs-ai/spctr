@@ -521,6 +521,75 @@ class TestRuntimeAClose:
 
         await runtime.aclose()  # must not raise
 
+    @pytest.mark.asyncio
+    async def test_aclose_continues_when_one_mcp_client_raises(self):
+        """One MCP client failing to close must not strand the others.
+
+        Teardown is best-effort: a raise from client_a.close() must be
+        swallowed and client_b.close() must still run. aclose() must not
+        propagate the exception (regression: spc-63 nonzero_exit at shutdown).
+        """
+        from sr2_spectre.runtime import Runtime
+        from sr2_spectre.config import McpServerConfig
+
+        cfg = _make_config(mcp_servers=[
+            McpServerConfig(name="a", type="stdio", command=["server_a"]),
+            McpServerConfig(name="b", type="stdio", command=["server_b"]),
+        ])
+
+        mock_client_a = AsyncMock()
+        mock_client_a.close.side_effect = RuntimeError("transport already closed")
+        mock_client_b = AsyncMock()
+
+        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+            with patch(
+                "sr2_spectre.runtime.MCPClient",
+                side_effect=[mock_client_a, mock_client_b],
+            ):
+                runtime = Runtime(config=cfg)
+
+        await runtime.aclose()  # must not raise
+
+        mock_client_a.close.assert_awaited_once()
+        mock_client_b.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_aclose_swallows_cancelled_error_during_mcp_close(self):
+        """A CancelledError from an MCP client close must not escape aclose().
+
+        This is the exact spc-63 failure: httpcore/anyio raised
+        asyncio.CancelledError while tearing down an HTTP MCP client during a
+        clean shutdown, which propagated through aclose() -> asyncio.run() and
+        gave the process exit code 1 even though the task succeeded.
+        CancelledError is a BaseException, so a bare `except Exception` would
+        NOT catch it — this test guards that.
+        """
+        import asyncio
+
+        from sr2_spectre.runtime import Runtime
+        from sr2_spectre.config import McpServerConfig
+
+        cfg = _make_config(mcp_servers=[
+            McpServerConfig(name="a", type="stdio", command=["server_a"]),
+            McpServerConfig(name="b", type="stdio", command=["server_b"]),
+        ])
+
+        mock_client_a = AsyncMock()
+        mock_client_a.close.side_effect = asyncio.CancelledError()
+        mock_client_b = AsyncMock()
+
+        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+            with patch(
+                "sr2_spectre.runtime.MCPClient",
+                side_effect=[mock_client_a, mock_client_b],
+            ):
+                runtime = Runtime(config=cfg)
+
+        await runtime.aclose()  # must not raise CancelledError
+
+        mock_client_a.close.assert_awaited_once()
+        mock_client_b.close.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # I. Session isolation — different sessions have independent history

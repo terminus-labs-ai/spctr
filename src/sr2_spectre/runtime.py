@@ -6,6 +6,7 @@ One Runtime instance serves N per-frame Sessions, each with its own SR2.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -241,8 +242,19 @@ class Runtime:
         close = getattr(self._memory_store, "close", None)
         if callable(close):
             close()
+        # Best-effort teardown: a single MCP client failing to close must not
+        # strand the others or escape this coroutine. CancelledError (a
+        # BaseException, NOT caught by `except Exception`) is caught explicitly
+        # because httpcore/anyio can raise it while tearing down an HTTP
+        # transport during an otherwise-clean shutdown — that race gave the
+        # process exit code 1 even after the task succeeded (spc-63).
         for client in self._mcp_clients:
-            await client.close()
+            try:
+                await client.close()
+            except (Exception, asyncio.CancelledError) as exc:
+                logger.warning(
+                    "MCP client close failed during shutdown (ignored): %s", exc
+                )
 
     # ------------------------------------------------------------------
     # Auto-injection helpers
