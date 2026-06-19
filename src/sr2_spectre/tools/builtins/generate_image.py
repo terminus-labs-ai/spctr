@@ -8,6 +8,12 @@ presets, and character consistency tokens.
 The **negative prompt** is tool-owned per checkpoint — the agent does not
 set it. A rare override remains available internally.
 
+**Content cap enforcement (FR9):** The tool accepts a ``max_content`` cap
+(sfw|nsfw) from character config. When the agent requests a scenario whose
+content level exceeds the cap, the tool refuses — generating nothing and
+returning a refusal string. Hard floor, independent of the model's scenario
+choice.
+
 Supports two modes:
 - **text2img** — intent-only generation (default, simplest)
 - **photomaker** — character-consistent generation using a reference face
@@ -20,11 +26,32 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from sr2_spectre.tools.builtins.comfyui_client import ComfyUIClient, ComfyUIError
 
+if TYPE_CHECKING:
+    from sr2_spectre.tools.image_scenarios import ImageScenarioRegistry
+
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Content level ranking — higher number = more explicit
+# ---------------------------------------------------------------------------
+
+_CONTENT_LEVELS: dict[str, int] = {
+    "sfw": 0,
+    "nsfw": 1,
+}
+
+
+def _content_level_rank(level: str) -> int:
+    """Return the numeric rank of a content level.
+
+    Higher rank means more explicit content. Unknown levels default to 0
+    (most restrictive) so they are never accidentally allowed through.
+    """
+    return _CONTENT_LEVELS.get(level.lower(), 0)
 
 
 class GenerateImageTool:
@@ -40,6 +67,8 @@ class GenerateImageTool:
         reference_image: str      — path to character face reference (for photomaker mode)
         style_prompt: str         — appended to every prompt for consistency
         negative_prompt: str      — tool-owned negative per checkpoint (rare override)
+        max_content: str          — content cap ("sfw" or "nsfw"); default "nsfw"
+        scenario_registry: ImageScenarioRegistry — optional; enables content cap enforcement
         width: int                — default 1024
         height: int               — default 1024
         steps: int                — default 28
@@ -115,6 +144,8 @@ class GenerateImageTool:
         reference_image: Optional[str] = None,
         style_prompt: str = "",
         negative_prompt: Optional[str] = None,
+        max_content: str = "nsfw",
+        scenario_registry: Optional[Any] = None,
         width: int = 1024,
         height: int = 1024,
         steps: int = 28,
@@ -122,6 +153,13 @@ class GenerateImageTool:
         seed: int = 0,
         output_dir: str = "/tmp/spectre_images",
     ) -> None:
+        # Validate max_content
+        if max_content.lower() not in _CONTENT_LEVELS:
+            valid = ", ".join(sorted(_CONTENT_LEVELS.keys()))
+            raise ValueError(
+                f"Invalid max_content '{max_content}'. Must be one of: {valid}"
+            )
+
         self.client = ComfyUIClient(
             base_url=comfyui_url,
             max_poll_time=600.0,
@@ -130,7 +168,9 @@ class GenerateImageTool:
         self.checkpoint = checkpoint
         self.reference_image = reference_image
         self.style_prompt = style_prompt
-        self.negative_prompt = negative_prompt  # tool-owned; None → DEFAULT_NEGATIVE
+        self.negative_prompt = negative_prompt  # tool-owned; None -> DEFAULT_NEGATIVE
+        self.max_content = max_content.lower()
+        self.scenario_registry = scenario_registry
         self.width = width
         self.height = height
         self.steps = steps
@@ -138,6 +178,37 @@ class GenerateImageTool:
         self.seed = seed  # 0 = random each time
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+
+    # -- content cap enforcement --
+
+    def _check_content_cap(self, scenario_name: str) -> str | None:
+        """Check if a scenario's content level exceeds the character's cap.
+
+        Returns a refusal string if the scenario is blocked, or None if allowed.
+
+        Enforcement requires a scenario_registry. Without one, the check is
+        skipped (no way to look up the scenario's content level).
+        """
+        if self.scenario_registry is None:
+            return None
+
+        try:
+            resolved = self.scenario_registry.get(scenario_name)
+        except KeyError:
+            # Scenario not in registry — can't enforce, proceed
+            return None
+
+        scenario_level = _content_level_rank(resolved.content.level)
+        cap_level = _content_level_rank(self.max_content)
+
+        if scenario_level > cap_level:
+            return (
+                f"Image generation refused: scenario '{scenario_name}' has "
+                f"content level '{resolved.content.level}' which exceeds "
+                f"the character's max_content cap of '{self.max_content}'."
+            )
+
+        return None
 
     # -- workflow builders --
 
@@ -244,6 +315,13 @@ class GenerateImageTool:
 
         Returns a string with the file path on success, or an error message.
         """
+        # Content cap enforcement — hard floor before any generation
+        if scenario:
+            refusal = self._check_content_cap(scenario)
+            if refusal:
+                logger.info("Content cap refusal: %s", refusal)
+                return refusal
+
         try:
             # Check ComfyUI is alive
             if not await self.client.is_available():
