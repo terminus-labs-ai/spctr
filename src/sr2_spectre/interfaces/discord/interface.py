@@ -16,11 +16,13 @@ Data flow:
 4. For regular messages: Agent.stream_message() with channel-specific history
 5. Response streamed via message edits (configurable)
 6. Tool execution shown as embeds (configurable)
+7. Local image paths in responses are uploaded and replaced with Discord URLs
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 from sr2_spectre.core import RunContext, RunMode
@@ -345,6 +347,11 @@ class DiscordInterface:
         # finalized message with the "..." version (race condition).
         self._cancel_pending_stream_edit()
 
+        # Detect local image paths in the final response and upload them
+        # to Discord before sending the text.
+        if self._adapter:
+            final_text = await self._upload_images_in_text(final_text, channel_id)
+
         # Send final message(s) — chunked if too long
         if thinking_id is not None and self._adapter:
             chunks = chunk_message(final_text, self.config.max_message_length)
@@ -512,6 +519,73 @@ class DiscordInterface:
         self._pending_stream_edit = asyncio.ensure_future(
             self._adapter.edit_message(channel_id, thinking_id, content)
         )
+
+    async def _upload_images_in_text(
+        self, text: str, channel_id: int
+    ) -> str:
+        """Detect local image paths in response text and upload to Discord.
+
+        Handles two patterns:
+        1. Markdown images: ![alt](/path/to/image.png)
+        2. Plain text paths: "sitting at /tmp/spectre_images/spectre.png"
+
+        Uploads each image via send_image() and replaces the reference
+        with "[📎 image attached]" so the text remains clean.
+
+        Args:
+            text: The final response text.
+            channel_id: Discord channel ID.
+
+        Returns:
+            Text with image references replaced by attachment markers.
+        """
+        if self._adapter is None:
+            return text
+
+        # Pattern 1: Markdown images ![alt](/path)
+        md_pattern = re.compile(r"!\[([^\]]*)\]\((/[^\)]+)\)")
+        for m in list(md_pattern.finditer(text)):
+            img_path = m.group(2)
+            if await self._try_upload(img_path, channel_id):
+                text = text.replace(m.group(0), "📎 [image attached]")
+
+        # Pattern 2: Plain text paths (common image extensions)
+        plain_pattern = re.compile(
+            r"(/(?:\w+/)*\.(?:png|jpg|jpeg|gif|webp|bmp))",
+            re.IGNORECASE,
+        )
+        for m in list(plain_pattern.finditer(text)):
+            img_path = m.group(1)
+            if await self._try_upload(img_path, channel_id):
+                text = text.replace(m.group(0), "📎 [image attached]")
+
+        return text
+
+    async def _try_upload(self, image_path: str, channel_id: int) -> bool:
+        """Try to upload a single image to Discord.
+
+        Args:
+            image_path: Absolute path to the image file.
+            channel_id: Discord channel ID.
+
+        Returns:
+            True if the upload succeeded, False otherwise.
+        """
+        if self._adapter is None:
+            return False
+        try:
+            from pathlib import Path
+
+            path = Path(image_path)
+            if not path.exists():
+                logger.warning("Image path does not exist: %s", image_path)
+                return False
+            await self._adapter.send_image(channel_id, path)
+            logger.info("Uploaded image to Discord: %s", image_path)
+            return True
+        except Exception:
+            logger.exception("Failed to upload image: %s", image_path)
+            return False
 
     def _cancel_pending_stream_edit(self) -> None:
         """Cancel any pending streaming edit future to prevent it from
