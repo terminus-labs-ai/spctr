@@ -1,0 +1,75 @@
+# Image Scenarios Configuration
+# Fragments are reusable building blocks; scenarios compose them by reference.
+#
+# Adding a new scenario: define any new fragments needed, then add a scenario
+# entry referencing them. No Python changes required.
+
+models:
+  dreamshaper:
+    file: "SDXL/dreamshaperXL_alpha2Xl10.safetensors"
+    dialect: natural
+    translate: false
+    quality: "masterpiece, best quality, detailed"
+    negative: "low quality, blurry, deformed, bad anatomy, watermark, text"
+    modalities: [txt2img]
+  pony:
+    file: "Pony/ponyDiffusionV6XL.safetensors"
+    dialect: booru
+    translate: true
+    quality: "score_9, score_8_up, source_anime"
+    negative: "score_4, score_5, worst quality, blurry"
+    modalities: [txt2img]
+
+frames:
+  portrait:
+    tags: "close-up, face focus, looking at camera"
+    size: [832, 1216]
+  full_body:
+    tags: "full body, standing, full figure"
+    size: [832, 1216]
+  scene:
+    tags: "wide shot, environment, cinematic"
+    size: [1216, 832]
+
+contents:
+  sfw:
+    tags: "sfw"
+    level: sfw
+  nsfw:
+    tags: "nsfw"
+    level: nsfw
+
+loras:
+  vexa_face:
+    file: "vexa_lora.safetensors"
+    strength: 0.8
+    trigger: "vexatoken"
+
+modalities:
+  txt2img:
+    template: "txt2img.json"
+    inputs: []
+    output: image
+
+scenarios:
+  selfie:
+    modality: txt2img
+    model: dreamshaper
+    frame: portrait
+    content: sfw
+    loras: [vexa_face]
+    extra: "selfie angle, casual, natural lighting"
+  boudoir:
+    modality: txt2img
+    model: pony
+    frame: full_body
+    content: nsfw
+    loras: [vexa_face]
+    extra: "dramatic lighting"
+    translate_hint: "emphasize pose, outfit, setting tags"
+  rooftop_scene:
+    modality: txt2img
+    model: dreamshaper
+    frame: scene
+    content: sfw
+    extra: "rainy night, neon signs, cyberpunk aesthetic"
