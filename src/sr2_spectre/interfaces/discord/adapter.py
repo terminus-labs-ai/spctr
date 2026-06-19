@@ -299,6 +299,45 @@ class DiscordBotAdapter:
             )
             return None
 
+    async def send_image(
+        self,
+        channel_id: int,
+        image_path: str,
+        caption: str = "",
+    ) -> Any:
+        """Send an image file to a Discord channel.
+
+        Args:
+            channel_id: Discord channel ID.
+            image_path: Absolute path to the image file.
+            caption: Optional text to send with the image.
+
+        Returns:
+            The discord.Message object, or None on failure.
+        """
+        if self._bot is None:
+            logger.error("Bot not initialized — cannot send image")
+            return None
+
+        channel = self._bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self._bot.fetch_channel(channel_id)
+            except Exception as exc:
+                logger.error("Could not fetch channel %d: %s", channel_id, exc)
+                return None
+
+        try:
+            discord = _import_discord()
+            file = discord.File(image_path)
+            message = await channel.send(content=caption, file=file)
+            return message
+        except Exception as exc:
+            logger.error(
+                "Failed to send image to channel %d: %s", channel_id, exc
+            )
+            return None
+
     def is_thread_channel(self, channel: Any) -> bool:
         """Check if a discord.py channel object is a Thread.
 

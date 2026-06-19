@@ -1,6 +1,7 @@
 """Tests for the GenerateImageTool."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -181,3 +182,38 @@ def test_constructor_custom():
     assert tool.width == 768
     assert tool.steps == 20
     assert tool.cfg == 5.0
+
+
+# -- Live smoke test (requires ComfyUI running) --
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not os.environ.get("COMFYUI_URL"),
+    reason="Set COMFYUI_URL to run live smoke test (e.g. http://192.168.50.233:8188)"
+)
+async def test_generate_image_live_smoke():
+    """End-to-end test: generate an image via live ComfyUI.
+
+    Requires ComfyUI running and COMFYUI_URL env var set.
+    """
+    import os
+    tool = GenerateImageTool(
+        comfyui_url=os.environ["COMFYUI_URL"],
+        checkpoint="SDXL\\dreamshaperXL_alpha2Xl10.safetensors",
+        style_prompt="",
+        width=512,
+        height=512,
+        steps=10,
+        cfg=7.0,
+    )
+    result = await tool(prompt="a red sphere, simple 3d render, clean")
+    assert isinstance(result, str)
+    assert "Error" not in result and "error" not in result
+    assert "png" in result.lower()
+    # Verify the output file actually exists
+    import re
+    path_match = re.search(r"/.*\.png", result)
+    assert path_match, f"No PNG path in result: {result}"
+    img_path = Path(path_match.group(0))
+    assert img_path.exists(), f"Output image not found: {img_path}"
+    assert img_path.stat().st_size > 1000, f"Image too small: {img_path.stat().st_size} bytes"
