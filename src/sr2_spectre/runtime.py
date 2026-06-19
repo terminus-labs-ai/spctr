@@ -56,7 +56,8 @@ class Runtime:
     - LiteLLMCallable (one LLM path)
     - ToolRegistry (tool definitions; stateless executors)
     - MCPClient instances (connected once)
-    - Shared MemoryStore and ProvenanceStore (future — FR6)
+    - Shared in-memory MemoryStore (backs memory resolver/transformer; spc-49)
+    - Shared persistent ProvenanceStore (spc-50)
 
     Creates per-frame Session instances via new_session().
     """
@@ -112,6 +113,15 @@ class Runtime:
         # Constructed here (path resolved), connected in initialize(), closed in aclose().
         self._provenance_store: "ProvenanceStore | None" = None
         self._provenance_store_path = self._resolve_provenance_path(config)
+
+        # Shared in-memory memory store — one per Runtime, threaded into every
+        # Session so memory accrued in one frame is visible to the resolver in
+        # later turns of the same process (spc-49). Synchronous and dict-backed:
+        # constructed eagerly, no connect()/close() lifecycle. Persistence across
+        # restart is a follow-on (obsidian-cor); this store is lost on exit.
+        from sr2.memory import InMemoryMemoryStore
+
+        self._memory_store = InMemoryMemoryStore()
 
         # Build LLM callable — forward per-agent sampling params
         model_cfg = config.models["default"]
@@ -198,6 +208,8 @@ class Runtime:
 
         The shared provenance store (if initialized) is threaded through so
         all sessions write pipeline provenance to the same persistent store.
+        The shared in-memory memory store is threaded through so the memory
+        resolver/transformer read and write the same store across frames.
         """
         return Session(
             frame_id=frame_id,
@@ -207,6 +219,7 @@ class Runtime:
             tracer=tracer,
             active_frame_provider=self._active_frame_provider,
             provenance_store=self._provenance_store,
+            memory_store=self._memory_store,
         )
 
     async def aclose(self) -> None:

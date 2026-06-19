@@ -12,6 +12,7 @@ import logging
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 if TYPE_CHECKING:
+    from sr2.memory import MemoryStore
     from sr2.pipeline.provenance import ProvenanceStore
     from sr2.pipeline.tracing import Tracer
 
@@ -57,6 +58,7 @@ class Session:
         tracer: "Tracer | None" = None,
         active_frame_provider: Callable[[str], str | None] | None = None,
         provenance_store: "ProvenanceStore | None" = None,
+        memory_store: "MemoryStore | None" = None,
     ) -> None:
         self.frame_id = frame_id
         self.config = config
@@ -81,7 +83,9 @@ class Session:
 
         # SR2 owns context compilation, tool definition injection, and LLM calls.
         # When a shared provenance_store is provided (from Runtime), all sessions
-        # write pipeline provenance to the same persistent store.
+        # write pipeline provenance to the same persistent store. The shared
+        # memory_store (when provided) backs the memory resolver/transformer so
+        # agents accrue cross-session memory within the process.
         self.sr2 = SR2(
             pipeline_config=config.pipeline,
             llm={"default": llm},
@@ -93,6 +97,7 @@ class Session:
             active_frame_provider=active_frame_provider,
             run_context_provider=_run_context_provider,
             provenance_store=provenance_store,
+            memory_store=memory_store,
         )
 
     @property
