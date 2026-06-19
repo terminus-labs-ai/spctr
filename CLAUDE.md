@@ -67,4 +67,17 @@ _Add a brief overview of your project architecture_
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+### Memory store backend (obsidian-cor)
+
+The Runtime selects the memory store backend at construction via
+`Runtime._resolve_memory_dsn(config)`:
+
+- `config.memory_store_dsn` is authoritative when set. A non-empty DSN selects
+  `PostgresMemoryStore` (persistent, shared across processes). `""` explicitly
+  disables persistence → in-memory, even if the env var is set.
+- When `config.memory_store_dsn` is `None`, the `SPECTRE_MEMORY_DSN` env var is
+  used if non-empty; otherwise the dict-backed `InMemoryMemoryStore`.
+
+The selected store is shared across all sessions and closed in `Runtime.aclose()`
+(Postgres `close()` is synchronous; in-memory has none). Persistent store lives
+in `sr2.memory.pg_store`. Smoke runbook: `docs/smoke/obsidian-cor.md`.

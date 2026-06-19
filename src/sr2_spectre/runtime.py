@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from sr2.pipeline.tracing import Tracer
 
 from sr2.integrations.litellm import LiteLLMCallable
+from sr2.memory import InMemoryMemoryStore, PostgresMemoryStore
 from sr2.pipeline.token_counting import CharacterTokenCounter
 from sr2_spectre.config import SpectreConfig
 from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
@@ -114,14 +115,18 @@ class Runtime:
         self._provenance_store: "ProvenanceStore | None" = None
         self._provenance_store_path = self._resolve_provenance_path(config)
 
-        # Shared in-memory memory store — one per Runtime, threaded into every
-        # Session so memory accrued in one frame is visible to the resolver in
-        # later turns of the same process (spc-49). Synchronous and dict-backed:
-        # constructed eagerly, no connect()/close() lifecycle. Persistence across
-        # restart is a follow-on (obsidian-cor); this store is lost on exit.
-        from sr2.memory import InMemoryMemoryStore
-
-        self._memory_store = InMemoryMemoryStore()
+        # Shared memory store — one per Runtime, threaded into every Session so
+        # memory accrued in one frame is visible to the resolver in later turns.
+        # Backend is config/env-selectable (obsidian-cor): a DSN selects the
+        # persistent Postgres store (survives restart, shared across processes);
+        # absent/disabled falls back to the synchronous dict-backed in-memory
+        # store (lost on exit). Both are synchronous and constructed eagerly.
+        memory_dsn = self._resolve_memory_dsn(config)
+        if memory_dsn is not None:
+            self._memory_store = PostgresMemoryStore(memory_dsn)
+            logger.info("Using persistent Postgres memory store")
+        else:
+            self._memory_store = InMemoryMemoryStore()
 
         # Build LLM callable — forward per-agent sampling params
         model_cfg = config.models["default"]
@@ -230,6 +235,12 @@ class Runtime:
         if self._provenance_store is not None:
             await self._provenance_store.close()
             self._provenance_store = None
+        # Close the memory store if the selected backend is closeable
+        # (PostgresMemoryStore.close() is synchronous; InMemoryMemoryStore has
+        # no close() and is skipped).
+        close = getattr(self._memory_store, "close", None)
+        if callable(close):
+            close()
         for client in self._mcp_clients:
             await client.close()
 
@@ -361,6 +372,28 @@ class Runtime:
             return None
         # User-provided path — resolve ~ and variables
         return str(Path(raw).expanduser().resolve())
+
+    @staticmethod
+    def _resolve_memory_dsn(config: SpectreConfig) -> str | None:
+        """Resolve the memory store DSN from config, falling back to env.
+
+        Precedence:
+          * config.memory_store_dsn is authoritative when not None. An empty
+            string means explicitly disabled -> None (in-memory), even if the
+            env var is set.
+          * When config.memory_store_dsn is None, fall back to the
+            SPECTRE_MEMORY_DSN environment variable (non-empty).
+          * Otherwise None -> in-memory store.
+
+        Returns:
+            A DSN string if the persistent Postgres store is selected, else None.
+        """
+        raw = config.memory_store_dsn
+        if raw is not None:
+            # Explicit config value wins. "" == disabled.
+            return raw or None
+        env = os.environ.get("SPECTRE_MEMORY_DSN")
+        return env or None
 
     def _bootstrap_skills(self, config: SpectreConfig) -> None:
         """Bootstrap the SkillRegistry with DEFAULT_SKILLS + config-declared skills.

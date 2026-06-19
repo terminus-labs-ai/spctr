@@ -129,6 +129,17 @@ class SpectreConfig(BaseModel):
             "persistent provenance (fall back to in-memory)."
         ),
     )
+    memory_store_dsn: str | None = Field(
+        default=None,
+        description=(
+            "DSN for the persistent Postgres-backed memory store "
+            "(PostgresMemoryStore). None means: use the SPECTRE_MEMORY_DSN "
+            "environment variable if set, otherwise fall back to the "
+            "in-memory store. An empty string ('') explicitly disables "
+            "persistence and forces the in-memory store even if the env var "
+            "is set."
+        ),
+    )
 
 
 class CircularExtendsError(Exception):
