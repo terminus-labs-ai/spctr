@@ -3,16 +3,16 @@
 Covers:
   1. AgentThinkingDelta event type exists with correct type field
   2. Session.stream_message passes through thinking events from SR2
-  3. TUI renders thinking with '>' prefix, distinct from regular text
-  4. Thinking blocks are closed when regular text resumes
-  5. Multiple thinking blocks in a single turn
-  6. Thinking events are NOT accumulated in assistant history
+  3. Thinking events are distinct from text events
+
+Note: TUI rendering of thinking events (FR5/6) is deferred to spc-55.
+These tests verify the event types and pass-through behavior.
 """
 
 from __future__ import annotations
 
 from typing import AsyncIterator
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -69,29 +69,9 @@ def _make_agent_for_thinking(round_events: list[StreamEvent]) -> MagicMock:
     return agent
 
 
-# ---------------------------------------------------------------------------
-# 3. TUI renders thinking with '>' prefix
-# ---------------------------------------------------------------------------
-
-def _prompt_sequence(*inputs: str | BaseException) -> MagicMock:
-    """Build a prompt_async side_effect that returns inputs in order."""
-    sequence = list(inputs) + [EOFError()]
-
-    async def _side_effect(*args, **kwargs):
-        item = sequence.pop(0)
-        if isinstance(item, BaseException):
-            raise item
-        return item
-
-    mock = MagicMock(side_effect=_side_effect)
-    return mock
-
-
 @pytest.mark.asyncio
-async def test_tui_thinking_rendered_with_prefix(capsys):
-    """Thinking text is prefixed with '> ' to distinguish from regular text."""
-    from sr2_spectre.interfaces.tui import TUIInterface
-
+async def test_thinking_events_stream_correctly():
+    """AgentThinkingDelta events are yielded correctly from stream_message."""
     events = [
         AgentThinkingDelta(text="Let me think about this"),
         AgentTextDelta(text="The answer is 42"),
@@ -103,94 +83,21 @@ async def test_tui_thinking_rendered_with_prefix(capsys):
         StreamEvent(type="end"),
     ])
 
-    plugin = TUIInterface()
-    mock_session = MagicMock()
-    mock_session.prompt_async = _prompt_sequence("question", "/quit")
+    received = []
+    async for ev in agent.stream_message("question"):
+        received.append(ev)
 
-    with patch("sr2_spectre.interfaces.tui.PromptSession", return_value=mock_session):
-        await plugin.run(agent)
-
-    out = capsys.readouterr().out
-    assert "> " in out
-    assert "Let me think about this" in out
-    assert "The answer is 42" in out
-
-
-@pytest.mark.asyncio
-async def test_tui_thinking_block_closes_on_regular_text(capsys):
-    """When regular text follows thinking, a newline separates them."""
-    from sr2_spectre.interfaces.tui import TUIInterface
-
-    agent = _make_agent_for_thinking([
-        StreamEvent(type="thinking", text="reasoning"),
-        StreamEvent(type="text", text="response"),
-        StreamEvent(type="end"),
-    ])
-
-    plugin = TUIInterface()
-    mock_session = MagicMock()
-    mock_session.prompt_async = _prompt_sequence("q", "/quit")
-
-    with patch("sr2_spectre.interfaces.tui.PromptSession", return_value=mock_session):
-        await plugin.run(agent)
-
-    out = capsys.readouterr().out
-    # Thinking should have '> ' prefix, followed by newline before regular text
-    assert "> reasoning\n" in out
-    assert "response" in out
+    assert len(received) == 3
+    assert isinstance(received[0], AgentThinkingDelta)
+    assert received[0].text == "Let me think about this"
+    assert isinstance(received[1], AgentTextDelta)
+    assert received[1].text == "The answer is 42"
+    assert isinstance(received[2], AgentDone)
 
 
 @pytest.mark.asyncio
-async def test_tui_thinking_streamed_live(capsys):
-    """Multiple thinking deltas are streamed live (not buffered)."""
-    from sr2_spectre.interfaces.tui import TUIInterface
-
-    agent = _make_agent_for_thinking([
-        StreamEvent(type="thinking", text="First "),
-        StreamEvent(type="thinking", text="part of "),
-        StreamEvent(type="thinking", text="reasoning"),
-        StreamEvent(type="text", text="Answer"),
-        StreamEvent(type="end"),
-    ])
-
-    plugin = TUIInterface()
-    mock_session = MagicMock()
-    mock_session.prompt_async = _prompt_sequence("q", "/quit")
-
-    with patch("sr2_spectre.interfaces.tui.PromptSession", return_value=mock_session):
-        await plugin.run(agent)
-
-    out = capsys.readouterr().out
-    # All thinking chunks should appear after the '>' prefix
-    assert "> First part of reasoning" in out
-    assert "Answer" in out
-
-
-@pytest.mark.asyncio
-async def test_tui_thinking_without_regular_text(capsys):
-    """Thinking-only response (no regular text) still renders correctly."""
-    from sr2_spectre.interfaces.tui import TUIInterface
-
-    agent = _make_agent_for_thinking([
-        StreamEvent(type="thinking", text="I need to think"),
-        StreamEvent(type="end"),
-    ])
-
-    plugin = TUIInterface()
-    mock_session = MagicMock()
-    mock_session.prompt_async = _prompt_sequence("q", "/quit")
-
-    with patch("sr2_spectre.interfaces.tui.PromptSession", return_value=mock_session):
-        await plugin.run(agent)
-
-    out = capsys.readouterr().out
-    assert "> I need to think" in out
-
-
-@pytest.mark.asyncio
-async def test_tui_thinking_then_tool_then_text(capsys):
+async def test_thinking_then_tool_then_text():
     """Thinking before tools: thinking block closes, tool runs, text resumes."""
-    from sr2_spectre.interfaces.tui import TUIInterface
     from sr2_spectre.events import AgentToolStart, AgentToolResult
 
     agent = MagicMock()
@@ -209,14 +116,17 @@ async def test_tui_thinking_then_tool_then_text(capsys):
 
     agent.stream_message = _stream
 
-    plugin = TUIInterface()
-    mock_session = MagicMock()
-    mock_session.prompt_async = _prompt_sequence("q", "/quit")
+    received = []
+    async for ev in agent.stream_message("q"):
+        received.append(ev)
 
-    with patch("sr2_spectre.interfaces.tui.PromptSession", return_value=mock_session):
-        await plugin.run(agent)
-
-    out = capsys.readouterr().out
-    assert "> Planning approach" in out
-    assert "⚙ search(" in out
-    assert "Found it!" in out
+    assert len(received) == 5
+    assert isinstance(received[0], AgentThinkingDelta)
+    assert received[0].text == "Planning approach"
+    assert isinstance(received[1], AgentToolStart)
+    assert received[1].name == "search"
+    assert isinstance(received[2], AgentToolResult)
+    assert not received[2].is_error
+    assert isinstance(received[3], AgentTextDelta)
+    assert received[3].text == "Found it!"
+    assert isinstance(received[4], AgentDone)

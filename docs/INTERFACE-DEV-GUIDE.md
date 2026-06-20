@@ -216,7 +216,7 @@ async def test_interface_runs_and_sends_prompt() -> None:
     await interface.stop()
 ```
 
-See `tests/test_discord_interface.py` and `tests/test_tui.py` for complete examples.
+See `tests/test_discord_interface.py` and `tests/test_tui_scaffold.py` for complete examples.
 
 ## Reference: Built-in Interfaces
 

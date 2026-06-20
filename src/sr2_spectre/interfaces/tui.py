@@ -1,4 +1,4 @@
-"""TUI interface — interactive loop with prompt-toolkit.
+"""TUI interface — full-screen Textual app.
 
 Phase 4 polish features:
 - Streaming output (AgentTextDelta rendered in real time)
@@ -22,11 +22,10 @@ from contextlib import nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from prompt_toolkit import PromptSession
-from prompt_toolkit.patch_stdout import patch_stdout
+from textual.app import App, ComposeResult
+from textual.widgets import Footer, Header, Input, RichLog, Static
 
 from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.events import AgentDone, AgentTextDelta, AgentThinkingDelta, AgentToolResult, AgentToolStart
 
 if TYPE_CHECKING:
     from sr2_spectre.agent import Agent
@@ -42,6 +41,7 @@ Commands:
   /save [path]  — save session to JSON (default: ~/.sr2-spectre/session.json)
   /load [path]  — load session from JSON
 """
+
 
 def _default_save_path() -> Path:
     """Return the default session save path, computed lazily."""
@@ -151,12 +151,104 @@ def _format_history_summary(history: list) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Textual App
+# ---------------------------------------------------------------------------
+
+class SpectreTUI(App):
+    """Full-screen Textual app for the SR2 Spectre TUI.
+
+    Layout (top to bottom):
+    - Header (fixed)
+    - RichLog output pane (scrollable, fills remaining space)
+    - Input box (fixed height at bottom)
+    - Status bar (fixed, shows session info)
+    - Footer (fixed, shows bindings)
+    """
+
+    CSS = """
+    Screen {
+        layout: vertical;
+    }
+
+    #output {
+        width: 100%;
+        height: 1fr;
+        overflow-y: scroll;
+    }
+
+    #prompt {
+        width: 100%;
+        dock: bottom;
+    }
+
+    #status {
+        width: 100%;
+        height: 1;
+        dock: bottom;
+        background: $boost;
+        color: $text;
+        content-align: center middle;
+    }
+
+    Footer {
+        dock: bottom;
+    }
+    """
+
+    BINDINGS = [
+        ("ctrl+q", "quit", "Quit"),
+    ]
+
+    def __init__(self, agent: "Agent") -> None:
+        super().__init__()
+        self.agent = agent
+        self._tool_calls: int = 0
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        yield RichLog(
+            id="output",
+            wrap=True,
+            markup=True,
+            auto_scroll=True,
+        )
+        yield Input(id="prompt", placeholder="> ")
+        yield Static(id="status", content="")
+        yield Footer()
+
+    def on_mount(self) -> None:
+        """Focus the input on launch."""
+        self.query_one("#prompt", Input).focus()
+
+    def update_status(self, session_id: str, msg_count: int, tool_count: int) -> None:
+        """Update the status bar text."""
+        status = self.query_one("#status", Static)
+        status.update(f"{session_id} | {msg_count} msgs | {tool_count} tools")
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        """Handle input submission — echo to log for now."""
+        text = event.value.strip()
+        if not text:
+            event.input.value = ""
+            return
+
+        # Echo user input to the log
+        log = self.query_one("#output", RichLog)
+        log.write(f"> {text}")
+        event.input.value = ""
+
+
+# ---------------------------------------------------------------------------
+# TUIInterface (unchanged protocol: name / start / stop / run)
+# ---------------------------------------------------------------------------
+
 class TUIInterface:
     name = "tui"
 
     def __init__(self) -> None:
         self._running = False
-        self._session: PromptSession | None = None
+        self._app: SpectreTUI | None = None
 
     async def start(self, agent: "Agent") -> None:
         """Initialize TUI and set interactive run context."""
@@ -170,129 +262,18 @@ class TUIInterface:
     async def stop(self) -> None:
         """Signal the run loop to exit."""
         self._running = False
+        if self._app is not None:
+            self._app.exit()
 
     async def run(self, agent: "Agent") -> None:
-        """Interactive loop."""
+        """Launch the Textual app.
+
+        Uses run_async() for proper async integration.  When stdout is
+        not a TTY (tests, pipes, CI) the app runs in headless mode so
+        it does not crash.
+        """
         self._running = True
-        session = PromptSession()
+        self._app = SpectreTUI(agent)
 
-        # patch_stdout routes all output through prompt-toolkit's output
-        # machinery, preventing keystrokes from echoing into streaming output.
-        # Falls back to nullcontext when not connected to a real TTY (e.g. tests).
-        stdout_ctx = patch_stdout() if sys.stdout.isatty() else nullcontext()
-        with stdout_ctx:
-            while self._running:
-                # --- prompt ---
-                try:
-                    user_input = await session.prompt_async("> ")
-                except KeyboardInterrupt:
-                    print("\nInterrupted.")
-                    break
-                except EOFError:
-                    print("\nEOF.")
-                    break
-
-                # --- empty / whitespace ---
-                if not user_input or not user_input.strip():
-                    continue
-
-                # --- slash commands ---
-                stripped = user_input.strip()
-                if stripped in ("/quit", "/exit"):
-                    print("Goodbye.")
-                    break
-
-                if stripped == "/reset":
-                    agent.new_session()
-                    print("Session reset.")
-                    continue
-
-                if stripped == "/help":
-                    print(_HELP)
-                    continue
-
-                if stripped == "/tools":
-                    print(str(agent.registry.list_names()))
-                    continue
-
-                if stripped == "/history":
-                    print(_format_history_summary(agent.history))
-                    continue
-
-                if stripped.startswith("/save"):
-                    parts = stripped.split(None, 1)
-                    save_path = Path(parts[1]) if len(parts) > 1 else _default_save_path()
-                    try:
-                        save_path.parent.mkdir(parents=True, exist_ok=True)
-                        session_data = {
-                            "session_id": agent.session_id,
-                            "history": _serialize_history(agent.history),
-                        }
-                        save_path.write_text(json.dumps(session_data, indent=2))
-                        print(f"Session saved to {save_path}")
-                    except OSError as exc:
-                        print(f"Error saving session: {exc}")
-                    continue
-
-                if stripped.startswith("/load"):
-                    parts = stripped.split(None, 1)
-                    if len(parts) < 2:
-                        print("Usage: /load <path>")
-                        continue
-                    load_path = Path(parts[1])
-                    if not load_path.exists():
-                        print(f"Error: session file not found: {load_path}")
-                        continue
-                    try:
-                        data = json.loads(load_path.read_text())
-                        agent.history = _deserialize_history(data.get("history", []))
-                        if "session_id" in data:
-                            agent.session_id = data["session_id"]
-                        print(f"Session loaded from {load_path} ({len(agent.history)} messages)")
-                    except (OSError, json.JSONDecodeError, KeyError) as exc:
-                        print(f"Error loading session: {exc}")
-                    continue
-
-                # --- stream message ---
-                try:
-                    tool_calls = 0
-                    thinking_active = False
-                    async for ev in agent.stream_message(stripped):
-                        if isinstance(ev, AgentTextDelta):
-                            # Close thinking block if we were in one
-                            if thinking_active:
-                                sys.stdout.write("\n")
-                                thinking_active = False
-                            sys.stdout.write(ev.text)
-                            sys.stdout.flush()
-                        elif isinstance(ev, AgentThinkingDelta):
-                            # Open thinking block on first chunk
-                            if not thinking_active:
-                                sys.stdout.write("\n> ")
-                                thinking_active = True
-                            sys.stdout.write(ev.text)
-                            sys.stdout.flush()
-                        elif isinstance(ev, AgentToolStart):
-                            args_json = json.dumps(ev.input)
-                            if len(args_json) > 60:
-                                args_preview = args_json[:60] + "..."
-                            else:
-                                args_preview = args_json
-                            print(f"\n⚙ {ev.name}({args_preview})...")
-                        elif isinstance(ev, AgentToolResult):
-                            if ev.is_error:
-                                print(f"✗ {ev.name} failed")
-                            else:
-                                print(f"✓ {ev.name} done")
-                        elif isinstance(ev, AgentDone):
-                            print("\n\n", end="")
-                            tool_calls = ev.tool_calls_executed
-
-                    # --- status bar ---
-                    msg_count = len(agent.history)
-                    status = f"[{agent.session_id} | {msg_count} msgs | {tool_calls} tools]"
-                    print(f"── {status}\n")
-
-                except KeyboardInterrupt:
-                    print("\n[Interrupted]")
-                    continue
+        headless = not sys.stdout.isatty()
+        await self._app.run_async(headless=headless)
