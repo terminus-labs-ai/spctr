@@ -69,13 +69,28 @@ class EditTool:
     ) -> str:
         self._check_path(path)
 
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"No such file: {path}")
+        # Resolve the effective path: relative paths resolve against
+        # the workspace root, not raw process cwd.
+        effective_path = self._resolve_path(path)
+
+        if not os.path.exists(effective_path):
+            raise FileNotFoundError(f"No such file: {effective_path}")
 
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
-            None, _edit_file, path, old_string, new_string, replace_all
+            None, _edit_file, effective_path, old_string, new_string, replace_all
         )
+
+    def _resolve_path(self, path: str) -> str:
+        """Resolve a path for use within the workspace.
+
+        Relative paths are resolved against the workspace root (not cwd).
+        Absolute paths are used as-is.
+        """
+        p = Path(path)
+        if self.workspace_root is not None and not p.is_absolute():
+            return str(self.workspace_root / p)
+        return path
 
     def _check_path(self, path: str) -> None:
         """Reject paths resolving outside the workspace root.
@@ -86,11 +101,7 @@ class EditTool:
         if self.workspace_root is None:
             return
 
-        p = Path(path)
-        if p.is_absolute():
-            resolved = p.resolve()
-        else:
-            resolved = (self.workspace_root / p).resolve()
+        resolved = Path(self._resolve_path(path)).resolve()
 
         try:
             resolved.relative_to(self.workspace_root)

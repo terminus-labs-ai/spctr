@@ -326,3 +326,78 @@ async def test_edit_same_old_and_new_string_leaves_rest_untouched(tmp_path) -> N
 
     # Replacing a unique match with itself must not corrupt the rest of the file.
     assert target.read_text(encoding="utf-8") == original
+
+
+# ---------------------------------------------------------------------------
+# Relative path resolution (workspace root vs cwd)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_edit_resolves_relative_path_against_workspace_root(tmp_path) -> None:
+    """When workspace_root is set, relative paths resolve against it, not cwd."""
+    from sr2_spectre.tools.builtins.edit import EditTool
+
+    # Workspace root is tmp_path; file lives inside a subdirectory.
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    subdir = workspace / "src"
+    subdir.mkdir()
+    target = subdir / "file.txt"
+    target.write_text("hello world", encoding="utf-8")
+
+    tool = EditTool(workspace_root=str(workspace))
+
+    # Call with relative path from workspace root, not cwd.
+    result = await tool(path="src/file.txt", old_string="world", new_string="spectre")
+
+    assert target.read_text(encoding="utf-8") == "hello spectre"
+    assert isinstance(result, str) and result
+
+
+@pytest.mark.asyncio
+async def test_edit_relative_path_fails_when_cwd_not_workspace(tmp_path) -> None:
+    """Relative paths resolve against workspace_root even when cwd is elsewhere."""
+    from sr2_spectre.tools.builtins.edit import EditTool
+    import os
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    subdir = workspace / "src"
+    subdir.mkdir()
+    target = subdir / "file.txt"
+    target.write_text("hello world", encoding="utf-8")
+
+    # Create a separate directory and set it as cwd (simulates cwd != workspace)
+    other_dir = tmp_path / "other"
+    other_dir.mkdir()
+
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(str(other_dir))
+
+        tool = EditTool(workspace_root=str(workspace))
+        # This SHOULD work — relative path resolves against workspace_root, not cwd
+        result = await tool(path="src/file.txt", old_string="world", new_string="spectre")
+
+        assert target.read_text(encoding="utf-8") == "hello spectre"
+    finally:
+        os.chdir(original_cwd)
+
+
+@pytest.mark.asyncio
+async def test_edit_resolve_path_absolute_passthrough(tmp_path) -> None:
+    """_resolve_path leaves absolute paths unchanged."""
+    from sr2_spectre.tools.builtins.edit import EditTool
+
+    tool = EditTool(workspace_root=str(tmp_path / "workspace"))
+    assert tool._resolve_path("/etc/passwd") == "/etc/passwd"
+
+
+@pytest.mark.asyncio
+async def test_edit_resolve_path_no_workspace(tmp_path) -> None:
+    """_resolve_path returns raw path when workspace_root is None."""
+    from sr2_spectre.tools.builtins.edit import EditTool
+
+    tool = EditTool()
+    assert tool._resolve_path("relative/path") == "relative/path"
+    assert tool._resolve_path("/absolute/path") == "/absolute/path"
