@@ -227,16 +227,103 @@ class SpectreTUI(App):
         status.update(f"{session_id} | {msg_count} msgs | {tool_count} tools")
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Handle input submission — echo to log for now."""
+        """Handle input submission — dispatch to agent or slash commands."""
         text = event.value.strip()
         if not text:
             event.input.value = ""
             return
 
-        # Echo user input to the log
         log = self.query_one("#output", RichLog)
         log.write(f"> {text}")
         event.input.value = ""
+
+        # Slash command dispatch
+        if text.startswith("/"):
+            parts = text.split(maxsplit=1)
+            cmd = parts[0].lower()
+            arg = parts[1] if len(parts) > 1 else None
+            await self._handle_command(cmd, arg, log)
+            return
+
+        # Non-slash input → agent
+        await self._dispatch_to_agent(text, log)
+
+    async def _handle_command(
+        self, cmd: str, arg: str | None, log: RichLog
+    ) -> None:
+        """Route slash commands to their handlers."""
+        handlers = {
+            "/quit": self._cmd_quit,
+            "/exit": self._cmd_exit,
+            "/reset": self._cmd_reset,
+            "/help": self._cmd_help,
+            "/tools": self._cmd_tools,
+            "/history": self._cmd_history,
+            "/save": self._cmd_save,
+            "/load": self._cmd_load,
+        }
+        handler = handlers.get(cmd)
+        if handler is None:
+            log.write(f"[red]Unknown command: {cmd}[/red]")
+            return
+        await handler(arg, log)
+
+    # ------------------------------------------------------------------
+    # Slash command handlers
+    # ------------------------------------------------------------------
+
+    async def _cmd_quit(self, _arg: str | None, log: RichLog) -> None:
+        self.exit()
+
+    async def _cmd_exit(self, _arg: str | None, log: RichLog) -> None:
+        self.exit()
+
+    async def _cmd_reset(self, _arg: str | None, log: RichLog) -> None:
+        self.agent.new_session()
+        log.write("[green]New session started[/green]")
+
+    async def _cmd_help(self, _arg: str | None, log: RichLog) -> None:
+        log.write(_HELP)
+
+    async def _cmd_tools(self, _arg: str | None, log: RichLog) -> None:
+        names = self.agent.registry.list_names()
+        log.write(f"Available tools: {', '.join(names)}")
+
+    async def _cmd_history(self, _arg: str | None, log: RichLog) -> None:
+        summary = _format_history_summary(self.agent.history)
+        log.write(summary)
+
+    async def _cmd_save(self, arg: str | None, log: RichLog) -> None:
+        path = Path(arg) if arg else _default_save_path()
+        data = _serialize_history(self.agent.history)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(data, indent=2))
+        log.write(f"[green]Session saved to {path}[/green]")
+
+    async def _cmd_load(self, arg: str | None, log: RichLog) -> None:
+        if not arg:
+            log.write("[red]Usage: /load <path>[/red]")
+            return
+        path = Path(arg)
+        if not path.exists():
+            log.write(f"[red]Error: file not found: {path}[/red]")
+            return
+        try:
+            data = json.loads(path.read_text())
+            messages = _deserialize_history(data)
+            self.agent.history = messages
+            log.write(f"[green]Session loaded from {path} ({len(messages)} messages)[/green]")
+        except Exception as e:
+            log.write(f"[red]Error loading session: {e}[/red]")
+
+    async def _dispatch_to_agent(self, text: str, log: RichLog) -> None:
+        """Send user input to the agent and render the response.
+
+        Event rendering (AgentTextDelta, AgentToolStart, etc.) is spc-56.
+        For now we consume the stream silently.
+        """
+        async for _ in self.agent.stream_message(text):
+            pass  # Event rendering is spc-56
 
 
 # ---------------------------------------------------------------------------
