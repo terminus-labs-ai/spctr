@@ -457,3 +457,32 @@ async def test_set_error_status(
         content = str(status.content)
         assert "✗" in content
         assert "something broke" in content
+
+
+@pytest.mark.asyncio
+async def test_status_row_not_occluded_by_footer(
+    make_mock_agent: MagicMock,
+) -> None:
+    """The status row must occupy its own screen row, not collide with Footer.
+
+    Regression: #status and Footer both had `dock: bottom`, so both resolved
+    to the same bottom row (y=23). Footer painted on top and hid the status
+    text entirely — the working indicator was set but never visible.
+    """
+    from textual.widgets import Footer, Static
+
+    agent = make_mock_agent(stream_events=[AgentDone(tool_calls_executed=0)])
+    app = SpectreTUI(agent)
+
+    async with app.run_test(size=(80, 24), headless=True) as pilot:
+        app.set_working_status()
+        await pilot.pause()
+
+        status = app.query_one("#status", Static)
+        footer = app.query_one(Footer)
+
+        # The two widgets must not share the same screen region.
+        assert status.region != footer.region
+        # And the working text must actually appear in the rendered screen,
+        # not merely in the widget's .content attribute.
+        assert "Working" in app.export_screenshot()

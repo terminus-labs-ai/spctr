@@ -217,7 +217,6 @@ class SpectreTUI(App):
     #status {
         width: 100%;
         height: 1;
-        dock: bottom;
         background: $boost;
         color: $text;
         content-align: center middle;
