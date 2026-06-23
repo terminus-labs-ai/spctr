@@ -59,18 +59,17 @@ def _default_save_path() -> Path:
 def _render_markdown(text: str) -> str:
     """Render markdown text using rich, falling back to raw text.
 
-    Rich's Markdown class can render to a string via its console rendering.
-    We use it here to produce formatted output for the TUI.
+    When NO_COLOR is set, renders without color. Otherwise uses full color.
     """
     try:
         from rich.console import Console
         from rich.markdown import Markdown
 
         md = Markdown(text)
-        # Capture rich output to a string
         import io
         output = io.StringIO()
-        render_console = Console(file=output, width=80, force_terminal=True, no_color=True)
+        no_color = bool(int(os.environ.get("NO_COLOR", "0")))
+        render_console = Console(file=output, width=80, force_terminal=True, no_color=no_color)
         render_console.print(md)
         return output.getvalue()
     except Exception:
@@ -333,16 +332,16 @@ class SpectreTUI(App):
                 elif isinstance(ev, AgentToolStart):
                     input_preview = ""
                     if ev.input:
-                        # Show first 80 chars of input
-                        inp_str = str(ev.input)[:80]
-                        input_preview = f" ({inp_str})"
-                    log.write(f"[dim]⏳ {ev.name}{input_preview}[/dim]")
+                        # Truncate args preview at 60 chars
+                        inp_str = str(ev.input)[:60]
+                        input_preview = f"({inp_str})"
+                    log.write(f"[dim]⚙ {ev.name}{input_preview}[/dim]")
 
                 elif isinstance(ev, AgentToolResult):
                     if ev.is_error:
-                        log.write(f"[red]✗ {ev.name}[/red]")
+                        log.write(f"[red]✗ {ev.name} failed[/red]")
                     else:
-                        log.write(f"[green]✓ {ev.name}[/green]")
+                        log.write(f"[green]✓ {ev.name} done[/green]")
 
                 elif isinstance(ev, AgentDone):
                     total_tool_calls = ev.tool_calls_executed
