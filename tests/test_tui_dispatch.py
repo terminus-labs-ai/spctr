@@ -221,3 +221,39 @@ async def test_unknown_command_shows_hint(tui_app: SpectreTUI) -> None:
         await submit_input(pilot, tui_app, "/foobar")
         await pilot.pause()
         assert_log_contains(tui_app, "Unknown command")
+
+
+# ---------------------------------------------------------------------------
+# Quick-and-dirty agent response render (unblock ahead of full spc-56)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_agent_text_response_rendered_to_log() -> None:
+    """Accumulated AgentTextDelta must be committed to the log on AgentDone."""
+    agent = _make_mock_agent(stream_events=[
+        AgentTextDelta(text="Hello "),
+        AgentTextDelta(text="world"),
+        AgentDone(tool_calls_executed=0),
+    ])
+    app = SpectreTUI(agent)
+    async with app.run_test(headless=True) as pilot:
+        await submit_input(pilot, app, "hi")
+        await pilot.pause()
+        assert_log_contains(app, "Hello world")
+
+
+@pytest.mark.asyncio
+async def test_tool_events_rendered_to_log() -> None:
+    """Tool start/result events must surface in the log."""
+    from sr2_spectre.events import AgentToolResult, AgentToolStart
+
+    agent = _make_mock_agent(stream_events=[
+        AgentToolStart(tool_id="t1", name="read_file", input={"path": "x"}),
+        AgentToolResult(tool_id="t1", name="read_file", content="ok"),
+        AgentDone(tool_calls_executed=1),
+    ])
+    app = SpectreTUI(agent)
+    async with app.run_test(headless=True) as pilot:
+        await submit_input(pilot, app, "read x")
+        await pilot.pause()
+        assert_log_contains(app, "read_file")

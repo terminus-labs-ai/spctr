@@ -26,6 +26,13 @@ from textual.app import App, ComposeResult
 from textual.widgets import Footer, Header, Input, RichLog, Static
 
 from sr2_spectre.core import RunContext, RunMode
+from sr2_spectre.events import (
+    AgentDone,
+    AgentTextDelta,
+    AgentThinkingDelta,
+    AgentToolResult,
+    AgentToolStart,
+)
 
 if TYPE_CHECKING:
     from sr2_spectre.agent import Agent
@@ -319,11 +326,37 @@ class SpectreTUI(App):
     async def _dispatch_to_agent(self, text: str, log: RichLog) -> None:
         """Send user input to the agent and render the response.
 
-        Event rendering (AgentTextDelta, AgentToolStart, etc.) is spc-56.
-        For now we consume the stream silently.
+        Quick-and-dirty render to unblock the TUI ahead of full spc-56:
+        - AgentTextDelta accumulates, committed as markdown on AgentDone
+        - AgentThinkingDelta accumulates, committed dim (not markdown)
+        - AgentToolStart/AgentToolResult written inline as they arrive
+        Proper live-region streaming is still spc-56.
         """
-        async for _ in self.agent.stream_message(text):
-            pass  # Event rendering is spc-56
+        text_buf: list[str] = []
+        think_buf: list[str] = []
+
+        async for ev in self.agent.stream_message(text):
+            if isinstance(ev, AgentTextDelta):
+                text_buf.append(ev.text)
+            elif isinstance(ev, AgentThinkingDelta):
+                think_buf.append(ev.text)
+            elif isinstance(ev, AgentToolStart):
+                log.write(f"[dim]→ {ev.name}({json.dumps(ev.input)})[/dim]")
+            elif isinstance(ev, AgentToolResult):
+                color = "red" if ev.is_error else "green"
+                tag = "error" if ev.is_error else "ok"
+                log.write(f"[{color}]← {ev.name} [{tag}][/{color}]")
+            elif isinstance(ev, AgentDone):
+                if think_buf:
+                    log.write(f"[dim italic]{''.join(think_buf)}[/dim italic]")
+                if text_buf:
+                    log.write(_render_markdown("".join(text_buf)))
+                self._tool_calls += ev.tool_calls_executed
+                self.update_status(
+                    getattr(self.agent, "session_id", "session"),
+                    len(getattr(self.agent, "history", [])),
+                    self._tool_calls,
+                )
 
 
 # ---------------------------------------------------------------------------
