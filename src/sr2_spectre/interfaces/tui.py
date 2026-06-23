@@ -28,8 +28,9 @@ from textual.widgets import Footer, Header, Input, RichLog, Static
 from sr2_spectre.core import RunContext, RunMode
 from sr2_spectre.events import (
     AgentDone,
-    AgentTextDelta,
+    AgentEvent,
     AgentThinkingDelta,
+    AgentTextDelta,
     AgentToolResult,
     AgentToolStart,
 )
@@ -168,6 +169,8 @@ class SpectreTUI(App):
     Layout (top to bottom):
     - Header (fixed)
     - RichLog output pane (scrollable, fills remaining space)
+    - Thinking region (live-updating, dim/italic, ephemeral)
+    - Text region (live-updating, committed as markdown on done)
     - Input box (fixed height at bottom)
     - Status bar (fixed, shows session info)
     - Footer (fixed, shows bindings)
@@ -182,6 +185,29 @@ class SpectreTUI(App):
         width: 100%;
         height: 1fr;
         overflow-y: scroll;
+    }
+
+    #thinking {
+        width: 100%;
+        height: auto;
+        color: $accent;
+        text-style: italic;
+        opacity: 0.6;
+        display: none;
+    }
+
+    #thinking.visible {
+        display: block;
+    }
+
+    #text {
+        width: 100%;
+        height: auto;
+        display: none;
+    }
+
+    #text.visible {
+        display: block;
     }
 
     #prompt {
@@ -211,6 +237,7 @@ class SpectreTUI(App):
         super().__init__()
         self.agent = agent
         self._tool_calls: int = 0
+        self._streaming: bool = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -220,6 +247,8 @@ class SpectreTUI(App):
             markup=True,
             auto_scroll=True,
         )
+        yield Static(id="thinking")
+        yield Static(id="text")
         yield Input(id="prompt", placeholder="> ")
         yield Static(id="status", content="")
         yield Footer()
@@ -252,8 +281,95 @@ class SpectreTUI(App):
             await self._handle_command(cmd, arg, log)
             return
 
-        # Non-slash input → agent
-        await self._dispatch_to_agent(text, log)
+        # Non-slash input → agent (exclusive worker)
+        self._run_stream_worker(text)
+
+    def _run_stream_worker(self, text: str) -> None:
+        """Launch the streaming worker with exclusive=True.
+
+        The worker consumes agent.stream_message() and renders events
+        to the live regions and RichLog.
+        """
+        self._stream_worker = self.run_worker(
+            self._stream_and_render(text),
+            name="stream",
+            exclusive=True,
+        )
+
+    async def _stream_and_render(self, text: str) -> None:
+        """Worker: stream agent events and render to live regions.
+
+        - AgentTextDelta: accumulate in #text live region
+        - AgentThinkingDelta: accumulate in #thinking live region (dim/italic)
+        - AgentToolStart/AgentToolResult: render to RichLog
+        - AgentDone: commit accumulated text as markdown to RichLog,
+          clear both live regions, re-enable input
+        """
+        log = self.query_one("#output", RichLog)
+        thinking_region = self.query_one("#thinking", Static)
+        text_region = self.query_one("#text", Static)
+        inp = self.query_one("#prompt", Input)
+
+        # Disable input during streaming
+        self._streaming = True
+        inp.disabled = True
+
+        text_acc: list[str] = []
+        thinking_acc: list[str] = []
+        total_tool_calls = 0
+
+        try:
+            async for ev in self.agent.stream_message(text):
+                if isinstance(ev, AgentTextDelta):
+                    text_acc.append(ev.text)
+                    text_region.update("".join(text_acc))
+                    text_region.add_class("visible")
+
+                elif isinstance(ev, AgentThinkingDelta):
+                    thinking_acc.append(ev.text)
+                    thinking_region.update("".join(thinking_acc))
+                    thinking_region.add_class("visible")
+
+                elif isinstance(ev, AgentToolStart):
+                    input_preview = ""
+                    if ev.input:
+                        # Show first 80 chars of input
+                        inp_str = str(ev.input)[:80]
+                        input_preview = f" ({inp_str})"
+                    log.write(f"[dim]⏳ {ev.name}{input_preview}[/dim]")
+
+                elif isinstance(ev, AgentToolResult):
+                    if ev.is_error:
+                        log.write(f"[red]✗ {ev.name}[/red]")
+                    else:
+                        log.write(f"[green]✓ {ev.name}[/green]")
+
+                elif isinstance(ev, AgentDone):
+                    total_tool_calls = ev.tool_calls_executed
+        except Exception as exc:
+            log.write(f"[red]Stream error: {exc}[/red]")
+        finally:
+            # Commit accumulated text as markdown to RichLog
+            last_text = "".join(text_acc)
+            if last_text:
+                rendered = _render_markdown(last_text)
+                log.write(rendered)
+
+            # Clear live regions
+            text_region.update("")
+            text_region.remove_class("visible")
+            thinking_region.update("")
+            thinking_region.remove_class("visible")
+
+            # Update status
+            session_id = getattr(self.agent, "session_id", "unknown")
+            msg_count = len(getattr(self.agent, "history", []))
+            self.update_status(session_id, msg_count, total_tool_calls)
+
+            # Re-enable input
+            self._streaming = False
+            inp.disabled = False
+            inp.focus()
 
     async def _handle_command(
         self, cmd: str, arg: str | None, log: RichLog
@@ -322,41 +438,6 @@ class SpectreTUI(App):
             log.write(f"[green]Session loaded from {path} ({len(messages)} messages)[/green]")
         except Exception as e:
             log.write(f"[red]Error loading session: {e}[/red]")
-
-    async def _dispatch_to_agent(self, text: str, log: RichLog) -> None:
-        """Send user input to the agent and render the response.
-
-        Quick-and-dirty render to unblock the TUI ahead of full spc-56:
-        - AgentTextDelta accumulates, committed as markdown on AgentDone
-        - AgentThinkingDelta accumulates, committed dim (not markdown)
-        - AgentToolStart/AgentToolResult written inline as they arrive
-        Proper live-region streaming is still spc-56.
-        """
-        text_buf: list[str] = []
-        think_buf: list[str] = []
-
-        async for ev in self.agent.stream_message(text):
-            if isinstance(ev, AgentTextDelta):
-                text_buf.append(ev.text)
-            elif isinstance(ev, AgentThinkingDelta):
-                think_buf.append(ev.text)
-            elif isinstance(ev, AgentToolStart):
-                log.write(f"[dim]→ {ev.name}({json.dumps(ev.input)})[/dim]")
-            elif isinstance(ev, AgentToolResult):
-                color = "red" if ev.is_error else "green"
-                tag = "error" if ev.is_error else "ok"
-                log.write(f"[{color}]← {ev.name} [{tag}][/{color}]")
-            elif isinstance(ev, AgentDone):
-                if think_buf:
-                    log.write(f"[dim italic]{''.join(think_buf)}[/dim italic]")
-                if text_buf:
-                    log.write(_render_markdown("".join(text_buf)))
-                self._tool_calls += ev.tool_calls_executed
-                self.update_status(
-                    getattr(self.agent, "session_id", "session"),
-                    len(getattr(self.agent, "history", [])),
-                    self._tool_calls,
-                )
 
 
 # ---------------------------------------------------------------------------
