@@ -12,7 +12,9 @@ The adapter:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from sr2_spectre.interfaces.discord.config import DiscordConfig
@@ -338,20 +340,28 @@ class DiscordBotAdapter:
             )
             return None
 
+    @contextlib.asynccontextmanager
     async def channel_typing(
         self,
         channel_id: int,
-    ) -> None:
-        """Show the typing indicator in a channel.
+    ) -> AsyncIterator[None]:
+        """Hold the typing indicator in a channel for the duration of a block.
 
-        Discord's typing indicator shows "Bot is typing..." for ~10 seconds.
-        It auto-clears when a message is sent or edited, so no explicit
-        cleanup is needed — just call before starting agent work per message.
+        Discord's typing indicator shows "Bot is typing..." and lasts only
+        ~10 seconds per trigger, so it must be held open by an async context
+        manager that refreshes it. Use as::
+
+            async with adapter.channel_typing(channel_id):
+                await do_agent_work()
+
+        If the bot is not connected or the channel cannot be resolved, the
+        block still runs — just without a typing indicator.
 
         Args:
             channel_id: Discord channel ID.
         """
         if self._bot is None:
+            yield
             return
 
         channel = self._bot.get_channel(channel_id)
@@ -360,9 +370,11 @@ class DiscordBotAdapter:
                 channel = await self._bot.fetch_channel(channel_id)
             except Exception as exc:
                 logger.error("Could not fetch channel %d for typing: %s", channel_id, exc)
+                yield
                 return
 
-        return channel.typing()
+        async with channel.typing():
+            yield
 
     def is_thread_channel(self, channel: Any) -> bool:
         """Check if a discord.py channel object is a Thread.

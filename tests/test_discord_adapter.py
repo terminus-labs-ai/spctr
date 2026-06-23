@@ -85,3 +85,55 @@ async def test_start_preserves_a_handler_set_beforehand() -> None:
         assert adapter._on_message_handler is handler
     finally:
         await adapter.stop()
+
+
+class _RecordingTyping:
+    """Stand-in for discord.py's channel.typing() async context manager."""
+
+    def __init__(self) -> None:
+        self.entered = False
+        self.exited = False
+
+    async def __aenter__(self) -> "_RecordingTyping":
+        self.entered = True
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        self.exited = True
+
+
+class _FakeChannel:
+    def __init__(self) -> None:
+        self._typing = _RecordingTyping()
+
+    def typing(self) -> _RecordingTyping:
+        return self._typing
+
+
+async def test_channel_typing_is_usable_as_async_context_manager() -> None:
+    """channel_typing must be entered with ``async with`` and hold typing for
+    the whole block.
+
+    Regression: channel_typing was ``async def ... return channel.typing()``,
+    so calling it produced a *coroutine* — ``async with`` on it raised because
+    a coroutine has no ``__aenter__``. The interface wrapped the agent turn in
+    ``async with self._adapter.channel_typing(...)`` and the typing indicator
+    never appeared on Discord. The contract: calling channel_typing(id) yields
+    an async context manager that enters and exits channel.typing().
+    """
+    adapter = _adapter()
+    fake_channel = _FakeChannel()
+
+    class _FakeBot:
+        def get_channel(self, _cid: int) -> _FakeChannel:
+            return fake_channel
+
+    adapter._bot = _FakeBot()  # type: ignore[assignment]
+
+    async with adapter.channel_typing(123):
+        # Inside the block, typing must be active.
+        assert fake_channel._typing.entered is True
+        assert fake_channel._typing.exited is False
+
+    # After the block, typing must have been released.
+    assert fake_channel._typing.exited is True
