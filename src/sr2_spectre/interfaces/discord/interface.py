@@ -324,10 +324,13 @@ class DiscordInterface:
         # Restore channel history into the agent
         self._restore_history(session)
 
-        # Drive the agent and render stream events to Discord
-        response_parts, stream_error = await self._drive_agent_stream(
-            content, channel_id, thinking_id
-        )
+        # Show typing indicator while calling the agent (per-message, visible to Discord users).
+        # The typing context manager auto-clears when the first message edit/send happens.
+        async with self._adapter.channel_typing(channel_id):
+            # Drive the agent and render stream events to Discord
+            response_parts, stream_error = await self._drive_agent_stream(
+                content, channel_id, thinking_id
+            )
 
         if stream_error is not None:
             session.pending_message_id = None
