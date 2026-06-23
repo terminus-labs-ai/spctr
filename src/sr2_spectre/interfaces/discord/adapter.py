@@ -338,6 +338,32 @@ class DiscordBotAdapter:
             )
             return None
 
+    async def channel_typing(
+        self,
+        channel_id: int,
+    ) -> None:
+        """Show the typing indicator in a channel.
+
+        Discord's typing indicator shows "Bot is typing..." for ~10 seconds.
+        It auto-clears when a message is sent or edited, so no explicit
+        cleanup is needed — just call before starting agent work per message.
+
+        Args:
+            channel_id: Discord channel ID.
+        """
+        if self._bot is None:
+            return
+
+        channel = self._bot.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await self._bot.fetch_channel(channel_id)
+            except Exception as exc:
+                logger.error("Could not fetch channel %d for typing: %s", channel_id, exc)
+                return
+
+        return channel.typing()
+
     def is_thread_channel(self, channel: Any) -> bool:
         """Check if a discord.py channel object is a Thread.
 

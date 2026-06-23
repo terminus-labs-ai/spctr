@@ -342,3 +342,118 @@ async def test_status_updated_on_done(
         from textual.widgets import Static
         status = app.query_one("#status", Static)
         assert "3 tools" in str(status.content)
+
+
+# ---------------------------------------------------------------------------
+# FR5f: Turn-status indicator (working / ready / error)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_status_shows_ready_after_done(
+    make_mock_agent: MagicMock,
+) -> None:
+    """Status bar shows a ready checkmark after AgentDone."""
+    agent = make_mock_agent(stream_events=[
+        AgentTextDelta(text="result"),
+        AgentDone(tool_calls_executed=1),
+    ])
+    app = SpectreTUI(agent)
+
+    async with app.run_test(headless=True) as pilot:
+        await submit_input(pilot, app, "test")
+        for _ in range(20):
+            await pilot.pause()
+            if app._streaming:
+                continue
+            break
+        await pilot.pause()
+
+        from textual.widgets import Static
+        status = app.query_one("#status", Static)
+        content = str(status.content)
+        assert "✓" in content
+
+
+@pytest.mark.asyncio
+async def test_status_shows_error_on_exception(
+    make_mock_agent: MagicMock,
+) -> None:
+    """Status bar shows an error indicator when streaming fails."""
+    async def _failing_stream(text: str):
+        yield AgentTextDelta(text="partial")
+        raise RuntimeError("boom")
+
+    agent = make_mock_agent(stream_events=[])  # override below
+    agent.stream_message = _failing_stream
+
+    app = SpectreTUI(agent)
+
+    async with app.run_test(headless=True) as pilot:
+        await submit_input(pilot, app, "test")
+        for _ in range(20):
+            await pilot.pause()
+            if app._streaming:
+                continue
+            break
+        await pilot.pause()
+
+        from textual.widgets import Static
+        status = app.query_one("#status", Static)
+        content = str(status.content)
+        assert "✗" in content and "boom" in content
+
+
+@pytest.mark.asyncio
+async def test_set_working_status(
+    make_mock_agent: MagicMock,
+) -> None:
+    """set_working_status shows the working indicator."""
+    agent = make_mock_agent(stream_events=[AgentDone(tool_calls_executed=0)])
+    app = SpectreTUI(agent)
+
+    async with app.run_test(headless=True) as pilot:
+        app.set_working_status()
+        await pilot.pause()
+
+        from textual.widgets import Static
+        status = app.query_one("#status", Static)
+        assert "Working" in str(status.content)
+
+
+@pytest.mark.asyncio
+async def test_set_ready_status(
+    make_mock_agent: MagicMock,
+) -> None:
+    """set_ready_status shows the ready indicator with checkmark."""
+    agent = make_mock_agent(stream_events=[AgentDone(tool_calls_executed=0)])
+    app = SpectreTUI(agent)
+
+    async with app.run_test(headless=True) as pilot:
+        app.set_ready_status("sess-1", 5, 2)
+        await pilot.pause()
+
+        from textual.widgets import Static
+        status = app.query_one("#status", Static)
+        content = str(status.content)
+        assert "✓" in content
+        assert "sess-1" in content
+
+
+@pytest.mark.asyncio
+async def test_set_error_status(
+    make_mock_agent: MagicMock,
+) -> None:
+    """set_error_status shows the error indicator."""
+    agent = make_mock_agent(stream_events=[AgentDone(tool_calls_executed=0)])
+    app = SpectreTUI(agent)
+
+    async with app.run_test(headless=True) as pilot:
+        app.set_error_status("something broke")
+        await pilot.pause()
+
+        from textual.widgets import Static
+        status = app.query_one("#status", Static)
+        content = str(status.content)
+        assert "✗" in content
+        assert "something broke" in content

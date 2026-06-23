@@ -261,6 +261,21 @@ class SpectreTUI(App):
         status = self.query_one("#status", Static)
         status.update(f"{session_id} | {msg_count} msgs | {tool_count} tools")
 
+    def set_working_status(self) -> None:
+        """Show a 'working' indicator in the status bar while streaming."""
+        status = self.query_one("#status", Static)
+        status.update("⏳ Working...")
+
+    def set_ready_status(self, session_id: str, msg_count: int, tool_count: int) -> None:
+        """Show a 'ready' indicator after the turn completes."""
+        status = self.query_one("#status", Static)
+        status.update(f"✓ {session_id} | {msg_count} msgs | {tool_count} tools")
+
+    def set_error_status(self, message: str) -> None:
+        """Show an error indicator when streaming fails."""
+        status = self.query_one("#status", Static)
+        status.update(f"✗ {message}")
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle input submission — dispatch to agent or slash commands."""
         text = event.value.strip()
@@ -313,9 +328,13 @@ class SpectreTUI(App):
         self._streaming = True
         inp.disabled = True
 
+        # Show working indicator in status bar
+        self.set_working_status()
+
         text_acc: list[str] = []
         thinking_acc: list[str] = []
         total_tool_calls = 0
+        stream_exc: Exception | None = None
 
         try:
             async for ev in self.agent.stream_message(text):
@@ -346,29 +365,33 @@ class SpectreTUI(App):
                 elif isinstance(ev, AgentDone):
                     total_tool_calls = ev.tool_calls_executed
         except Exception as exc:
+            stream_exc = exc
             log.write(f"[red]Stream error: {exc}[/red]")
-        finally:
-            # Commit accumulated text as markdown to RichLog
-            last_text = "".join(text_acc)
-            if last_text:
-                rendered = _render_markdown(last_text)
-                log.write(rendered)
 
-            # Clear live regions
-            text_region.update("")
-            text_region.remove_class("visible")
-            thinking_region.update("")
-            thinking_region.remove_class("visible")
+        # Commit accumulated text as markdown to RichLog (even on error)
+        last_text = "".join(text_acc)
+        if last_text:
+            rendered = _render_markdown(last_text)
+            log.write(rendered)
 
-            # Update status
-            session_id = getattr(self.agent, "session_id", "unknown")
-            msg_count = len(getattr(self.agent, "history", []))
-            self.update_status(session_id, msg_count, total_tool_calls)
+        # Clear live regions
+        text_region.update("")
+        text_region.remove_class("visible")
+        thinking_region.update("")
+        thinking_region.remove_class("visible")
 
-            # Re-enable input
-            self._streaming = False
-            inp.disabled = False
-            inp.focus()
+        # Update status bar based on outcome
+        session_id = getattr(self.agent, "session_id", "unknown")
+        msg_count = len(getattr(self.agent, "history", []))
+        if stream_exc is not None:
+            self.set_error_status(str(stream_exc))
+        else:
+            self.set_ready_status(session_id, msg_count, total_tool_calls)
+
+        # Re-enable input
+        self._streaming = False
+        inp.disabled = False
+        inp.focus()
 
     async def _handle_command(
         self, cmd: str, arg: str | None, log: RichLog

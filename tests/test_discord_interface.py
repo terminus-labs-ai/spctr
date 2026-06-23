@@ -75,6 +75,13 @@ def _make_mock_adapter(is_thread: bool = False) -> MagicMock:
     mock_adapter.send_embed = AsyncMock()
     mock_adapter.set_message_handler = MagicMock()
     mock_adapter.is_thread_channel = MagicMock(return_value=is_thread)
+
+    # channel_typing returns an async context manager (no-op in tests)
+    typing_ctx = AsyncMock()
+    typing_ctx.__aenter__ = AsyncMock()
+    typing_ctx.__aexit__ = AsyncMock(return_value=None)
+    mock_adapter.channel_typing = MagicMock(return_value=typing_ctx)
+
     return mock_adapter
 
 
