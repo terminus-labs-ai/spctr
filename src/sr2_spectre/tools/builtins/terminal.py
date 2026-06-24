@@ -52,15 +52,56 @@ class TerminalTool:
             stderr=asyncio.subprocess.PIPE,
             **kwargs,
         )
+
+        # Pump stdout/stderr into buffers concurrently rather than using
+        # communicate(). communicate() is all-or-nothing: on timeout its
+        # buffered reads are discarded, so a killed command (e.g. a slow
+        # pytest) returns nothing and a small model treats the empty result as
+        # a dead end and silently ends its turn. By accumulating into buffers
+        # as the process runs, output already produced survives the kill.
+        stdout_buf = bytearray()
+        stderr_buf = bytearray()
+
+        async def _pump(reader: asyncio.StreamReader | None, buf: bytearray) -> None:
+            if reader is None:
+                return
+            while True:
+                chunk = await reader.read(4096)
+                if not chunk:
+                    break
+                buf.extend(chunk)
+
+        pumps = asyncio.gather(
+            _pump(proc.stdout, stdout_buf),
+            _pump(proc.stderr, stderr_buf),
+        )
         try:
-            communicate_coro = proc.communicate()
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(
-                communicate_coro, timeout=self.timeout
-            )
+            await asyncio.wait_for(pumps, timeout=self.timeout)
+            await proc.wait()
         except (asyncio.TimeoutError, TimeoutError):
             proc.kill()
-            raise TimeoutError(f"Command timed out: {command}")
+            # Cancel the pumps and reap them; whatever was read before the
+            # timeout is already in the buffers.
+            pumps.cancel()
+            try:
+                await pumps
+            except (asyncio.CancelledError, Exception):
+                pass
+            # Best-effort reap so the transport is cleaned up. Bounded: a
+            # killed shell can leave an orphaned child (e.g. `sleep`) holding
+            # the pipes open, which makes an unbounded wait() hang. We don't
+            # need the exit status, so cap the wait and move on.
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=0.5)
+            except Exception:
+                pass
+            partial = (
+                stdout_buf.decode(errors="replace")
+                + stderr_buf.decode(errors="replace")
+            )
+            msg = f"Command timed out after {self.timeout}s: {command}"
+            if partial:
+                msg += f"\n\nPartial output before timeout:\n{partial}"
+            raise TimeoutError(msg)
 
-        stdout = stdout_bytes.decode(errors="replace") if stdout_bytes else ""
-        stderr = stderr_bytes.decode(errors="replace") if stderr_bytes else ""
-        return stdout + stderr
+        return stdout_buf.decode(errors="replace") + stderr_buf.decode(errors="replace")
