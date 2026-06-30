@@ -281,7 +281,10 @@ def build_lora_stack(
             "inputs": {
                 lora_name_key: lora.file,
                 strength_key: lora.strength,
-                clip_strength_key: lora.strength,
+                clip_strength_key: (
+                    clip if (clip := getattr(lora, "clip_strength", None)) is not None
+                    else lora.strength
+                ),
                 # model and clip are wired by the injector
                 "model": None,
                 "clip": None,

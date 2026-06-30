@@ -47,6 +47,7 @@ class LoraFragment(BaseModel):
     """LoRA definition."""
     file: str
     strength: float = 1.0
+    clip_strength: float | None = None
     trigger: str = ""
 
 

@@ -102,12 +102,23 @@ TXT2IMG_EDGES = {
 }
 
 
-# Fake LoraFragment for testing
+# Fake LoraFragment for testing.
+# Intentionally lacks a `clip_strength` attribute to exercise the
+# getattr-style fallback in build_lora_stack (duck-typed objects).
 @dataclass
 class FakeLora:
     file: str
     strength: float = 1.0
     trigger: str = ""
+
+
+# Fake LoraFragment that DOES carry an independent clip_strength field.
+@dataclass
+class FakeLoraClip:
+    file: str
+    strength: float = 1.0
+    trigger: str = ""
+    clip_strength: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +478,61 @@ class TestBuildLoraStack:
         assert (1, 0, 2, "model") in stack.internal_wires
         # Wire 1->2: clip
         assert (1, 1, 2, "clip") in stack.internal_wires
+
+
+# ---------------------------------------------------------------------------
+# Independent clip strength (spc-70)
+# ---------------------------------------------------------------------------
+
+class TestLoraClipStrength:
+    def test_clip_strength_none_falls_back_to_strength(self):
+        """clip_strength=None → strength_clip equals strength_model."""
+        stack = build_lora_stack([
+            FakeLoraClip(file="face.safetensors", strength=0.8, clip_strength=None),
+        ])
+
+        assert stack.nodes[0]["inputs"]["strength_model"] == 0.8
+        assert stack.nodes[0]["inputs"]["strength_clip"] == 0.8
+
+    def test_independent_clip_strength(self):
+        """clip_strength=0.5 with strength=1.0 → independent values in node."""
+        stack = build_lora_stack([
+            FakeLoraClip(file="face.safetensors", strength=1.0, clip_strength=0.5),
+        ])
+
+        assert stack.nodes[0]["inputs"]["strength_model"] == 1.0
+        assert stack.nodes[0]["inputs"]["strength_clip"] == 0.5
+
+    def test_missing_clip_strength_attr_falls_back(self):
+        """Duck-typed object lacking clip_strength attr → falls back to strength."""
+        # FakeLora has no clip_strength attribute at all.
+        lora = FakeLora(file="face.safetensors", strength=0.7)
+        assert not hasattr(lora, "clip_strength")
+
+        stack = build_lora_stack([lora])
+
+        assert stack.nodes[0]["inputs"]["strength_model"] == 0.7
+        assert stack.nodes[0]["inputs"]["strength_clip"] == 0.7
+
+    def test_chain_preserves_per_lora_clip_strength(self):
+        """Each LoRA in a chain keeps its own model/clip strengths."""
+        stack = build_lora_stack([
+            FakeLoraClip(file="face.safetensors", strength=1.0, clip_strength=0.5),
+            FakeLoraClip(file="style.safetensors", strength=0.8, clip_strength=None),
+            FakeLoraClip(file="pose.safetensors", strength=0.3, clip_strength=0.9),
+        ])
+
+        # First: independent clip
+        assert stack.nodes[0]["inputs"]["strength_model"] == 1.0
+        assert stack.nodes[0]["inputs"]["strength_clip"] == 0.5
+
+        # Second: clip falls back to strength
+        assert stack.nodes[1]["inputs"]["strength_model"] == 0.8
+        assert stack.nodes[1]["inputs"]["strength_clip"] == 0.8
+
+        # Third: independent clip
+        assert stack.nodes[2]["inputs"]["strength_model"] == 0.3
+        assert stack.nodes[2]["inputs"]["strength_clip"] == 0.9
 
 
 # ---------------------------------------------------------------------------
