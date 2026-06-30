@@ -173,6 +173,17 @@ class TestLoraFragment:
         assert l.strength == 0.7
         assert l.trigger == "facetoken"
 
+    def test_clip_strength_defaults_to_none(self):
+        """clip_strength is None by default (falls back to strength at build time)."""
+        l = LoraFragment(file="test_lora.safetensors")
+        assert l.clip_strength is None
+
+    def test_clip_strength_set(self):
+        """clip_strength can be set independently of strength."""
+        l = LoraFragment(file="face.safetensors", strength=1.0, clip_strength=0.5)
+        assert l.strength == 1.0
+        assert l.clip_strength == 0.5
+
 
 class TestModalityFragment:
     def test_defaults(self):

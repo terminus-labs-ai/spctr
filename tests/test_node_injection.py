@@ -102,12 +102,23 @@ TXT2IMG_EDGES = {
 }
 
 
-# Fake LoraFragment for testing
+# Fake LoraFragment for testing.
+# Intentionally lacks a `clip_strength` attribute to exercise the
+# getattr-style fallback in build_lora_stack (duck-typed objects).
 @dataclass
 class FakeLora:
     file: str
     strength: float = 1.0
     trigger: str = ""
+
+
+# Fake LoraFragment that DOES carry an independent clip_strength field.
+@dataclass
+class FakeLoraClip:
+    file: str
+    strength: float = 1.0
+    trigger: str = ""
+    clip_strength: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +481,61 @@ class TestBuildLoraStack:
 
 
 # ---------------------------------------------------------------------------
+# Independent clip strength (spc-70)
+# ---------------------------------------------------------------------------
+
+class TestLoraClipStrength:
+    def test_clip_strength_none_falls_back_to_strength(self):
+        """clip_strength=None → strength_clip equals strength_model."""
+        stack = build_lora_stack([
+            FakeLoraClip(file="face.safetensors", strength=0.8, clip_strength=None),
+        ])
+
+        assert stack.nodes[0]["inputs"]["strength_model"] == 0.8
+        assert stack.nodes[0]["inputs"]["strength_clip"] == 0.8
+
+    def test_independent_clip_strength(self):
+        """clip_strength=0.5 with strength=1.0 → independent values in node."""
+        stack = build_lora_stack([
+            FakeLoraClip(file="face.safetensors", strength=1.0, clip_strength=0.5),
+        ])
+
+        assert stack.nodes[0]["inputs"]["strength_model"] == 1.0
+        assert stack.nodes[0]["inputs"]["strength_clip"] == 0.5
+
+    def test_missing_clip_strength_attr_falls_back(self):
+        """Duck-typed object lacking clip_strength attr → falls back to strength."""
+        # FakeLora has no clip_strength attribute at all.
+        lora = FakeLora(file="face.safetensors", strength=0.7)
+        assert not hasattr(lora, "clip_strength")
+
+        stack = build_lora_stack([lora])
+
+        assert stack.nodes[0]["inputs"]["strength_model"] == 0.7
+        assert stack.nodes[0]["inputs"]["strength_clip"] == 0.7
+
+    def test_chain_preserves_per_lora_clip_strength(self):
+        """Each LoRA in a chain keeps its own model/clip strengths."""
+        stack = build_lora_stack([
+            FakeLoraClip(file="face.safetensors", strength=1.0, clip_strength=0.5),
+            FakeLoraClip(file="style.safetensors", strength=0.8, clip_strength=None),
+            FakeLoraClip(file="pose.safetensors", strength=0.3, clip_strength=0.9),
+        ])
+
+        # First: independent clip
+        assert stack.nodes[0]["inputs"]["strength_model"] == 1.0
+        assert stack.nodes[0]["inputs"]["strength_clip"] == 0.5
+
+        # Second: clip falls back to strength
+        assert stack.nodes[1]["inputs"]["strength_model"] == 0.8
+        assert stack.nodes[1]["inputs"]["strength_clip"] == 0.8
+
+        # Third: independent clip
+        assert stack.nodes[2]["inputs"]["strength_model"] == 0.3
+        assert stack.nodes[2]["inputs"]["strength_clip"] == 0.9
+
+
+# ---------------------------------------------------------------------------
 # Edge discovery tests
 # ---------------------------------------------------------------------------
 
@@ -541,3 +607,64 @@ class TestDiscoverEdges:
     def test_empty_workflow(self):
         edges = discover_edges({})
         assert edges == {}
+
+    def test_duplicate_edge_name_drops_second_source(self):
+        """Characterization test for the spc-71 known limitation.
+
+        discover_edges keys edges only by edge_name, so when two distinct
+        source nodes produce the same convention edge name (here two
+        CLIPTextEncode nodes both -> "conditioning"), only the FIRST source
+        node encountered is recorded as the edge's source. The second source
+        is silently dropped, and consumers that actually came from the second
+        source get mis-attached to the first source's edge.
+
+        This pins the CURRENT (intentionally-unfixed) behavior.
+
+        When ControlNet Phase 2 keys edges by (edge_name, source_node_id), this test SHOULD fail and be rewritten.
+        """
+        workflow = {
+            # Two distinct conditioning sources. Node "10" is referenced first
+            # by the consumer below, so it becomes the edge's recorded source.
+            "10": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "first"},
+            },
+            "11": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "second"},
+            },
+            # Single consumer node; "positive" (-> node 10) is iterated before
+            # "negative" (-> node 11), so node 10 is the first-encountered source.
+            "20": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "positive": ["10", 0],
+                    "negative": ["11", 0],
+                },
+            },
+        }
+
+        edges = discover_edges(workflow)
+
+        # Exactly one conditioning edge despite two distinct sources -- the
+        # second source is dropped rather than producing a second edge.
+        cond_edges = [name for name in edges if name == "conditioning"]
+        assert cond_edges == ["conditioning"]
+        assert len(edges) == 1
+
+        cond_edge = edges["conditioning"]
+
+        # First-encountered source wins; node "11" is dropped as a source.
+        assert cond_edge.source.node_id == "10"
+        assert cond_edge.source.output_index == 0
+        # No edge is sourced at node "11" anywhere in the result.
+        assert all(e.source.node_id != "11" for e in edges.values())
+
+        # Both consumers are merged under node 10's edge, including the
+        # "negative" input that actually came from node 11 (mis-attribution).
+        assert len(cond_edge.consumers) == 2
+        consumer_keys = {c.input_key for c in cond_edge.consumers}
+        assert consumer_keys == {"positive", "negative"}
+        # Every consumer is attributed to the single conditioning edge sourced
+        # at node 10, even though "negative" wired from node 11.
+        assert all(c.node_id == "20" for c in cond_edge.consumers)
