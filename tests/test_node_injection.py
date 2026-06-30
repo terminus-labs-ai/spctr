@@ -607,3 +607,64 @@ class TestDiscoverEdges:
     def test_empty_workflow(self):
         edges = discover_edges({})
         assert edges == {}
+
+    def test_duplicate_edge_name_drops_second_source(self):
+        """Characterization test for the spc-71 known limitation.
+
+        discover_edges keys edges only by edge_name, so when two distinct
+        source nodes produce the same convention edge name (here two
+        CLIPTextEncode nodes both -> "conditioning"), only the FIRST source
+        node encountered is recorded as the edge's source. The second source
+        is silently dropped, and consumers that actually came from the second
+        source get mis-attached to the first source's edge.
+
+        This pins the CURRENT (intentionally-unfixed) behavior.
+
+        When ControlNet Phase 2 keys edges by (edge_name, source_node_id), this test SHOULD fail and be rewritten.
+        """
+        workflow = {
+            # Two distinct conditioning sources. Node "10" is referenced first
+            # by the consumer below, so it becomes the edge's recorded source.
+            "10": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "first"},
+            },
+            "11": {
+                "class_type": "CLIPTextEncode",
+                "inputs": {"text": "second"},
+            },
+            # Single consumer node; "positive" (-> node 10) is iterated before
+            # "negative" (-> node 11), so node 10 is the first-encountered source.
+            "20": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "positive": ["10", 0],
+                    "negative": ["11", 0],
+                },
+            },
+        }
+
+        edges = discover_edges(workflow)
+
+        # Exactly one conditioning edge despite two distinct sources -- the
+        # second source is dropped rather than producing a second edge.
+        cond_edges = [name for name in edges if name == "conditioning"]
+        assert cond_edges == ["conditioning"]
+        assert len(edges) == 1
+
+        cond_edge = edges["conditioning"]
+
+        # First-encountered source wins; node "11" is dropped as a source.
+        assert cond_edge.source.node_id == "10"
+        assert cond_edge.source.output_index == 0
+        # No edge is sourced at node "11" anywhere in the result.
+        assert all(e.source.node_id != "11" for e in edges.values())
+
+        # Both consumers are merged under node 10's edge, including the
+        # "negative" input that actually came from node 11 (mis-attribution).
+        assert len(cond_edge.consumers) == 2
+        consumer_keys = {c.input_key for c in cond_edge.consumers}
+        assert consumer_keys == {"positive", "negative"}
+        # Every consumer is attributed to the single conditioning edge sourced
+        # at node 10, even though "negative" wired from node 11.
+        assert all(c.node_id == "20" for c in cond_edge.consumers)

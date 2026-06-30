@@ -331,6 +331,15 @@ def discover_edges(workflow: dict[str, Any]) -> dict[str, WorkflowEdge]:
     - CheckpointLoaderSimple output 2 -> "vae"
     - CLIPTextEncode output 0 -> "conditioning"
 
+    Known limitation:
+        Edges are keyed by ``edge_name`` only. When two or more source nodes
+        produce the same edge name (e.g. two CLIPTextEncode nodes both
+        producing "conditioning"), they collapse into a single edge whose
+        source is the first one encountered. Later sources' consumers are
+        then mis-attached to that first source's edge. The full fix (keying
+        edges by (edge_name, source_node_id) so each distinct source gets its
+        own edge) is deferred to ControlNet Phase 2.
+
     Returns:
         Dict mapping edge names to WorkflowEdge with source and consumers.
     """
@@ -361,6 +370,10 @@ def discover_edges(workflow: dict[str, Any]) -> dict[str, WorkflowEdge]:
             if edge_name is None:
                 continue
 
+            # TODO(spc-71): This guard drops the second source node when two
+            # sources share an edge_name -- only the first source is recorded
+            # and later sources' consumers mis-attach to it. Phase 2 must key
+            # edges by (edge_name, source_node_id) instead of edge_name alone.
             if edge_name not in edges:
                 edges[edge_name] = WorkflowEdge(
                     name=edge_name,
