@@ -94,3 +94,18 @@ bd close <id>         # Complete work
 - NEVER say "ready to push when you are" - YOU must push
 - If push fails, resolve and retry until it succeeds
 <!-- END BEADS INTEGRATION -->
+
+## v2 Product-Owner Build Sessions
+
+For a spec-defined task bead, `/data/obsidian/workflow/README.md` and
+`session-pacing.md` override the generic completion text above. Diego is
+not a midpoint reviewer: run A → B → C → D and stop only for the five
+canonical escalation triggers. `ACCEPTED` is Agent D automated acceptance,
+not a claim of human review; it closes the bead and permits delivery under
+the active project profile.
+
+Before a v2 run, this file must state the exact full-suite command and the
+project mandates Agent D checks. If either is absent, state the fallback
+and use per-step human review. Do not write smoke-test runbooks for v2
+work, and do not `git pull --rebase` after acceptance: integration that
+changes the accepted range requires a new acceptance run.
