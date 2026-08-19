@@ -13,6 +13,13 @@ This project uses **bd** (beads) for issue tracking. Run `bd prime` for full wor
 > source of truth; don't `bd import` during normal operation; don't
 > reach for third-party Dolt hosting before trying the default).
 
+**Vault-synced checkout caveat:** the guidance above assumes a Dolt-synced
+repo. A vault-synced checkout (e.g. `/data/obsidian`) syncs beads via a
+git-tracked `.beads/issues.jsonl` instead, and must NOT run `bd dolt push`,
+`bd dolt pull`, or `bd import` there — do not run those three commands in
+such a checkout. That checkout's own CLAUDE.md is authoritative there and
+overrides this file's Dolt-sync instructions.
+
 ## Quick Reference
 
 ```bash
