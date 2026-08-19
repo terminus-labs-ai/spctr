@@ -68,17 +68,96 @@ changes the accepted range requires a new acceptance run.
 
 ## Build & Test
 
-_Add your build and test commands here_
+Full test suite:
 
 ```bash
-# Example:
-# npm install
-# npm test
+.venv/bin/python -m pytest
+```
+
+Targeted run for a single file or test node, as usual with pytest:
+
+```bash
+.venv/bin/python -m pytest tests/test_some_module.py -v
 ```
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+### Resolver/transformer pipeline
+
+Spectre plugs its planning behaviour into SR2 as pipeline extensions rather
+than forking SR2 itself. `src/sr2_spectre/planning/resolver.py` defines
+`PlanResolver`, which registers on the `sr2.resolvers` entry point (name
+`plan`) and subscribes to the `turn_start` event. On every turn it re-reads
+the plan/knowledge files under the configured `plans_root`/`knowledge_root`
+(nothing is cached across turns, so status edits made mid-run show up on the
+next turn) and injects three layered, delimited sections into the prompt:
+L1 project knowledge, L2 the active plan, and L3 the current task, with L3
+treated as most protected and L1 dropped first if a token budget is
+exceeded. `src/sr2_spectre/planning/transformer.py` defines
+`StepCompactionTransformer`, registered on `sr2.transformers` (name
+`step_compaction`), which subscribes to `plan_step_completed` events fired
+by the `complete_step` tool after its verify step passes. It is a
+deterministic content-block filter with no LLM call: it burns every content
+block tagged with the just-closed task frame and replaces it with a single
+breadcrumb text block, keeping conversation history compact without losing
+narrative continuity. Together, the resolver injects planning context in and
+the transformer burns completed-task context back out once it is verified
+done.
+
+### Four-tier config resolution
+
+`src/sr2_spectre/config.py` (`load_resolved_config_with_provenance`, around
+lines 557-605) resolves a single `SpectreConfig` by merging four tiers,
+lowest to highest priority:
+
+1. `$SR2_HOME/config.yaml`
+2. `$SR2_HOME/spectre.yaml`
+3. `<cwd>/.spectre.yaml`
+4. the extends-resolved positional config file passed on the command line
+
+Tiers 1-3 are optional and silently skipped if missing; the positional file
+(tier 4) is required and wins over all lower tiers. Each tier is merged onto
+the accumulated result with `merge_configs`, and a parallel provenance map
+tracks which file contributed each resolved field, which is what lets
+Spectre tell an operator exactly which config file set a given value.
+
+### Interface/runtime split
+
+Spectre ships multiple front ends that all sit on top of one shared
+`Runtime` (`src/sr2_spectre/runtime.py`): `single_shot`
+(`src/sr2_spectre/interfaces/single_shot.py`, for scripting — one prompt in,
+one response out, process exits), `tui`
+(`src/sr2_spectre/interfaces/tui.py`, for interactive terminal sessions),
+and Discord (`src/sr2_spectre/interfaces/discord/`, for a persistent bot
+process). Each interface is a thin adapter that turns its own I/O model
+(stdin/stdout, a terminal UI loop, or Discord gateway events) into calls
+against the same `Runtime`, which owns session state, the SR2 pipeline, the
+LLM, and the memory store. This split keeps interface-specific concerns
+(rendering, event loops, platform APIs) out of the core agent logic, and
+lets long-running interfaces (tui, discord) apply live config reloads to
+that shared `Runtime` without needing interface-specific reload code.
+
+### `agent.tools` merges additively — no revocation
+
+`src/sr2_spectre/config_merge.py` implements the named-list merge rule used
+throughout config merging (`_named_merge`, around lines 74-107): when a list
+of dicts all share a `name` field — which is how `agent.tools` entries are
+shaped — the child tier's list is merged with the parent tier's list by
+`name`, not replaced. Parent entries keep their position (merged in-place if
+the child also declares that name, otherwise left as-is), and any tool name
+the child declares that the parent didn't gets appended. There is no
+mechanism in this merge rule to delete or "subtract" an entry: a child tier
+cannot express "the parent granted this tool, but I do not want it in this
+context."
+
+Security consequence: because `agent.tools` is a named list, a
+higher-priority, more specific config (e.g. a positional project config,
+tier 4) can only add to or override individual fields of a tool the parent
+already granted — it can never revoke a tool that a broader, lower-priority
+parent config (e.g. `$SR2_HOME/config.yaml`, tier 1) already listed. Anyone
+relying on a narrower config to lock down or reduce an agent's tool
+permissions relative to a broader default needs to be aware that `agent.tools`
+cannot do this; the tool has to be removed at the tier that granted it.
 
 ## Conventions & Patterns
 
