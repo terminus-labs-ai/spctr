@@ -210,3 +210,152 @@ async def test_code_exec_dict_return_formatted() -> None:
 
     assert "Status: success" in result
     assert "'a': 1" in result or "a" in result
+
+
+# ---------------------------------------------------------------------------
+# Containment (obsidian-nr73)
+#
+# The tool used to run snippets in the bot's own process with full builtins,
+# so `import os; print(dict(os.environ))` handed a Discord user the bot token
+# and the GitHub PAT, and the timeout could not stop a busy loop. These pin
+# the properties that fix relies on.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_code_exec_runs_in_a_separate_process() -> None:
+    """A snippet must not observe the host interpreter's PID."""
+    import os
+
+    tool = CodeExecTool()
+    result = await tool(code="__import__('os').getpid()")
+
+    assert "Status: success" in result
+    assert f"Return: {os.getpid()}" not in result
+
+
+@pytest.mark.asyncio
+async def test_code_exec_does_not_leak_process_environment() -> None:
+    """Secrets in the bot's environment must not reach the snippet."""
+    import os
+
+    with patch.dict(
+        os.environ,
+        {"DISCORD_BOT_TOKEN": "leaked-discord-token",
+         "GITHUB_PERSONAL_ACCESS_TOKEN": "leaked-github-pat"},
+    ):
+        tool = CodeExecTool()
+        result = await tool(code="import os; print(dict(os.environ))")
+
+    assert "Status: success" in result
+    assert "leaked-discord-token" not in result
+    assert "leaked-github-pat" not in result
+    assert "DISCORD_BOT_TOKEN" not in result
+    assert "GITHUB_PERSONAL_ACCESS_TOKEN" not in result
+
+
+@pytest.mark.asyncio
+async def test_code_exec_environment_is_a_small_allowlist() -> None:
+    """The child env is built from an allowlist, not inherited and filtered."""
+    tool = CodeExecTool()
+    result = await tool(code="sorted(__import__('os').environ)")
+
+    assert "Status: success" in result
+    for allowed in ("PATH", "HOME", "LANG"):
+        assert allowed in result
+    # An inherited environment would carry far more than the allowlist.
+    for inherited in ("SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "SUDO_USER"):
+        assert inherited not in result
+
+
+@pytest.mark.asyncio
+async def test_code_exec_cannot_kill_the_host_process() -> None:
+    """os._exit in a snippet must kill the child, not the bot."""
+    tool = CodeExecTool()
+    result = await tool(code="import os; os._exit(0)")
+
+    # The tool reports a failure rather than the bot dying mid-turn.
+    assert "Status:" in result
+    # Proof of survival: the next call still works.
+    follow_up = await tool(code="1 + 1")
+    assert "Return: 2" in follow_up
+
+
+@pytest.mark.asyncio
+async def test_code_exec_busy_loop_is_killed_at_the_timeout() -> None:
+    """A CPU-bound loop must be terminated, not merely abandoned."""
+    loop = asyncio.get_running_loop()
+    tool = CodeExecTool(timeout=1)
+
+    started = loop.time()
+    result = await tool(code="while True: pass", timeout=1)
+    elapsed = loop.time() - started
+
+    assert "Status: timeout" in result
+    # Generous ceiling: the point is that it returns, having killed the child.
+    assert elapsed < 15
+
+
+@pytest.mark.asyncio
+async def test_code_exec_timeout_kills_grandchildren() -> None:
+    """Processes the snippet spawned must not outlive the timeout."""
+    import os
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        pid_file = os.path.join(tmp, "grandchild.pid")
+        code = (
+            "import subprocess, sys, pathlib\n"
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            f"pathlib.Path({pid_file!r}).write_text(str(p.pid))\n"
+            "while True: pass\n"
+        )
+        tool = CodeExecTool(timeout=2)
+        result = await tool(code=code, timeout=2)
+
+        assert "Status: timeout" in result
+
+        raw = ""
+        for _ in range(20):
+            raw = open(pid_file).read().strip() if os.path.exists(pid_file) else ""
+            if raw:
+                break
+            await asyncio.sleep(0.1)
+        assert raw, "grandchild never recorded its PID"
+
+        # Give the group kill a moment to land, then assert the PID is gone.
+        grandchild = int(raw)
+        for _ in range(50):
+            try:
+                os.kill(grandchild, 0)
+            except OSError:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            pytest.fail(f"grandchild {grandchild} survived the timeout")
+
+
+@pytest.mark.asyncio
+async def test_code_exec_snippet_cannot_mutate_the_host_interpreter() -> None:
+    """State written by a snippet must not appear in the bot's own modules."""
+    import sr2_spectre.tools.builtins.code_exec as module
+
+    tool = CodeExecTool()
+    result = await tool(
+        code=(
+            "import sr2_spectre.tools.builtins.code_exec as m\n"
+            "m.PWNED = True\n"
+        )
+    )
+
+    assert "Status: success" in result
+    assert not hasattr(module, "PWNED")
+
+
+@pytest.mark.asyncio
+async def test_code_exec_runs_in_the_workspace_root(tmp_path) -> None:
+    """workspace_root is the snippet's cwd, matching the other confined tools."""
+    tool = CodeExecTool(workspace_root=str(tmp_path))
+    result = await tool(code="__import__('os').getcwd()")
+
+    assert "Status: success" in result
+    assert str(tmp_path.resolve()) in result
