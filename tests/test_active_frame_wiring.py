@@ -107,7 +107,7 @@ class TestRuntimeBuildsPlanResolver:
 
         config = _make_config_with_plan(str(plans_dir))
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             # Patch PlanResolver in the planning module (imported inside Runtime.__init__)
             with patch(
                 "sr2_spectre.planning.PlanResolver",
@@ -124,7 +124,7 @@ class TestRuntimeBuildsPlanResolver:
         """Runtime does NOT build PlanResolver when no plan resolver in pipeline."""
         config = _make_config_no_plan()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             # Patch PlanResolver in the planning module to detect if it's ever
             # imported during Runtime init.
             with patch(
@@ -152,7 +152,7 @@ class TestRuntimePassesProviderToSession:
 
         config = _make_config_with_plan(str(plans_dir))
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=config)
@@ -166,7 +166,7 @@ class TestRuntimePassesProviderToSession:
         """Without a plan resolver, Session receives active_frame_provider=None."""
         config = _make_config_no_plan()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=config)
@@ -192,7 +192,7 @@ class TestFrameProviderReturnsCorrectFrame:
 
         config = _make_config_with_plan(str(plans_dir))
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=config)
 
         provider = runtime._active_frame_provider
@@ -220,7 +220,7 @@ class TestSR2BlockStamping:
 
         config = _make_config_with_plan(str(plans_dir))
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2") as MockSR2:
                 mock_sr2_instance = MagicMock()
                 MockSR2.return_value = mock_sr2_instance
@@ -267,7 +267,7 @@ class TestStepCompactionIntegration:
 
         config = _make_config_with_plan(str(plans_dir))
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=config)
 
         provider = runtime._active_frame_provider

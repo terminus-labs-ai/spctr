@@ -283,7 +283,7 @@ class TestRuntimeSkillsDirsBootstrap:
 
         cfg = _base_config(skills_dirs=[str(skills_dir)])
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "my-awesome-skill" in runtime.skill_registry
@@ -302,7 +302,7 @@ class TestRuntimeSkillsDirsBootstrap:
 
         cfg = _base_config(skills_dirs=[str(skills_dir)])
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Builtin should still be there
@@ -329,7 +329,7 @@ Custom conventions content.
 
         cfg = _base_config(skills_dirs=[str(skills_dir)])
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         skill = runtime.skill_registry.get("sr2-conventions")
@@ -343,7 +343,7 @@ Custom conventions content.
 
         cfg = _base_config(skills_dirs=[])
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Only defaults should be present
@@ -360,7 +360,7 @@ Custom conventions content.
 
         cfg = _base_config(skills_dirs=[str(skills_dir)])
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Verify via the load_skill tool
@@ -381,7 +381,7 @@ Custom conventions content.
 
         cfg = _base_config(skills_dirs=[str(skills_dir)])
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         spec = runtime.registry._tools["load_skill"]
@@ -460,7 +460,7 @@ class TestPerFileAndDirsCoexist:
             )
         ]
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "per-file-skill" in runtime.skill_registry
@@ -500,7 +500,7 @@ Discovered content.
             )
         ]
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         skill = runtime.skill_registry.get("override-target")

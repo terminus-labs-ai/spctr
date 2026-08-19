@@ -67,14 +67,14 @@ def _mock_sr2(turn_events: list[StreamEvent] | None = None) -> MagicMock:
 class TestRuntimeInit:
     def test_runtime_has_config(self):
         from sr2_spectre.runtime import Runtime
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=_make_config())
         assert runtime.config is not None
         assert runtime.config.agent.name == "test"
 
     def test_runtime_has_llm_callable(self):
         from sr2_spectre.runtime import Runtime
-        with patch("sr2_spectre.runtime.LiteLLMCallable") as MockLLM:
+        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             runtime = Runtime(config=_make_config())
         assert runtime.llm is not None
@@ -86,7 +86,7 @@ class TestRuntimeInit:
     def test_runtime_has_tool_registry(self):
         from sr2_spectre.runtime import Runtime
         from sr2_spectre.tools.registry import ToolRegistry
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=_make_config())
         assert isinstance(runtime.registry, ToolRegistry)
 
@@ -102,7 +102,7 @@ class TestRuntimeInit:
             )
         ])
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch.object(
                 __import__("sr2_spectre.tools.registry", fromlist=["ToolRegistry"]).ToolRegistry,
                 "register_from_class_path",
@@ -119,7 +119,7 @@ class TestRuntimeInit:
             McpServerConfig(name="b", type="http", url="http://localhost:8080"),
         ])
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.runtime.MCPClient") as MockMCP:
                 runtime = Runtime(config=cfg)
         assert MockMCP.call_count == 2
@@ -128,7 +128,7 @@ class TestRuntimeInit:
         from sr2_spectre.runtime import Runtime
 
         cfg = _make_config()
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
         assert runtime._mcp_clients == []
 
@@ -148,7 +148,7 @@ class TestRuntimeInitialize:
         ])
 
         mock_client = AsyncMock()
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.runtime.MCPClient", return_value=mock_client):
                 runtime = Runtime(config=cfg)
 
@@ -171,7 +171,7 @@ class TestRuntimeInitialize:
         mock_client = AsyncMock()
         mock_client.connect = AsyncMock(return_value=[mock_bridge])
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.runtime.MCPClient", return_value=mock_client):
                 runtime = Runtime(config=cfg)
 
@@ -185,7 +185,7 @@ class TestRuntimeInitialize:
         from sr2_spectre.runtime import Runtime
 
         cfg = _make_config()
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         await runtime.initialize()  # must not raise
@@ -200,7 +200,7 @@ class TestRuntimeNewSession:
         from sr2_spectre.runtime import Runtime
         from sr2_spectre.session import Session
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2"):
                 runtime = Runtime(config=_make_config())
         session = runtime.new_session(frame_id="test-frame")
@@ -210,7 +210,7 @@ class TestRuntimeNewSession:
     def test_new_session_constructs_sr2_with_frame_id(self):
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=_make_config())
@@ -222,7 +222,7 @@ class TestRuntimeNewSession:
     def test_new_session_sr2_gets_tool_registry(self):
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=_make_config())
@@ -237,7 +237,7 @@ class TestRuntimeNewSession:
         mock_sr2_a = MagicMock()
         mock_sr2_b = MagicMock()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2", side_effect=[mock_sr2_a, mock_sr2_b]):
                 runtime = Runtime(config=_make_config())
                 session_a = runtime.new_session(frame_id="frame-a")
@@ -257,7 +257,7 @@ class TestSessionInit:
         from sr2_spectre.runtime import Runtime
         from sr2_spectre.session import Session
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2"):
                 runtime = Runtime(config=_make_config())
                 session = runtime.new_session(frame_id="my-frame")
@@ -266,7 +266,7 @@ class TestSessionInit:
     def test_session_has_empty_history(self):
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2"):
                 runtime = Runtime(config=_make_config())
                 session = runtime.new_session(frame_id="f")
@@ -276,7 +276,7 @@ class TestSessionInit:
         import asyncio
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2"):
                 runtime = Runtime(config=_make_config())
                 session = runtime.new_session(frame_id="f")
@@ -344,7 +344,7 @@ class TestSessionLock:
         mock_sr2.seed_session = MagicMock()
         mock_sr2.turn = _slow_turn
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
                 runtime = Runtime(config=_make_config())
                 session = runtime.new_session(frame_id="f")
@@ -499,7 +499,7 @@ class TestRuntimeAClose:
         mock_client_a = AsyncMock()
         mock_client_b = AsyncMock()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch(
                 "sr2_spectre.runtime.MCPClient",
                 side_effect=[mock_client_a, mock_client_b],
@@ -516,7 +516,7 @@ class TestRuntimeAClose:
         from sr2_spectre.runtime import Runtime
 
         cfg = _make_config()
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         await runtime.aclose()  # must not raise
@@ -541,7 +541,7 @@ class TestRuntimeAClose:
         mock_client_a.close.side_effect = RuntimeError("transport already closed")
         mock_client_b = AsyncMock()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch(
                 "sr2_spectre.runtime.MCPClient",
                 side_effect=[mock_client_a, mock_client_b],
@@ -578,7 +578,7 @@ class TestRuntimeAClose:
         mock_client_a.close.side_effect = asyncio.CancelledError()
         mock_client_b = AsyncMock()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch(
                 "sr2_spectre.runtime.MCPClient",
                 side_effect=[mock_client_a, mock_client_b],
@@ -615,7 +615,7 @@ class TestSessionIsolation:
         mock_sr2_b.seed_session = MagicMock()
         mock_sr2_b.turn = _turn
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2", side_effect=[mock_sr2_a, mock_sr2_b]):
                 runtime = Runtime(config=_make_config())
                 session_a = runtime.new_session(frame_id="frame-a")

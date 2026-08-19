@@ -29,7 +29,11 @@ from sr2_spectre.core import RunContext, RunMode
 from sr2_spectre.events import AgentDone, AgentTextDelta, AgentToolResult, AgentToolStart
 from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
 from sr2_spectre.interfaces.discord.config import DiscordConfig
-from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
+from sr2_spectre.interfaces.discord.config_source import (
+    DiscordConfigProvider,
+    DiscordConfigSource,
+    DiscordConfigView,
+)
 from sr2_spectre.interfaces.discord.handler import (
     CommandContext,
     chunk_message,
@@ -57,13 +61,16 @@ class DiscordInterface:
     def __init__(
         self,
         config: DiscordConfig | None = None,
-        config_source: DiscordConfigSource | None = None,
+        config_source: DiscordConfigProvider | None = None,
     ) -> None:
         """
         Args:
             config: A fixed config. Ignored when config_source is given.
             config_source: Live config source, re-read on every inbound
                 message so config edits apply without a process restart.
+                A ``DiscordConfigView`` additionally carries the whole
+                SpectreConfig, letting model, endpoint, pipeline and tool
+                edits reach the running agent — see ``_apply_agent_config``.
                 When omitted, *config* is frozen for the life of the process.
         """
         self._config_source = config_source or DiscordConfigSource.static(config)
@@ -114,6 +121,18 @@ class DiscordInterface:
         self._adapter.set_message_handler(_handle_message)
 
         await self._adapter.start()
+
+    def _apply_agent_config(self) -> None:
+        """Hand the agent the config the adapter just reloaded.
+
+        Only meaningful on the ``DiscordConfigView`` path, where the reload
+        covered the whole SpectreConfig. With a plain ``DiscordConfigSource``
+        (tests, embedders) there is no agent config to apply and this is a
+        no-op.
+        """
+        if self._agent is None or not isinstance(self._config_source, DiscordConfigView):
+            return
+        self._agent.apply_config(self._config_source.source.current)
 
     async def stop(self) -> None:
         """Stop the Discord bot and clean up sessions."""
@@ -217,6 +236,10 @@ class DiscordInterface:
         """
         if self._adapter is None or self._agent is None:
             return
+
+        # The adapter reloaded the config when this message arrived; push the
+        # non-Discord half of that load into the agent before handling it.
+        self._apply_agent_config()
 
         # Extract plain data from discord.Message
         channel_obj = getattr(message, "channel", None)

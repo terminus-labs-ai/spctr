@@ -59,7 +59,7 @@ class TestRuntimeForwardsApiKey:
         from sr2_spectre.runtime import Runtime
 
         cfg = _make_config(api_key="dummy")
-        with patch("sr2_spectre.runtime.LiteLLMCallable") as MockLLM:
+        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             Runtime(config=cfg)
 
@@ -76,7 +76,7 @@ class TestBackwardCompatibility:
         from sr2_spectre.runtime import Runtime
 
         cfg = _make_config()  # no api_key
-        with patch("sr2_spectre.runtime.LiteLLMCallable") as MockLLM:
+        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             Runtime(config=cfg)
 

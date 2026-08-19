@@ -183,7 +183,7 @@ class TestRuntimeSkillsBootstrap:
 
         cfg = _base_config()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "load_skill" in runtime.registry
@@ -194,7 +194,7 @@ class TestRuntimeSkillsBootstrap:
 
         cfg = _base_config()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Check that the builtin skill is registered
@@ -208,7 +208,7 @@ class TestRuntimeSkillsBootstrap:
 
         cfg = _base_config()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert isinstance(runtime.skill_registry, SkillRegistry)
@@ -220,7 +220,7 @@ class TestRuntimeSkillsBootstrap:
 
         cfg = _base_config()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Get the load_skill tool spec and call it
@@ -235,7 +235,7 @@ class TestRuntimeSkillsBootstrap:
 
         cfg = _base_config()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         spec = runtime.registry._tools["load_skill"]
@@ -268,7 +268,7 @@ class TestConfigSkillFiles:
             )
         ])
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "custom-skill" in runtime.skill_registry
@@ -291,7 +291,7 @@ class TestConfigSkillFiles:
             )
         ])
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Should have logged a warning
@@ -318,7 +318,7 @@ class TestConfigSkillFiles:
             )
         ])
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         skill = runtime.skill_registry.get("sr2-conventions")
@@ -410,7 +410,7 @@ class TestNoDuplicateRegistration:
             )
         ]
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             # This will fail because LoadSkillTool requires registry= parameter
             # but register_from_class_path passes **config (empty dict).
             # That's OK — the test verifies the no-duplicate behavior when it works.

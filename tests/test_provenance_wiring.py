@@ -107,7 +107,7 @@ class TestRuntimeInitializeProvenance:
         from sr2_spectre.runtime import Runtime
 
         config = _make_config()
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=config)
 
         assert runtime._provenance_store is None
@@ -130,7 +130,7 @@ class TestRuntimeInitializeProvenance:
         from sr2_spectre.runtime import Runtime
 
         config = _make_config(provenance_store_path="")
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=config)
 
         assert runtime._provenance_store_path is None
@@ -154,7 +154,7 @@ class TestRuntimeACloseProvenance:
         from sr2_spectre.runtime import Runtime
 
         config = _make_config()
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=config)
 
         mock_store = AsyncMock()
@@ -170,7 +170,7 @@ class TestRuntimeACloseProvenance:
         from sr2_spectre.runtime import Runtime
 
         config = _make_config(provenance_store_path="")
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=config)
 
         await runtime.aclose()  # must not raise
@@ -186,7 +186,7 @@ class TestProvenanceStoreThreading:
 
         mock_store = MagicMock()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=_make_config())
@@ -199,7 +199,7 @@ class TestProvenanceStoreThreading:
     def test_new_session_passes_none_when_not_initialized(self):
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=_make_config())
@@ -338,7 +338,7 @@ class TestPersistenceAcrossRestart:
         try:
             config = _make_config(provenance_store_path=db_path)
 
-            with patch("sr2_spectre.runtime.LiteLLMCallable"):
+            with patch("sr2_spectre.live_llm.LiteLLMCallable"):
                 runtime = Runtime(config=config)
 
             # Before initialize: store not connected

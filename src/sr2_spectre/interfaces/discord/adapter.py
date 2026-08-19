@@ -18,7 +18,10 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from sr2_spectre.interfaces.discord.config import DiscordConfig
-from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
+from sr2_spectre.interfaces.discord.config_source import (
+    DiscordConfigProvider,
+    DiscordConfigSource,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,16 +53,17 @@ class DiscordBotAdapter:
     lifecycle without the bot controlling the interface.
     """
 
-    def __init__(self, config: DiscordConfig | DiscordConfigSource) -> None:
+    def __init__(self, config: DiscordConfig | DiscordConfigProvider) -> None:
         """
         Args:
-            config: Either a DiscordConfigSource (the live path — re-read on
-                every message) or a plain DiscordConfig, which is wrapped in
-                a static source that never changes.
+            config: Either a live config provider — a DiscordConfigSource, or
+                a DiscordConfigView onto the whole SpectreConfig, both re-read
+                on every message — or a plain DiscordConfig, which is wrapped
+                in a static source that never changes.
         """
         self._config_source = (
             config
-            if isinstance(config, DiscordConfigSource)
+            if isinstance(config, DiscordConfigProvider)
             else DiscordConfigSource.static(config)
         )
         self._bot: Any = None

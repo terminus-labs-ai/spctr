@@ -57,7 +57,7 @@ class TestRuntimeMemoryStoreConstruction:
     def test_runtime_has_memory_store(self):
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=_make_config())
 
         assert runtime._memory_store is not None
@@ -68,7 +68,7 @@ class TestRuntimeMemoryStoreConstruction:
         construction time — no initialize() round-trip required."""
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=_make_config())
 
         assert isinstance(runtime._memory_store, InMemoryMemoryStore)
@@ -82,7 +82,7 @@ class TestMemoryStoreThreading:
     def test_new_session_passes_store_to_sr2(self):
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=_make_config())
@@ -96,7 +96,7 @@ class TestMemoryStoreThreading:
         receives None — distinct from the lazily-connected provenance store."""
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=_make_config())
@@ -156,7 +156,7 @@ class TestSharedStoreAcrossSessions:
 
         captured: list[object] = []
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=_make_config())

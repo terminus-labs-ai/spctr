@@ -9,17 +9,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import weakref
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sr2.pipeline.provenance import ProvenanceStore
     from sr2.pipeline.tracing import Tracer
 
-from sr2.integrations.litellm import LiteLLMCallable
 from sr2.memory import InMemoryMemoryStore, PostgresMemoryStore
 from sr2.pipeline.token_counting import CharacterTokenCounter
 from sr2_spectre.config import SpectreConfig
+from sr2_spectre.live_llm import LiveLLM
 from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
 from sr2_spectre.session import Session
 from sr2_spectre.skills.builtin import DEFAULT_SKILLS
@@ -55,7 +57,7 @@ class Runtime:
 
     Owns:
     - SpectreConfig (single source of truth)
-    - LiteLLMCallable (one LLM path)
+    - LiveLLM (one LLM path, retargetable on config reload)
     - ToolRegistry (tool definitions; stateless executors)
     - MCPClient instances (connected once)
     - Shared in-memory MemoryStore (backs memory resolver/transformer; spc-49)
@@ -75,19 +77,10 @@ class Runtime:
             from pathlib import Path
             self.workspace_root = str(Path(workspace_raw).resolve())
 
-        # Register tools from config, injecting workspace_root ONLY into tools
-        # whose constructor accepts it (FileWriteTool, EditTool, TerminalTool).
-        # Blanket injection crashes tools that don't take the kwarg (e.g.
-        # FileReadTool) the moment SR2_WORKSPACE is set.
-        for tool_cfg in config.agent.tools:
-            tool_config = dict(tool_cfg.config)
-            if (
-                self.workspace_root is not None
-                and "workspace_root" not in tool_config
-                and _tool_accepts_workspace_root(tool_cfg.class_path)
-            ):
-                tool_config["workspace_root"] = self.workspace_root
-            self.registry.register_from_class_path(tool_cfg.class_path, tool_config)
+        # Names registered from agent.tools, tracked so a later config reload
+        # can tell a tool this config dropped from one an MCP server supplied.
+        self._config_tool_names: set[str] = set()
+        self._register_config_tools(config, strict=True)
 
         # Auto-inject complete_step when a plan resolver is configured.
         # complete_step + plan resolver are one feature unit: if the pipeline
@@ -129,29 +122,45 @@ class Runtime:
         else:
             self._memory_store = InMemoryMemoryStore()
 
-        # Build LLM callable — forward per-agent sampling params
-        model_cfg = config.models["default"]
-        llm_kwargs: dict = {
-            "model": model_cfg.model,
-            "base_url": model_cfg.base_url,
-        }
-        if model_cfg.api_key:
-            llm_kwargs["api_key"] = model_cfg.api_key
-        if model_cfg.params:
-            llm_kwargs.update(model_cfg.params)
-        self.llm = LiteLLMCallable(**llm_kwargs)
+        # Build the LLM handle. LiveLLM, not a bare LiteLLMCallable: sessions
+        # capture their LLM for life, so the indirection is what lets a
+        # corrected model or base_url reach conversations that are already
+        # open (see live_llm.LiveLLM).
+        self.llm = LiveLLM(config.models["default"])
 
-        # Build PlanResolver instance to wire active_frame_provider into SR2.
-        # The PlanResolver.current_frame_id() returns the active frame for the
-        # lowest-order pending task. We wrap it as a Callable[[str], str | None]
-        # to match the active_frame_provider signature (origin parameter ignored).
+        # Live sessions, weakly held so a closed frame is not kept alive just
+        # to be told about config reloads.
+        self._sessions: "weakref.WeakSet[Session]" = weakref.WeakSet()
+
         self._active_frame_provider: Callable[[str], str | None] | None = None
+        self._plan_resolver: Any = None
+        self._plan_resolver_config = None
+        self._wire_plan_resolver(config)
+
+    def _wire_plan_resolver(self, config: SpectreConfig) -> None:
+        """Build the PlanResolver and the active_frame_provider SR2 gets.
+
+        ``PlanResolver.current_frame_id()`` returns the active frame for the
+        lowest-order pending task. It is wrapped as a
+        ``Callable[[str], str | None]`` to match the active_frame_provider
+        signature (the origin parameter is ignored).
+
+        Safe to re-run on a config reload. The closure reads
+        ``self._plan_resolver`` at call time rather than capturing it, so a
+        reload that only changes the resolver's settings is picked up by
+        sessions that already hold the closure.
+        """
         self._plan_resolver_config = self._find_plan_resolver_config(config)
-        if self._plan_resolver_config:
-            from sr2_spectre.planning import PlanResolver
+        if not self._plan_resolver_config:
+            self._plan_resolver = None
+            self._active_frame_provider = None
+            return
 
-            self._plan_resolver = PlanResolver(self._plan_resolver_config)
+        from sr2_spectre.planning import PlanResolver
 
+        self._plan_resolver = PlanResolver(self._plan_resolver_config)
+
+        if self._active_frame_provider is None:
             def _frame_provider(origin: str) -> str | None:
                 # origin parameter accepted for SR2 signature compatibility;
                 # PlanResolver.current_frame_id() is origin-agnostic.
@@ -159,12 +168,133 @@ class Runtime:
                 return self._plan_resolver.current_frame_id()
 
             self._active_frame_provider = _frame_provider
-            logger.info("PlanResolver active — wiring active_frame_provider into sessions")
 
-            # Warn if step_compaction transformer is not declared in any layer.
-            # A PlanResolver stamps frame metadata on blocks, but without the
-            # transformer those frames are never burned — context grows unbounded.
-            self._check_step_compaction_config(config)
+        logger.info("PlanResolver active — wiring active_frame_provider into sessions")
+
+        # Warn if step_compaction transformer is not declared in any layer.
+        # A PlanResolver stamps frame metadata on blocks, but without the
+        # transformer those frames are never burned — context grows unbounded.
+        self._check_step_compaction_config(config)
+
+    def apply_config(self, config: SpectreConfig) -> list[str]:
+        """Adopt a freshly reloaded config into this running process.
+
+        Called once per inbound message, off the back of
+        ``SpectreConfigSource.reload()``. Reloading answers "what does the file
+        say now"; this decides what a live process can actually do about it.
+
+        Every branch below is gated on an observed change, so the steady-state
+        cost of a reload that found nothing new is one equality check — not a
+        rebuild of the tool registry on every message.
+
+        Fields that a running process cannot re-seat (MCP servers, the store
+        connections, the agent identity) are pinned upstream by
+        ``SpectreConfigSource`` and never reach this method; the operator is
+        warned once that those need a restart.
+
+        Returns:
+            Names of the config areas that were actually applied, for logging
+            and for tests to assert against.
+        """
+        previous = self.config
+        if config == previous:
+            return []
+
+        self.config = config
+        applied: list[str] = []
+
+        # Models and endpoints. The LiveLLM swap reaches sessions that are
+        # already open, which is the whole point of the indirection.
+        if self.llm.retarget(config.models["default"]):
+            applied.append("models")
+
+        if config.agent.tools != previous.agent.tools:
+            self._register_config_tools(config, strict=False)
+            applied.append("agent.tools")
+
+        if (
+            config.agent.skills != previous.agent.skills
+            or config.agent.skills_dirs != previous.agent.skills_dirs
+        ):
+            self._rebuild_skills(config)
+            applied.append("agent.skills")
+
+        # The pipeline is baked into each frame's SR2, so a pipeline edit means
+        # those have to be rebuilt. Sessions defer the rebuild to their next
+        # turn, under their own lock — an in-flight reply must not have its SR2
+        # swapped mid-stream.
+        pipeline_changed = config.pipeline != previous.pipeline
+        if pipeline_changed:
+            self._wire_plan_resolver(config)
+            self._auto_inject_complete_step(config)
+            applied.append("pipeline")
+        for session in list(self._sessions):
+            session.apply_config(
+                config,
+                rebuild_sr2=pipeline_changed,
+                active_frame_provider=self._active_frame_provider,
+            )
+
+        if applied:
+            logger.info("Applied config reload: %s", ", ".join(applied))
+        return applied
+
+    def _register_config_tools(self, config: SpectreConfig, strict: bool) -> None:
+        """(Re)register the tools declared in ``agent.tools``.
+
+        workspace_root is injected ONLY into tools whose constructor accepts it
+        (FileWriteTool, EditTool, TerminalTool). Blanket injection crashes tools
+        that don't take the kwarg (e.g. FileReadTool) the moment SR2_WORKSPACE
+        is set.
+
+        Args:
+            strict: True at startup, where a tool that will not construct is a
+                broken config and should stop the process. False on reload,
+                where the process is already serving traffic and a bad edit must
+                cost the operator that one tool, not the bot.
+        """
+        registered: set[str] = set()
+        for tool_cfg in config.agent.tools:
+            tool_config = dict(tool_cfg.config)
+            if (
+                self.workspace_root is not None
+                and "workspace_root" not in tool_config
+                and _tool_accepts_workspace_root(tool_cfg.class_path)
+            ):
+                tool_config["workspace_root"] = self.workspace_root
+            try:
+                name = self.registry.register_from_class_path(
+                    tool_cfg.class_path, tool_config
+                )
+            except Exception as exc:  # noqa: BLE001 — see `strict`
+                if strict:
+                    raise
+                logger.warning(
+                    "Tool '%s' failed to register on config reload (keeping the "
+                    "previous registration if there was one): %s",
+                    tool_cfg.class_path,
+                    exc,
+                )
+                continue
+            registered.add(name)
+
+        # Retire tools an earlier config declared and this one does not. MCP
+        # bridges and auto-injected tools are absent from _config_tool_names,
+        # so they survive untouched.
+        for stale in self._config_tool_names - registered:
+            if self.registry.unregister(stale):
+                logger.info("Tool '%s' dropped by config reload", stale)
+
+        self._config_tool_names = registered
+
+    def _rebuild_skills(self, config: SpectreConfig) -> None:
+        """Repopulate the skill registry after a config reload.
+
+        Cleared and refilled in place rather than replaced: the auto-injected
+        ``load_skill`` tool holds a reference to this exact registry object.
+        """
+        self.skill_registry.clear()
+        self._bootstrap_skills(config)
 
     async def initialize(self) -> None:
         """Connect all MCP clients and register their tool bridges into the registry.
@@ -217,7 +347,7 @@ class Runtime:
         The shared in-memory memory store is threaded through so the memory
         resolver/transformer read and write the same store across frames.
         """
-        return Session(
+        session = Session(
             frame_id=frame_id,
             config=self.config,
             llm=self.llm,
@@ -227,6 +357,8 @@ class Runtime:
             provenance_store=self._provenance_store,
             memory_store=self._memory_store,
         )
+        self._sessions.add(session)
+        return session
 
     async def aclose(self) -> None:
         """Close all MCP client transports and the provenance store.

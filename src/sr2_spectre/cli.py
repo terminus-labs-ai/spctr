@@ -25,8 +25,12 @@ from sr2.pipeline.tracing import CollectingTracer, render_compiled_request, rend
 from sr2_spectre.agent import Agent
 from sr2_spectre.config import SpectreConfig
 from sr2_spectre.config import load_resolved_config as _resolve_merged_config
+from sr2_spectre.config_source import SpectreConfigSource
 from sr2_spectre.interfaces.discord.config import DiscordConfig
-from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
+from sr2_spectre.interfaces.discord.config_source import (
+    DiscordConfigSource,
+    DiscordConfigView,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -267,17 +271,38 @@ def resolve_config(
     return SpectreConfig(**merged)
 
 
-def build_discord_config_source(
+def build_spectre_config_source(
     config_path: str | Path,
     cwd: Path,
-    initial: DiscordConfig | None = None,
-) -> DiscordConfigSource:
-    """Build the live config source handed to the Discord interface.
+    initial: SpectreConfig,
+) -> SpectreConfigSource:
+    """Build the live whole-config source for a long-running interface.
 
     The loader re-runs the same 4-tier resolution as startup, so an edit to
     any tier — not only the agent file — is picked up on the next message.
     ``cwd`` is captured once so the project tier stays the one the process
     started in.
+
+    The whole SpectreConfig is kept, not just the interface's slice of it: the
+    resolution already builds it, and models, endpoints, pipeline and tools are
+    exactly the fields an operator most needs to fix without a restart.
+    """
+    def _load() -> SpectreConfig:
+        return resolve_config(config_path, cwd=cwd, env=dict(os.environ))
+
+    return SpectreConfigSource(loader=_load, initial=initial)
+
+
+def build_discord_config_source(
+    config_path: str | Path,
+    cwd: Path,
+    initial: DiscordConfig | None = None,
+) -> DiscordConfigSource:
+    """Build a live source for the Discord slice of the config alone.
+
+    Kept for callers that only drive the bot's own settings. The running bot
+    uses ``build_spectre_config_source`` instead, so one reload per message
+    serves both the interface and the agent.
     """
     def _load() -> DiscordConfig:
         resolved = resolve_config(config_path, cwd=cwd, env=dict(os.environ))
@@ -332,10 +357,11 @@ async def run_async(argv: list[str] | None = None) -> None:
     if interface_name == "single_shot" and args.prompt:
         interface_kwargs["prompt"] = " ".join(args.prompt)
     if interface_name == "discord":
-        # Config source, not a config object: the Discord bot re-reads its
-        # config on every message so edits do not need a restart.
-        interface_kwargs["config_source"] = build_discord_config_source(
-            config_path, Path.cwd(), config.discord
+        # Config source, not a config object: the Discord bot re-reads the
+        # whole config on every message so edits — including the model and its
+        # endpoint — do not need a restart.
+        interface_kwargs["config_source"] = DiscordConfigView(
+            build_spectre_config_source(config_path, Path.cwd(), config)
         )
 
     await agent.initialize()

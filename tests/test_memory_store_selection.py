@@ -79,7 +79,7 @@ class TestDefaultIsInMemory:
         monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=_make_config())
 
         assert isinstance(runtime._memory_store, InMemoryMemoryStore)
@@ -95,7 +95,7 @@ class TestConfigDsnSelectsPostgres:
         monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"), \
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
                 patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg:
             MockPg.return_value = MagicMock()
             runtime = Runtime(config=_make_config(memory_store_dsn=_PG_DSN))
@@ -114,7 +114,7 @@ class TestEnvDsnSelectsPostgres:
         monkeypatch.setenv("SPECTRE_MEMORY_DSN", _ENV_DSN)
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"), \
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
                 patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg:
             MockPg.return_value = MagicMock()
             runtime = Runtime(config=_make_config())  # memory_store_dsn unset (None)
@@ -133,7 +133,7 @@ class TestConfigDsnPrecedence:
         monkeypatch.setenv("SPECTRE_MEMORY_DSN", _ENV_DSN)
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"), \
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
                 patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg:
             MockPg.return_value = MagicMock()
             runtime = Runtime(config=_make_config(memory_store_dsn=_PG_DSN))
@@ -155,7 +155,7 @@ class TestEmptyStringDsnDisabled:
         monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"), \
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
                 patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg:
             runtime = Runtime(config=_make_config(memory_store_dsn=""))
 
@@ -172,7 +172,7 @@ class TestEmptyStringDsnDisabled:
         monkeypatch.setenv("SPECTRE_MEMORY_DSN", _ENV_DSN)
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"), \
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
                 patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg:
             runtime = Runtime(config=_make_config(memory_store_dsn=""))
 
@@ -191,7 +191,7 @@ class TestAcloseClosesStore:
         monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"), \
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
                 patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg:
             mock_store = MagicMock()
             MockPg.return_value = mock_store
@@ -207,7 +207,7 @@ class TestAcloseClosesStore:
         monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=_make_config())  # default -> in-memory
 
         # Must complete cleanly even though InMemoryMemoryStore has no close().
@@ -224,7 +224,7 @@ class TestSelectedStoreThreadedToSessions:
         monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
         from sr2_spectre.runtime import Runtime
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"), \
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
                 patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg, \
                 patch("sr2_spectre.session.SR2") as MockSR2:
             MockPg.return_value = MagicMock()
@@ -275,7 +275,7 @@ async def test_real_postgres_store_constructed_and_closed():
     """
     from sr2_spectre.runtime import Runtime
 
-    with patch("sr2_spectre.runtime.LiteLLMCallable"):
+    with patch("sr2_spectre.live_llm.LiteLLMCallable"):
         runtime = Runtime(config=_make_config(memory_store_dsn=_TEST_DSN))
 
     assert isinstance(runtime._memory_store, PostgresMemoryStore)

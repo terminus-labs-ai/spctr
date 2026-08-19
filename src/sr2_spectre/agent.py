@@ -127,6 +127,19 @@ class Agent:
 
     # ---- Delegated methods ----
 
+    def apply_config(self, config: SpectreConfig) -> list[str]:
+        """Adopt a reloaded config, returning the config areas actually applied.
+
+        Interfaces that reload config while running (Discord) call this once
+        per inbound message, so a corrected model, endpoint, pipeline or tool
+        list takes effect on the next reply instead of the next restart.
+
+        Returns:
+            Names of the applied config areas — empty when nothing changed.
+        """
+        self._config = config
+        return self._runtime.apply_config(config)
+
     async def initialize(self) -> None:
         """Connect all MCP clients and register their tool bridges."""
         await self._runtime.initialize()

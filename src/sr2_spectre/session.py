@@ -15,9 +15,9 @@ if TYPE_CHECKING:
     from sr2.memory import MemoryStore
     from sr2.pipeline.provenance import ProvenanceStore
     from sr2.pipeline.tracing import Tracer
+    from sr2.protocols.llm import LLMCallable
 
 from sr2.config.models import ToolLoopLimitError
-from sr2.integrations.litellm import LiteLLMCallable
 from sr2.models import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from sr2.orchestrator import SR2
 from sr2.pipeline.events import Event, EventPhase
@@ -53,7 +53,7 @@ class Session:
         self,
         frame_id: str,
         config: SpectreConfig,
-        llm: LiteLLMCallable,
+        llm: "LLMCallable",
         registry: ToolRegistry,
         tracer: "Tracer | None" = None,
         active_frame_provider: Callable[[str], str | None] | None = None,
@@ -65,6 +65,20 @@ class Session:
         self._registry = registry
         self.history: list[Message] = []
         self._lock = asyncio.Lock()
+
+        # Kept so the SR2 can be rebuilt when a config reload changes the
+        # pipeline. Everything here is either shared process-wide (stores, the
+        # LLM handle) or fixed for this frame (tracer, providers), so a rebuild
+        # only re-reads the pipeline.
+        self._llm = llm
+        self._tracer = tracer
+        self._active_frame_provider = active_frame_provider
+        self._provenance_store = provenance_store
+        self._memory_store = memory_store
+        # Set by apply_config(); consumed at the top of the next turn, under
+        # the lock, so an in-flight reply never has the SR2 swapped underneath
+        # it (its tool executor publishes onto sr2.bus while it runs).
+        self._sr2_stale = False
 
         # Run context — set by the Interface at start(); None until then.
         self._run_context: RunContext | None = None
@@ -81,24 +95,66 @@ class Session:
                 "source": ctx.source or "",
             }
 
-        # SR2 owns context compilation, tool definition injection, and LLM calls.
-        # When a shared provenance_store is provided (from Runtime), all sessions
-        # write pipeline provenance to the same persistent store. The shared
-        # memory_store (when provided) backs the memory resolver/transformer so
-        # agents accrue cross-session memory within the process.
-        self.sr2 = SR2(
-            pipeline_config=config.pipeline,
-            llm={"default": llm},
+        self._run_context_provider = _run_context_provider
+        self.sr2 = self._build_sr2()
+
+    def _build_sr2(self) -> SR2:
+        """Construct an SR2 for this frame from the config in force.
+
+        SR2 owns context compilation, tool definition injection, and LLM calls.
+        When a shared provenance_store is provided (from Runtime), all sessions
+        write pipeline provenance to the same persistent store. The shared
+        memory_store (when provided) backs the memory resolver/transformer so
+        agents accrue cross-session memory within the process.
+
+        Safe to call more than once: spectre owns the authoritative history in
+        ``self.history`` and re-seeds SR2 from it at the top of every turn, so
+        a fresh SR2 loses no conversation state.
+        """
+        return SR2(
+            pipeline_config=self.config.pipeline,
+            llm={"default": self._llm},
             token_counter=CharacterTokenCounter(),
-            session_id=frame_id,
+            session_id=self.frame_id,
             tool_source=self._registry,
-            tracer=tracer,
+            tracer=self._tracer,
             tool_executor=self._execute_tool,
-            active_frame_provider=active_frame_provider,
-            run_context_provider=_run_context_provider,
-            provenance_store=provenance_store,
-            memory_store=memory_store,
+            active_frame_provider=self._active_frame_provider,
+            run_context_provider=self._run_context_provider,
+            provenance_store=self._provenance_store,
+            memory_store=self._memory_store,
         )
+
+    def apply_config(
+        self,
+        config: SpectreConfig,
+        rebuild_sr2: bool = False,
+        active_frame_provider: Callable[[str], str | None] | None = None,
+    ) -> None:
+        """Adopt a reloaded config for the next turn.
+
+        Args:
+            config: The config now in force process-wide.
+            rebuild_sr2: True when the pipeline changed, so this frame's SR2
+                has to be rebuilt. The rebuild is deferred to the next turn
+                rather than done here — see ``_sr2_stale``.
+            active_frame_provider: The provider the Runtime holds now. A
+                pipeline edit can add or remove the plan resolver this comes
+                from, so it is re-supplied alongside the rebuild instead of
+                being frozen at construction.
+        """
+        self.config = config
+        if rebuild_sr2:
+            self._active_frame_provider = active_frame_provider
+            self._sr2_stale = True
+
+    def _refresh_sr2_if_stale(self) -> None:
+        """Rebuild the SR2 if a config reload invalidated it. Call under lock."""
+        if not self._sr2_stale:
+            return
+        self.sr2 = self._build_sr2()
+        self._sr2_stale = False
+        logger.info("Rebuilt SR2 for frame '%s' — pipeline changed", self.frame_id)
 
     @property
     def run_context(self) -> RunContext | None:
@@ -163,6 +219,7 @@ class Session:
     async def stream_message(self, text: str) -> AsyncIterator[AgentEvent]:
         """Stream agent events for a user message, serialized by _lock."""
         async with self._lock:
+            self._refresh_sr2_if_stale()
             self.history.append(Message(role="user", content=[TextBlock(text=text)]))
 
             prior = self.history[:-1]

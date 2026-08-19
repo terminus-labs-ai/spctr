@@ -44,7 +44,7 @@ class ToolRegistry:
         self,
         class_path: str,
         config: dict[str, Any] | None = None,
-    ) -> None:
+    ) -> str:
         """Dynamically load and register a tool class.
 
         Expects the class to have:
@@ -52,6 +52,10 @@ class ToolRegistry:
         - __call__ (sync or async)
 
         Or a factory that returns an instance with those attributes.
+
+        Returns:
+            The name the tool registered under, so callers that need to track
+            what a given config contributed (and later retire it) can.
         """
         config = config or {}
         module_path, class_name = class_path.rsplit(".", 1)
@@ -65,6 +69,17 @@ class ToolRegistry:
             input_schema=tool_instance.input_schema,
             fn=tool_instance.__call__ if hasattr(tool_instance, "__call__") else tool_instance,
         )
+        return tool_instance.name
+
+    def unregister(self, name: str) -> bool:
+        """Drop a tool by name. Returns True if it was registered.
+
+        Used when a config reload removes a tool that a previous config
+        declared: overwriting by name is not enough, the stale entry has to
+        leave the registry or the agent keeps being offered a tool its config
+        no longer grants it.
+        """
+        return self._tools.pop(name, None) is not None
 
     def to_sr2_definitions(self) -> list["ToolDefinition"]:
         """Return tool definitions as SR2 ToolDefinition objects.

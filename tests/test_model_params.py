@@ -88,7 +88,7 @@ class TestRuntimeForwardsParams:
 
         cfg = _make_config(params={"temperature": 0.2, "top_p": 0.9})
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable") as MockLLM:
+        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             runtime = Runtime(config=cfg)
 
@@ -105,7 +105,7 @@ class TestRuntimeForwardsParams:
 
         cfg = _make_config()  # params defaults to {}
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable") as MockLLM:
+        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             runtime = Runtime(config=cfg)
 
@@ -125,7 +125,7 @@ class TestRuntimeForwardsParams:
             "stream_options": {"include_usage": True},
         })
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable") as MockLLM:
+        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             runtime = Runtime(config=cfg)
 
@@ -160,7 +160,7 @@ class TestBackwardCompatibility:
             pipeline=_minimal_pipeline_dict(),
         )
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable") as MockLLM:
+        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             runtime = Runtime(config=cfg)
 

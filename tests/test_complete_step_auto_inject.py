@@ -100,7 +100,7 @@ class TestAutoInjectWithPlanResolver:
 
         cfg = _config_with_plan_resolver()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "complete_step" in runtime.registry
@@ -111,7 +111,7 @@ class TestAutoInjectWithPlanResolver:
 
         cfg = _config_without_plan_resolver()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "complete_step" not in runtime.registry
@@ -124,7 +124,7 @@ class TestAutoInjectWithPlanResolver:
         Path(custom_root).mkdir()
         cfg = _config_with_plan_resolver(plans_root=custom_root)
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Verify the registered tool's instance has the correct plans_root
@@ -141,7 +141,7 @@ class TestAutoInjectWithPlanResolver:
 
         cfg = _config_with_plan_resolver()  # no plans_root specified
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         spec = runtime.registry._tools.get("complete_step")
@@ -173,7 +173,7 @@ class TestNoDuplicateRegistration:
             )
         ]
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Should still have exactly one complete_step
@@ -195,7 +195,7 @@ class TestNoDuplicateRegistration:
             )
         ]
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "complete_step" in runtime.registry
@@ -242,7 +242,7 @@ class TestEdgeCases:
             },
         )
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "complete_step" in runtime.registry
@@ -285,7 +285,7 @@ class TestEdgeCases:
             },
         )
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "complete_step" in runtime.registry

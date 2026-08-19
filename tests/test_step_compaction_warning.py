@@ -121,7 +121,7 @@ class TestBothConfigured:
         """When plan resolver AND step_compaction are both configured, no warning is emitted."""
         cfg = _config_with_plan_and_compaction()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.runtime.logger") as mock_logger:
                 runtime = Runtime(config=cfg)
 
@@ -142,7 +142,7 @@ class TestPlanWithoutCompaction:
         """When a plan resolver exists but no step_compaction transformer, a WARNING is emitted."""
         cfg = _config_with_plan_no_compaction()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.runtime.logger") as mock_logger:
                 runtime = Runtime(config=cfg)
 
@@ -159,7 +159,7 @@ class TestPlanWithoutCompaction:
         """The warning message names step_compaction and PlanResolver."""
         cfg = _config_with_plan_no_compaction()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.runtime.logger") as mock_logger:
                 runtime = Runtime(config=cfg)
 
@@ -182,7 +182,7 @@ class TestNeitherConfigured:
         """When there's no plan resolver, the absence of step_compaction is not warned about."""
         cfg = _config_no_plan_no_compaction()
 
-        with patch("sr2_spectre.runtime.LiteLLMCallable"):
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
             with patch("sr2_spectre.runtime.logger") as mock_logger:
                 runtime = Runtime(config=cfg)
 

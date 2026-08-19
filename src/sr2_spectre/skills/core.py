@@ -116,6 +116,15 @@ class SkillRegistry:
             )
         self._skills[skill.name] = skill
 
+    def clear(self) -> None:
+        """Drop every registered skill.
+
+        Used when a config reload changes the declared skill set. The registry
+        is emptied and refilled in place rather than replaced, because the
+        auto-injected ``load_skill`` tool holds a reference to this object.
+        """
+        self._skills.clear()
+
     def get(self, name: str) -> Skill | None:
         """Retrieve a skill by name.
 
