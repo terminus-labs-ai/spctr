@@ -13,12 +13,15 @@ installed.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 discord = pytest.importorskip("discord")
 
 from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
 from sr2_spectre.interfaces.discord.config import DiscordConfig
+from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
 
 
 def _adapter(**overrides) -> DiscordBotAdapter:
@@ -137,3 +140,78 @@ async def test_channel_typing_is_usable_as_async_context_manager() -> None:
 
     # After the block, typing must have been released.
     assert fake_channel._typing.exited is True
+
+
+# --- Live config reload -------------------------------------------------
+#
+# dispatch_message() is the process's single entry point for an inbound
+# Discord message, so it owns the per-message config reload. These tests
+# drive it directly (no bot required) with a source whose loader is under
+# test control.
+
+def _message(channel_id: int) -> SimpleNamespace:
+    return SimpleNamespace(
+        author=SimpleNamespace(id=999),
+        channel=SimpleNamespace(id=channel_id),
+        content="hello",
+    )
+
+
+async def test_dispatch_reloads_the_config_for_every_message() -> None:
+    calls: list[int] = []
+
+    def _load() -> DiscordConfig:
+        calls.append(1)
+        return DiscordConfig(token="t")
+
+    adapter = DiscordBotAdapter(DiscordConfigSource(_load, DiscordConfig(token="t")))
+    adapter.set_message_handler(lambda message: _noop())
+
+    for _ in range(3):
+        await adapter.dispatch_message(_message(1))
+
+    assert len(calls) == 3
+
+
+async def _noop() -> None:
+    return None
+
+
+async def test_channel_filter_uses_the_reloaded_channels() -> None:
+    """Adding a channel to the config file must take effect without a restart."""
+    configs = [
+        DiscordConfig(token="t", channels=[111]),
+        DiscordConfig(token="t", channels=[111, 222]),
+    ]
+    seen: list[int] = []
+
+    async def _handler(message) -> None:
+        seen.append(message.channel.id)
+
+    adapter = DiscordBotAdapter(DiscordConfigSource(lambda: configs.pop(0), configs[0]))
+    adapter.set_message_handler(_handler)
+
+    await adapter.dispatch_message(_message(222))   # loads config #1: filtered out
+    await adapter.dispatch_message(_message(222))   # loads config #2: allowed
+
+    assert seen == [222]
+
+
+async def test_config_property_reads_through_to_the_source() -> None:
+    source = DiscordConfigSource(
+        lambda: DiscordConfig(token="t", mention_only=True),
+        DiscordConfig(token="t"),
+    )
+    adapter = DiscordBotAdapter(source)
+
+    assert adapter.config.mention_only is False
+    source.reload()
+    assert adapter.config.mention_only is True
+
+
+async def test_a_plain_config_still_works() -> None:
+    """Callers that pass a DiscordConfig get a source that never changes."""
+    adapter = DiscordBotAdapter(DiscordConfig(token="t", mention_only=True))
+
+    assert adapter.config.mention_only is True
+    assert adapter._config_source.reload().mention_only is True

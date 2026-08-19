@@ -20,6 +20,7 @@ import pytest
 
 from sr2_spectre.events import AgentDone, AgentTextDelta, AgentToolResult, AgentToolStart
 from sr2_spectre.interfaces.discord.config import DiscordConfig
+from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
 from sr2_spectre.interfaces.discord.interface import DiscordInterface
 
 
@@ -104,6 +105,28 @@ class TestInterfaceProtocol:
         interface = DiscordInterface(config=config)
         assert interface.config.token == "test-token"
 
+    def test_config_source_overrides_a_static_config(self) -> None:
+        source = DiscordConfigSource(
+            lambda: DiscordConfig(token="from-source", mention_only=True),
+            DiscordConfig(token="from-source"),
+        )
+        interface = DiscordInterface(config=DiscordConfig(token="ignored"),
+                                     config_source=source)
+
+        assert interface.config.token == "from-source"
+
+    def test_config_follows_the_source_across_a_reload(self) -> None:
+        """The interface must see the values reloaded for the current message."""
+        source = DiscordConfigSource(
+            lambda: DiscordConfig(token="t", max_message_length=500),
+            DiscordConfig(token="t"),
+        )
+        interface = DiscordInterface(config_source=source)
+
+        assert interface.config.max_message_length == 2000
+        source.reload()
+        assert interface.config.max_message_length == 500
+
 
 @pytest.mark.asyncio
 async def test_start_initializes_adapter() -> None:
@@ -118,7 +141,10 @@ async def test_start_initializes_adapter() -> None:
 
         await interface.start(agent)
 
-        MockAdapter.assert_called_once_with(config)
+        # The adapter gets the SHARED config source, not a config object:
+        # it performs the per-message reload the interface then reads from.
+        MockAdapter.assert_called_once_with(interface._config_source)
+        assert interface._config_source.current == config
         mock_adapter.start.assert_called_once()
 
 

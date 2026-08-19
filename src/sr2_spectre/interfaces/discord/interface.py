@@ -29,6 +29,7 @@ from sr2_spectre.core import RunContext, RunMode
 from sr2_spectre.events import AgentDone, AgentTextDelta, AgentToolResult, AgentToolStart
 from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
 from sr2_spectre.interfaces.discord.config import DiscordConfig
+from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
 from sr2_spectre.interfaces.discord.handler import (
     CommandContext,
     chunk_message,
@@ -53,8 +54,19 @@ class DiscordInterface:
     """
     name = "discord"
 
-    def __init__(self, config: DiscordConfig | None = None) -> None:
-        self.config = config or DiscordConfig()
+    def __init__(
+        self,
+        config: DiscordConfig | None = None,
+        config_source: DiscordConfigSource | None = None,
+    ) -> None:
+        """
+        Args:
+            config: A fixed config. Ignored when config_source is given.
+            config_source: Live config source, re-read on every inbound
+                message so config edits apply without a process restart.
+                When omitted, *config* is frozen for the life of the process.
+        """
+        self._config_source = config_source or DiscordConfigSource.static(config)
         self._agent: Agent | None = None
         self._adapter: DiscordBotAdapter | None = None
         self._session_map = SessionMap()
@@ -69,6 +81,15 @@ class DiscordInterface:
         # message (the "edited back and forth" bug).
         self._stream_text: dict[int, str] = {}
 
+    @property
+    def config(self) -> DiscordConfig:
+        """The Discord config in force, as of the last reload.
+
+        Reads through to the shared config source, so handling of a message
+        sees the values the adapter loaded when that message arrived.
+        """
+        return self._config_source.current
+
     async def start(self, agent: "Agent") -> None:
         """Initialize the Discord interface and start the bot.
 
@@ -76,7 +97,7 @@ class DiscordInterface:
             agent: The Spectre Agent instance.
         """
         self._agent = agent
-        self._adapter = DiscordBotAdapter(self.config)
+        self._adapter = DiscordBotAdapter(self._config_source)
         self._running = True
 
         # Set interactive run context for Discord

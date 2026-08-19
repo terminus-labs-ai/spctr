@@ -256,27 +256,45 @@ Paths in config files support:
 
 ## Discord Interface
 
-The Discord interface has its own config section under `agent.discord`:
+The Discord interface has its own top-level config section, `discord`:
 
 ```yaml
-agent:
-  discord:
-    token: "your-bot-token"
-    channels: []
-    mention_only: false
-    max_message_length: 2000
-    edit_stream_interval: 1.0
-    tool_embed_enabled: true
+discord:
+  token: "your-bot-token"
+  channels: []
+  mention_only: false
+  max_message_length: 2000
+  edit_stream_interval: 1.0
+  tool_embed_enabled: true
+  auto_thread: false
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `token` | str | `""` | Discord bot token |
+| `token` | str | `""` | Discord bot token (restart required to change) |
 | `channels` | list[int] | `[]` | Channel IDs to monitor (empty = all) |
 | `mention_only` | bool | `false` | Only respond when mentioned |
 | `max_message_length` | int | `2000` | Max chars per message (Discord limit) |
 | `edit_stream_interval` | float | `1.0` | Seconds between stream edits (0 = disabled) |
 | `tool_embed_enabled` | bool | `true` | Show tool execution as embeds |
+| `auto_thread` | bool | `false` | Start a thread for each new conversation |
+
+### Live reload
+
+The Discord bot re-reads its config on **every inbound message**, so an edit
+to any tier applies to the next message — no process restart. Details:
+
+- `token` is the exception: the bot is already logged in with it, so a changed
+  token is ignored (and logged) until the process restarts.
+- A config that fails to parse or validate leaves the last good config in
+  force; the bot keeps running and logs the error once. Fix the file and the
+  next message picks it up.
+- A reload swaps the whole config at once, so no message is handled against a
+  half-applied edit. Reads are not frozen for the duration of a reply, though:
+  if a second message lands while a reply is still streaming, its reload is
+  visible to the reply in progress.
+- The reload is a synchronous re-read of the config tiers (~7 ms against a
+  typical agent file) on the bot's event loop, once per message.
 
 ---
 

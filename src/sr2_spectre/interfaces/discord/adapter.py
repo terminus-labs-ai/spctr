@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
 from sr2_spectre.interfaces.discord.config import DiscordConfig
+from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,18 @@ class DiscordBotAdapter:
     lifecycle without the bot controlling the interface.
     """
 
-    def __init__(self, config: DiscordConfig) -> None:
-        self.config = config
+    def __init__(self, config: DiscordConfig | DiscordConfigSource) -> None:
+        """
+        Args:
+            config: Either a DiscordConfigSource (the live path — re-read on
+                every message) or a plain DiscordConfig, which is wrapped in
+                a static source that never changes.
+        """
+        self._config_source = (
+            config
+            if isinstance(config, DiscordConfigSource)
+            else DiscordConfigSource.static(config)
+        )
         self._bot: Any = None
         self._running = False
         self._task: asyncio.Task | None = None
@@ -59,6 +70,11 @@ class DiscordBotAdapter:
         # interface wires the handler, so resetting it there drops every
         # message (handler clobbered back to None).
         self._on_message_handler: Any = None
+
+    @property
+    def config(self) -> DiscordConfig:
+        """The Discord config in force, as of the last reload."""
+        return self._config_source.current
 
     @property
     def bot_id(self) -> int | None:
@@ -104,20 +120,31 @@ class DiscordBotAdapter:
 
         @self._bot.event
         async def on_message(message: Any) -> None:
-            # Skip bot's own messages
-            if message.author == self._bot.user:
-                return
+            await self.dispatch_message(message)
 
-            # Skip DMs if channels are configured (server-only mode)
-            if self.config.channels and not hasattr(message, "channel"):
-                return
+    async def dispatch_message(self, message: Any) -> None:
+        """Filter one inbound message and hand it to the message handler.
 
-            # Channel filter
-            if self.config.channels and message.channel.id not in self.config.channels:
-                return
+        This is the process's single entry point for a Discord message, so it
+        is where the config is re-read: the filters below, and the handler
+        downstream, run against the config this message just loaded.
+        """
+        config = self._config_source.reload()
 
-            if self._on_message_handler is not None:
-                await self._on_message_handler(message)
+        # Skip bot's own messages
+        if self._bot is not None and message.author == self._bot.user:
+            return
+
+        # Skip DMs if channels are configured (server-only mode)
+        if config.channels and not hasattr(message, "channel"):
+            return
+
+        # Channel filter
+        if config.channels and message.channel.id not in config.channels:
+            return
+
+        if self._on_message_handler is not None:
+            await self._on_message_handler(message)
 
     def set_message_handler(self, handler: Any) -> None:
         """Set the message handler callback for incoming messages.
