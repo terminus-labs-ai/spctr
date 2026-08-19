@@ -168,6 +168,76 @@ await interface.run(agent)
 await interface.stop()
 ```
 
+## Live config reload (long-running interfaces)
+
+An interface that runs for days — a chat bot, a daemon — outlives the config it
+started with. Without opting in, the agent it drives is frozen at the config
+resolved at process start, so fixing a wrong `models.default.base_url` means a
+restart. Short-lived interfaces (`single_shot`, `tui`) do not need any of this.
+
+Opting in is two pieces: take a config **source** instead of a config object,
+and hand the reloaded config to the agent on each inbound message.
+
+```python
+from sr2_spectre.config_source import SpectreConfigSource
+
+
+class MyBotInterface:
+    def __init__(self, config_source: SpectreConfigSource) -> None:
+        self._source = config_source
+        self._agent = None
+
+    async def start(self, agent) -> None:
+        self._agent = agent
+
+    async def _on_inbound_message(self, text: str) -> None:
+        # One re-read per message, at the single entry point for inbound
+        # traffic. reload() returns the config now in force.
+        config = self._source.reload()
+
+        # Hand it to the agent: models, endpoints, pipeline, tools and skills
+        # are re-seated as needed. Returns the areas actually applied, or []
+        # when nothing changed.
+        self._agent.apply_config(config)
+
+        # ... your own settings come off `config` too ...
+        async for event in self._agent.stream_message(text):
+            ...
+```
+
+Build the source with `cli.build_spectre_config_source(config_path, cwd,
+initial)`, which re-runs the same 4-tier resolution as startup.
+
+### Rules
+
+1. **Reload once, at the single entry point for inbound messages.** Not per
+   handler, not per field read. Everything downstream reads `source.current`
+   so one message is handled against one config.
+
+2. **Never let a reload failure escape.** `reload()` already absorbs a
+   malformed or missing file and keeps the last known-good config in force —
+   do not add a `try` that turns that into a crash, and do not call the loader
+   yourself.
+
+3. **Call `agent.apply_config()` before you handle the message**, so the reply
+   is produced against the config that was on disk when it arrived.
+
+4. **Do not cache config values on your interface.** Read through to
+   `source.current` (or the object `reload()` returned) at the point of use, or
+   an edit will apply to some of your behaviour and not the rest.
+
+5. **Pinned fields are not yours to apply.** `agent.name`, `agent.mcp_servers`,
+   the store paths and interface credentials are held at their startup values
+   by the source itself and warn once. If your interface has a field of its own
+   that cannot change under a live process (a session token, a bound port), add
+   it to a `PINNED_FIELDS` tuple rather than applying it and hoping.
+
+See [CONFIG-REFERENCE.md § Live reload](CONFIG-REFERENCE.md#live-reload) for
+the full hot-versus-restart breakdown, and
+`interfaces/discord/config_source.py` for a worked example — `DiscordConfigView`
+shows how one read per message can serve both the interface's own settings and
+the agent's.
+
 ## Best Practices
 
 1. **Set `RunContext` in `start()`** — The agent uses this for logging and mode-specific behavior.

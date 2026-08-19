@@ -31,6 +31,9 @@ agent:
 
 Human-readable name for the agent. Used in logs and session identifiers.
 
+**Restart required to change.** Frame ids are derived from it, so changing it
+under a running process would orphan every open conversation.
+
 ### `agent.tools` (list[ToolConfig])
 
 Built-in tools to register. Each entry:
@@ -67,6 +70,9 @@ Built-in tools to register. Each entry:
 ### `agent.mcp_servers` (list[McpServerConfig])
 
 External MCP (Model Context Protocol) servers to connect at startup. Tools from these servers are registered alongside built-in tools.
+
+**Restart required to change.** Each server owns a connected transport, and a
+`stdio` server owns a subprocess; neither can be re-seated by a config reload.
 
 ```yaml
   mcp_servers:
@@ -127,6 +133,10 @@ models:
 ```
 
 A dictionary mapping named endpoints to `ModelConfig`. The `"default"` key is required.
+
+Every field here is [live-reloadable](#live-reload): correcting a model name or
+a wrong `base_url` applies to the next message, including in conversations that
+are already open. No restart needed.
 
 ### `model` (str, required)
 
@@ -271,7 +281,7 @@ discord:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `token` | str | `""` | Discord bot token (restart required to change) |
+| `token` | str | `""` | Discord bot token (**restart required** — the gateway session is already open with it) |
 | `channels` | list[int] | `[]` | Channel IDs to monitor (empty = all) |
 | `mention_only` | bool | `false` | Only respond when mentioned |
 | `max_message_length` | int | `2000` | Max chars per message (Discord limit) |
@@ -279,22 +289,114 @@ discord:
 | `tool_embed_enabled` | bool | `true` | Show tool execution as embeds |
 | `auto_thread` | bool | `false` | Start a thread for each new conversation |
 
-### Live reload
+### Config reload
 
-The Discord bot re-reads its config on **every inbound message**, so an edit
-to any tier applies to the next message — no process restart. Details:
+The Discord bot re-reads the **whole** config on every inbound message — not
+just this section. `token` is the only field here that needs a restart. See
+[Live reload](#live-reload) for what applies immediately and what does not.
 
-- `token` is the exception: the bot is already logged in with it, so a changed
-  token is ignored (and logged) until the process restarts.
-- A config that fails to parse or validate leaves the last good config in
-  force; the bot keeps running and logs the error once. Fix the file and the
-  next message picks it up.
-- A reload swaps the whole config at once, so no message is handled against a
-  half-applied edit. Reads are not frozen for the duration of a reply, though:
-  if a second message lands while a reply is still streaming, its reload is
-  visible to the reply in progress.
-- The reload is a synchronous re-read of the config tiers (~7 ms against a
-  typical agent file) on the bot's event loop, once per message.
+---
+
+## Live reload
+
+A long-running interface re-reads the **whole resolved config on every inbound
+message**, so most edits apply to the next message with no process restart.
+This is on for the Discord interface. Short-lived interfaces (`single_shot`,
+`tui`) resolve their config once at startup and never reload.
+
+The re-read runs the full 4-tier merge, so an edit to *any* tier is picked up —
+not just the agent file.
+
+### What applies immediately
+
+| Config | Effect on the next message |
+|--------|----------------------------|
+| `models.default.model` | Subsequent calls use the new model |
+| `models.default.base_url` | Subsequent calls hit the new endpoint |
+| `models.default.api_key` | Subsequent calls use the new key |
+| `models.default.params` | New sampling params take effect |
+| `pipeline.*` | Each conversation rebuilds its SR2 on its next turn |
+| `agent.tools` | Tools added, removed, or reconfigured |
+| `agent.skills`, `agent.skills_dirs` | Skill registry rebuilt |
+| `agent.tool_result_max_bytes` | New truncation limit |
+| `discord.*` except `token` | Channel filters, threading, streaming, embeds |
+
+### What needs a restart
+
+These are wired into a live connection, subprocess or identity at startup, and
+a reload has no way to rebuild them. The file value is **ignored** and the
+value the process started with stays in force.
+
+| Config | Why |
+|--------|-----|
+| `agent.name` | Frame ids derive from it; changing it orphans open conversations |
+| `agent.mcp_servers` | Each server owns a connected transport; `stdio` owns a subprocess |
+| `memory_store_dsn` | Backs a connection opened once at startup |
+| `provenance_store_path` | Backs a connection opened once at startup |
+| `discord.token` | The gateway session was opened with it |
+
+A change to one of these logs a warning **once** — not per message — then keeps
+the startup value:
+
+```
+Spectre config: 'agent.mcp_servers' changed on disk but cannot be applied
+without a restart — keeping the value the process started with.
+```
+
+If an edit seems to be ignored and you see no warning repeating in the log,
+check for that single line: it is the tell that you edited a pinned field.
+Restart the process to apply it:
+
+```bash
+systemctl --user restart sr2-discord@<agent>
+```
+
+### Guarantees
+
+- **A bad config cannot take the process down.** A file that is missing,
+  malformed, fails validation, or is caught mid-save leaves the last known-good
+  config in force. The error is logged once (repeats suppressed, so a broken
+  file does not flood the log with a line per message). Fix the file and the
+  next message picks it up, logging `reload recovered`.
+- **No message is handled against a half-applied edit.** A reload swaps in a
+  whole new config object rather than mutating fields.
+- **Reads are not frozen for the duration of a reply.** If a second message
+  lands while a reply is still streaming, its reload is visible to the reply in
+  progress from that point on.
+- **An endpoint fix reaches conversations that are already open.** Sessions
+  hold a stable LLM handle whose target is swapped underneath them, so you do
+  not have to start a new conversation for a corrected `base_url` to take
+  effect.
+- **A pipeline edit costs no history.** The conversation transcript is owned
+  outside SR2 and re-seeded on every turn, so rebuilding a session's SR2 loses
+  no messages. The rebuild is deferred to that session's next turn, so a reply
+  that is mid-stream is never disturbed.
+- **A tool that fails to construct costs you that tool, not the bot.** On
+  reload the failure is logged and the previous registration (if any) stays.
+  At *startup* the same failure is fatal — a config that cannot build should
+  not come up pretending it works.
+
+### Cost
+
+Steady state is one config re-read plus an equality check, synchronously on the
+interface's event loop, once per message. Measured at **~6 ms/message** against
+a real agent file with an `extends:` chain (`~/.sr2/agents/miranda.yaml`,
+2 MCP servers, 8 tools).
+
+Rebuild work — tools, skills, the LLM handle, SR2 instances — is gated on an
+observed change, so a reload that finds nothing new costs the re-read and the
+compare, nothing more. That cost is paid per inbound message, so it scales with
+traffic, not with config size.
+
+### Implementation
+
+| Piece | Where |
+|-------|-------|
+| Reload machinery, pinned fields | `sr2_spectre/config_source.py` |
+| Swappable LLM handle | `sr2_spectre/live_llm.py` |
+| Applying a reload to a live process | `Runtime.apply_config` |
+| Per-conversation adoption, SR2 rebuild | `Session.apply_config` |
+| Discord wiring (one read serves both halves) | `interfaces/discord/config_source.py` |
 
 ---
 

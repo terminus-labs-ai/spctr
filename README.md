@@ -37,6 +37,11 @@ Edit `my-config.yaml` — at minimum set `models.default.model` and `models.defa
 
 Spectre works with any OpenAI-compatible API (Ollama, LM Studio, vLLM) and hosted providers (OpenAI, Anthropic via LiteLLM).
 
+Long-running interfaces (the Discord bot) re-read the whole config on every
+inbound message, so fixing a model or endpoint applies to the next message
+without a restart. A few fields still need one — see
+[Live reload](docs/CONFIG-REFERENCE.md#live-reload).
+
 ## Usage
 
 **Interactive TUI:**

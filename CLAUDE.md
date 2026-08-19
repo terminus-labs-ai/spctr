@@ -82,6 +82,40 @@ _Add a brief overview of your project architecture_
 
 ## Conventions & Patterns
 
+### Live config reload (obsidian-fvfs, obsidian-bzfb)
+
+Long-running interfaces re-read the **whole** resolved `SpectreConfig` on every
+inbound message. Do not tell the operator to restart an agent for a config edit
+without checking whether the field is pinned.
+
+- **Hot** (applies to the next message): `models.default.*`, `pipeline.*`,
+  `agent.tools`, `agent.skills`, `agent.skills_dirs`,
+  `agent.tool_result_max_bytes`, all `discord.*` except `token`.
+- **Pinned** (needs a process restart, warns once, keeps the startup value):
+  `agent.name`, `agent.mcp_servers`, `memory_store_dsn`,
+  `provenance_store_path`, `discord.token`.
+
+Flow: `cli.build_spectre_config_source` → `SpectreConfigSource` (last-good
+fallback; a malformed file never takes the process down) → `DiscordConfigView`
+gives the adapter the Discord slice of that same single read →
+`Runtime.apply_config` re-seats the rest, every branch gated on an observed
+change so a no-op reload costs one equality check.
+
+Two invariants worth preserving when touching this:
+
+- Sessions hold a `LiveLLM` (`src/sr2_spectre/live_llm.py`), not a bare
+  `LiteLLMCallable`. SR2 captures its LLM for the life of a session, so without
+  that indirection an endpoint fix would only reach *new* conversations.
+- A pipeline change rebuilds a session's SR2, but the rebuild is **deferred to
+  that session's next turn, under its own lock** (`Session._sr2_stale`). Doing
+  it eagerly would swap the SR2 out from under an in-flight reply whose tool
+  executor is still publishing to `sr2.bus`.
+
+**Test seam:** patch `sr2_spectre.live_llm.LiteLLMCallable`, *not*
+`sr2_spectre.runtime.LiteLLMCallable` — LLM construction moved to
+`live_llm.build_llm`. Docs: `docs/CONFIG-REFERENCE.md` § Live reload;
+`docs/INTERFACE-DEV-GUIDE.md` § Live config reload.
+
 ### Memory store backend (obsidian-cor)
 
 The Runtime selects the memory store backend at construction via
