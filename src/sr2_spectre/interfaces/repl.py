@@ -20,10 +20,11 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Iterable
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import FuzzyWordCompleter
+from prompt_toolkit.completion import Completer, Completion, FuzzyWordCompleter
+from prompt_toolkit.document import Document
 from prompt_toolkit.filters import IsMultiline
 from prompt_toolkit.history import FileHistory
 from rich.console import Console
@@ -86,6 +87,30 @@ def _history_file() -> Path:
     return path
 
 
+class _SlashCompleter(Completer):
+    """Slash-command completer gated to slash-prefixed input.
+
+    ``FuzzyWordCompleter`` alone would offer the command list against ANY
+    typed word (it fuzzy-matches the current word against the list), so
+    typing a normal sentence like ``the `` would pop up a menu of every
+    slash command and swallow the keystroke.  This wrapper delegates to the
+    fuzzy completer only when the line the cursor sits on begins with ``/``,
+    and yields nothing otherwise.
+    """
+
+    def __init__(self, words) -> None:
+        self._fuzzy = FuzzyWordCompleter(words)
+
+    def get_completions(self, document: Document, complete_event) -> Iterable[Completion]:
+        # Only the first line matters: slash commands are top-level, and the
+        # buffer only grows via backslash continuation, so a non-slash first
+        # line means the user is typing a normal message.
+        first_line = document.text_before_cursor.rsplit("\n", 1)[-1]
+        if not first_line.startswith("/"):
+            return
+        yield from self._fuzzy.get_completions(document, complete_event)
+
+
 def _make_prompt_session(completer):
     """Build the PromptSession.  Factored out so tests can monkeypatch it
     without fighting parameterized generic syntax (PromptSession[str])."""
@@ -135,7 +160,7 @@ class REPLInterface:
         self._running = True
         self.console.print("[bold cyan]Spectre REPL[/bold cyan] — type [dim]/help[/dim] for commands, /quit to exit.")
 
-        completer = FuzzyWordCompleter(_COMMANDS)
+        completer = _SlashCompleter(_COMMANDS)
         session = _make_prompt_session(completer)
         self._session = session
 

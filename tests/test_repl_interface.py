@@ -30,6 +30,44 @@ def test_repl_interface_has_name() -> None:
     assert REPLInterface().name == "repl"
 
 
+# ---------------------------------------------------------------------------
+# Slash-command completion gating (regression: FuzzyWordCompleter fired on
+# ANY typed word, popping a menu of commands on every space/enter)
+# ---------------------------------------------------------------------------
+
+def _complete(text: str) -> list[str]:
+    """Run the REPL's slash completer against a buffer and return texts."""
+    from prompt_toolkit.completion import CompleteEvent
+    from prompt_toolkit.document import Document
+
+    from sr2_spectre.interfaces.repl import _COMMANDS, _SlashCompleter
+
+    doc = Document(text=text, cursor_position=len(text))
+    return [c.text for c in _SlashCompleter(_COMMANDS).get_completions(doc, CompleteEvent(""))]
+
+
+def test_completion_suppressed_on_normal_text() -> None:
+    """Typing a normal sentence must NOT offer slash-command completions.
+
+    This is the regression that made the REPL unusable: hitting space/enter
+    on ordinary text opened a menu of every slash command and swallowed the
+    keystroke.
+    """
+    assert _complete("the ") == []
+    assert _complete("the message") == []
+    assert _complete("hello world ") == []
+    assert _complete("line1\nplain") == []
+
+
+def test_completion_offers_commands_only_after_slash() -> None:
+    """Slash-prefixed input still completes; bare slash lists everything."""
+    from sr2_spectre.interfaces.repl import _COMMANDS
+
+    assert _complete("/") == _COMMANDS
+    assert _complete("/q") == ["/quit"]
+    assert _complete("/load") == ["/load"]
+
+
 def test_repl_satisfies_interface_protocol() -> None:
     from sr2_spectre.interfaces import Interface
 
