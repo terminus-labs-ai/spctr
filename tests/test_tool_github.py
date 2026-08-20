@@ -331,3 +331,144 @@ async def test_large_file_is_trimmed_to_max_bytes() -> None:
         p.stop()
     assert len(out.encode()) < 700
     assert "truncated" in out
+
+
+# ---------------------------------------------------------------------------
+# Write tools
+#
+# Brokkr shipped with nine read/issue tools and nothing that writes file
+# content, so asked to "edit the README" it had no tool that fit and burned
+# its whole tool budget hunting for one. These cover the missing half.
+# ---------------------------------------------------------------------------
+
+from sr2_spectre.tools.builtins.github import (  # noqa: E402
+    GitHubCreateBranchTool,
+    GitHubCreatePullRequestTool,
+    GitHubWriteFileTool,
+    _resource_for,
+)
+
+
+@pytest.mark.asyncio
+async def test_write_file_updates_an_existing_file_with_its_sha() -> None:
+    """Updating requires the blob sha of what is being replaced."""
+    existing = {"sha": "abc123", "encoding": "base64", "content": ""}
+    written = {"commit": {"sha": "def4567890"}}
+    tool, fake, p = build(GitHubWriteFileTool, existing, written)
+    try:
+        out = await tool(path="README.md", content="# New", message="tweak")
+    finally:
+        p.stop()
+    assert fake.calls[1]["method"] == "PUT"
+    assert fake.calls[1]["body"]["sha"] == "abc123"
+    assert base64.b64decode(fake.calls[1]["body"]["content"]) == b"# New"
+    assert "Updated README.md" in out
+
+
+@pytest.mark.asyncio
+async def test_write_file_creates_a_new_file_without_a_sha() -> None:
+    """Creating must NOT send a sha; GitHub rejects the request if it does."""
+    tool, fake, p = build(
+        GitHubWriteFileTool, GitHubError("Not found."), {"commit": {"sha": "aaa1111"}}
+    )
+    try:
+        out = await tool(path="docs/new.md", content="hi", message="add")
+    finally:
+        p.stop()
+    assert "sha" not in fake.calls[1]["body"]
+    assert "Created docs/new.md" in out
+
+
+@pytest.mark.asyncio
+async def test_write_file_passes_the_branch_through() -> None:
+    tool, fake, p = build(
+        GitHubWriteFileTool, GitHubError("Not found."), {"commit": {"sha": "aaa1111"}}
+    )
+    try:
+        out = await tool(path="a.md", content="x", message="m", branch="dev")
+    finally:
+        p.stop()
+    assert fake.calls[1]["body"]["branch"] == "dev"
+    assert "on dev" in out
+
+
+@pytest.mark.asyncio
+async def test_write_file_refuses_a_directory() -> None:
+    tool, fake, p = build(GitHubWriteFileTool, [{"name": "a", "type": "file"}])
+    try:
+        out = await tool(path="src", content="x", message="m")
+    finally:
+        p.stop()
+    assert "is a directory" in out
+    assert len(fake.calls) == 1  # never attempted the PUT
+
+
+@pytest.mark.asyncio
+async def test_write_file_propagates_a_real_error() -> None:
+    """A 403 on the lookup must not be mistaken for 'file does not exist'."""
+    tool, fake, p = build(GitHubWriteFileTool, GitHubError("GitHub refused this request"))
+    try:
+        with pytest.raises(GitHubError, match="refused"):
+            await tool(path="a.md", content="x", message="m")
+    finally:
+        p.stop()
+
+
+@pytest.mark.asyncio
+async def test_create_branch_resolves_the_default_branch() -> None:
+    tool, fake, p = build(
+        GitHubCreateBranchTool,
+        {"default_branch": "main"},
+        {"object": {"sha": "f" * 40}},
+        {},
+    )
+    try:
+        out = await tool(name="readme-tweak")
+    finally:
+        p.stop()
+    assert fake.calls[2]["body"]["ref"] == "refs/heads/readme-tweak"
+    assert fake.calls[2]["body"]["sha"] == "f" * 40
+    assert "readme-tweak" in out
+
+
+@pytest.mark.asyncio
+async def test_create_branch_uses_an_explicit_base() -> None:
+    tool, fake, p = build(GitHubCreateBranchTool, {"object": {"sha": "a" * 40}}, {})
+    try:
+        await tool(name="x", base="dev")
+    finally:
+        p.stop()
+    assert "heads/dev" in fake.calls[0]["path"]
+
+
+@pytest.mark.asyncio
+async def test_create_pull_request_defaults_base_to_the_default_branch() -> None:
+    tool, fake, p = build(
+        GitHubCreatePullRequestTool,
+        {"default_branch": "main"},
+        {"number": 5, "title": "Tweak", "html_url": "https://x/5"},
+    )
+    try:
+        out = await tool(title="Tweak", head="readme-tweak")
+    finally:
+        p.stop()
+    assert fake.calls[1]["body"] == {
+        "title": "Tweak", "head": "readme-tweak", "base": "main",
+    }
+    assert "Opened #5" in out
+
+
+# --- permission errors name the missing scope ------------------------------
+
+@pytest.mark.parametrize("path,expected", [
+    ("/repos/o/r/issues", "Issues"),
+    ("/repos/o/r/issues/1/comments", "Issues"),
+    ("/repos/o/r/pulls", "Pull requests"),
+    ("/repos/o/r/contents/README.md", "Contents"),
+    ("/repos/o/r/git/refs", "Contents"),
+    ("/search/code", "the required"),
+])
+def test_permission_errors_name_the_resource(path, expected) -> None:
+    """A bare 'refused' leaves the model guessing and retrying; naming the
+    fine-grained PAT permission tells a human exactly what to fix."""
+    assert expected in _resource_for(path)

@@ -80,16 +80,32 @@ class _RepoClient:
                 if resp.status == 403 and "rate limit" in text.lower():
                     raise GitHubError("GitHub rate limit reached; try again later.")
                 if resp.status in (401, 403):
+                    # Name the missing permission. A fine-grained PAT grants
+                    # each resource separately, so "refused" without saying
+                    # which one leaves the model guessing and retrying.
+                    resource = _resource_for(path)
                     raise GitHubError(
-                        "GitHub refused this request. The token does not grant "
-                        "it, which usually means the action is outside what this "
-                        "agent is allowed to do."
+                        f"GitHub refused this request (HTTP {resp.status}). The "
+                        f"token does not grant {resource} access to this "
+                        f"repository. This is a token permission to be fixed by "
+                        f"a human, not something to retry or work around."
                     )
                 if resp.status >= 400:
                     raise GitHubError(f"GitHub returned HTTP {resp.status}.")
                 if not text:
                     return None
                 return json.loads(text)
+
+
+def _resource_for(path: str) -> str:
+    """Name the fine-grained PAT permission an API path needs."""
+    if "/issues" in path:
+        return "Issues (Read and write)"
+    if "/pulls" in path:
+        return "Pull requests (Read and write)"
+    if "/contents" in path or "/git/" in path:
+        return "Contents (Read and write)"
+    return "the required"
 
 
 def _truncate(text: str, max_bytes: int) -> str:
@@ -430,3 +446,139 @@ class GitHubReadPullRequestTool(_RepoTool):
         ]
         lines += [f"  {f['status']:>8}  {f['filename']}" for f in files or []]
         return _truncate("\n".join(lines), self.max_bytes)
+
+
+class GitHubWriteFileTool(_RepoTool):
+    """Create or replace a file in the pinned repository."""
+
+    name = "github_write_file"
+    description = (
+        "Create or replace a file in the studio's GitHub repository, committing "
+        "the change. Provide the file's FULL new contents, not a patch or diff."
+    )
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File path within the repo."},
+            "content": {
+                "type": "string",
+                "description": "The complete new contents of the file.",
+            },
+            "message": {"type": "string", "description": "Commit message."},
+            "branch": {
+                "type": "string",
+                "description": "Branch to commit to. Omit for the default branch.",
+            },
+        },
+        "required": ["path", "content", "message"],
+    }
+
+    async def __call__(
+        self,
+        path: str,
+        content: str,
+        message: str,
+        branch: str | None = None,
+    ) -> str:
+        client = self._client
+        api_path = self._path(f"/contents/{quote(path.lstrip('/'))}")
+
+        # Updating requires the blob sha of what is being replaced; creating
+        # must not send one. Look first and branch on what is actually there.
+        sha: str | None = None
+        try:
+            existing = await client.request("GET", api_path, params={"ref": branch})
+            if isinstance(existing, list):
+                return f"{path} is a directory, not a file."
+            sha = existing.get("sha")
+        except GitHubError as exc:
+            if "Not found" not in str(exc):
+                raise
+
+        body: dict[str, Any] = {
+            "message": message,
+            "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        }
+        if branch:
+            body["branch"] = branch
+        if sha:
+            body["sha"] = sha
+
+        result = await client.request("PUT", api_path, body=body)
+        commit = (result or {}).get("commit", {})
+        verb = "Updated" if sha else "Created"
+        where = f" on {branch}" if branch else ""
+        return f"{verb} {path}{where} in {commit.get('sha', '?')[:7]}: {message}"
+
+
+class GitHubCreateBranchTool(_RepoTool):
+    """Create a branch in the pinned repository."""
+
+    name = "github_create_branch"
+    description = "Create a new branch in the studio's GitHub repository."
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "New branch name."},
+            "base": {
+                "type": "string",
+                "description": "Branch to start from. Omit for the default branch.",
+            },
+        },
+        "required": ["name"],
+    }
+
+    async def __call__(self, name: str, base: str | None = None) -> str:
+        client = self._client
+        if base is None:
+            repo_info = await client.request("GET", self._path(""))
+            base = repo_info.get("default_branch", "main")
+
+        ref = await client.request("GET", self._path(f"/git/ref/heads/{quote(base)}"))
+        base_sha = ref["object"]["sha"]
+
+        await client.request(
+            "POST",
+            self._path("/git/refs"),
+            body={"ref": f"refs/heads/{name}", "sha": base_sha},
+        )
+        return f"Created branch {name} from {base} at {base_sha[:7]}."
+
+
+class GitHubCreatePullRequestTool(_RepoTool):
+    """Open a pull request in the pinned repository."""
+
+    name = "github_create_pull_request"
+    description = "Open a pull request in the studio's GitHub repository."
+    input_schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": "Pull request title."},
+            "head": {"type": "string", "description": "Branch containing the changes."},
+            "base": {
+                "type": "string",
+                "description": "Branch to merge into. Omit for the default branch.",
+            },
+            "body": {"type": "string", "description": "Description."},
+        },
+        "required": ["title", "head"],
+    }
+
+    async def __call__(
+        self,
+        title: str,
+        head: str,
+        base: str | None = None,
+        body: str | None = None,
+    ) -> str:
+        client = self._client
+        if base is None:
+            repo_info = await client.request("GET", self._path(""))
+            base = repo_info.get("default_branch", "main")
+
+        payload: dict[str, Any] = {"title": title, "head": head, "base": base}
+        if body:
+            payload["body"] = body
+
+        pr = await client.request("POST", self._path("/pulls"), body=payload)
+        return f"Opened #{pr['number']}: {pr['title']} ({head} → {base})\n{pr['html_url']}"
