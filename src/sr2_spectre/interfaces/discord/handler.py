@@ -120,6 +120,8 @@ class CommandContext:
     channel_id: int
     session_id: str
     message_count: int
+    active_model: str | None = None
+    model_label: str | None = None
 
 
 # Handler signature: (rest: str, ctx: CommandContext) -> str | None
@@ -181,6 +183,10 @@ def _handle_status(rest: str, ctx: CommandContext) -> str | None:
         f"**Session:** `{ctx.session_id}`",
         f"**Messages:** {ctx.message_count}",
     ]
+    if ctx.active_model is not None:
+        lines.append(f"**Model:** `{ctx.active_model}`")
+    if ctx.model_label is not None:
+        lines.append(f"**Endpoint:** {ctx.model_label}")
     return "\n".join(lines)
 
 
@@ -203,6 +209,72 @@ def _build_help_text() -> str:
 def _handle_help(rest: str, ctx: CommandContext) -> str | None:
     """ /help — shows available commands."""
     return _build_help_text()
+
+
+def _handle_stop(rest: str, ctx: CommandContext) -> str | None:
+    """ /stop — cancel the agent's current run in this channel.
+
+    Registered only for its /help + native-tree description. The real logic
+    runs in the Discord interface, which holds the per-channel run tasks.
+    ``/cancel`` is a wired alias (see SLASH_COMMANDS).
+    """
+    return None
+
+
+def _handle_model(rest: str, ctx: CommandContext) -> str | None:
+    """ /model — list or switch the active model.
+
+    Registered only so /help and the native command tree carry its
+    description (mirroring /ask). The real logic runs in the Discord
+    interface, which alone has the model list and the writable pointer file.
+    Returns None; the interface intercepts /model before registry dispatch.
+    """
+    return None
+
+
+def render_model_command(
+    rest: str,
+    model_names: set[str],
+    active_model: str,
+    pointer_configured: bool,
+) -> tuple[str, str | None]:
+    """Pure decision logic for /model — no I/O.
+
+    Args:
+        rest: Text after "/model"; empty lists models, else names one.
+        model_names: Keys of the configured ``models`` map.
+        active_model: The model name currently in force.
+        pointer_configured: Whether a writable pointer file exists to persist
+            a switch (``SR2_ACTIVE_MODEL_FILE`` is set).
+
+    Returns:
+        ``(response_text, selection)`` — *selection* is the model name the
+        caller should persist, or ``None`` when nothing should be written
+        (a listing, an error, or re-selecting the active model).
+    """
+    arg = rest.strip()
+    if not arg:
+        lines = ["**Models:**"]
+        for name in sorted(model_names):
+            marker = "  ← active" if name == active_model else ""
+            lines.append(f"`{name}`{marker}")
+        return "\n".join(lines), None
+
+    if arg not in model_names:
+        available = ", ".join(f"`{n}`" for n in sorted(model_names)) or "(none)"
+        return f"⚠ Unknown model `{arg}`. Available: {available}", None
+
+    if not pointer_configured:
+        return (
+            "⚠ Can't switch model: no writable pointer file is configured "
+            "(SR2_ACTIVE_MODEL_FILE is unset).",
+            None,
+        )
+
+    if arg == active_model:
+        return f"Already using `{arg}`.", None
+
+    return f"Switched to `{arg}` — takes effect on the next message.", arg
 
 
 # ---------------------------------------------------------------------------
@@ -233,10 +305,22 @@ register_command(SlashCommand(
     handler=_handle_help,
 ))
 
+register_command(SlashCommand(
+    name="model",
+    description="List models, or `/model <name>` to switch the active model",
+    handler=_handle_model,
+))
+
+register_command(SlashCommand(
+    name="stop",
+    description="Stop the agent's current run in this channel (alias: /cancel)",
+    handler=_handle_stop,
+))
+
 
 # Known slash commands (sync registry + async commands handled by the interface).
 # parse_slash_command checks this set; handle_command only dispatches registry commands.
-SLASH_COMMANDS: set[str] = set(_COMMAND_REGISTRY.keys()) | {"hb"}
+SLASH_COMMANDS: set[str] = set(_COMMAND_REGISTRY.keys()) | {"hb", "cancel"}
 
 
 # ---------------------------------------------------------------------------

@@ -119,6 +119,16 @@ class SpectreConfig(BaseModel):
     agent: AgentConfig
     models: dict[str, ModelConfig]
     pipeline: PipelineConfig
+    active_model: str = Field(
+        default="default",
+        description=(
+            "Which entry in `models` the agent talks to. Defaults to "
+            "'default'. A writable pointer file (path in the "
+            "SR2_ACTIVE_MODEL_FILE env var) can override this at runtime, so "
+            "`/model` can switch models without writing the read-only config. "
+            "An unknown name falls back to 'default' — see active_model_config."
+        ),
+    )
     discord: DiscordConfig | None = None
     provenance_store_path: str | None = Field(
         default=None,
@@ -140,6 +150,19 @@ class SpectreConfig(BaseModel):
             "is set."
         ),
     )
+
+    @property
+    def active_model_config(self) -> ModelConfig:
+        """The ModelConfig the agent uses, resolving `active_model`.
+
+        Falls back to 'default', then to the first defined model, so a stale
+        or invalid pointer can never leave the agent with no LLM to call.
+        """
+        if self.active_model in self.models:
+            return self.models[self.active_model]
+        if "default" in self.models:
+            return self.models["default"]
+        return next(iter(self.models.values()))
 
 
 class CircularExtendsError(Exception):

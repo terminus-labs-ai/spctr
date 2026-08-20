@@ -239,6 +239,32 @@ class DiscordBotAdapter:
         async def _hb(interaction: Any) -> None:  # noqa: ANN001
             await _dispatch("hb", "", interaction)
 
+        @tree.command(
+            name="model",
+            description=_desc(
+                "model", "List models, or switch with /model <name>"
+            ),
+        )
+        @discord.app_commands.describe(name="Model to switch to (omit to list)")
+        async def _model(interaction: Any, name: str = "") -> None:  # noqa: ANN001
+            await _dispatch("model", name, interaction)
+
+        @tree.command(
+            name="stop",
+            description=_desc(
+                "stop", "Stop the agent's current run in this channel"
+            ),
+        )
+        async def _stop(interaction: Any) -> None:  # noqa: ANN001
+            await _dispatch("stop", "", interaction)
+
+        @tree.command(
+            name="cancel",
+            description="Alias for /stop — cancel the current run",
+        )
+        async def _cancel(interaction: Any) -> None:  # noqa: ANN001
+            await _dispatch("cancel", "", interaction)
+
     async def _sync_slash_commands(self) -> None:
         """Sync slash commands to every connected guild for instant availability.
 

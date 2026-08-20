@@ -272,7 +272,43 @@ def resolve_config(
     validates the result into a SpectreConfig.
     """
     merged = _resolve_merged_config(positional_path, cwd=cwd, env=env)
-    return SpectreConfig(**merged)
+    config = SpectreConfig(**merged)
+    return _apply_active_model_pointer(config, env)
+
+
+_ACTIVE_MODEL_ENV = "SR2_ACTIVE_MODEL_FILE"
+
+
+def _apply_active_model_pointer(
+    config: SpectreConfig, env: dict[str, str] | None
+) -> SpectreConfig:
+    """Overlay ``active_model`` from the writable pointer file, if configured.
+
+    The pointer file (path in ``$SR2_ACTIVE_MODEL_FILE``) holds a single
+    model name. It is the one writable surface ``/model`` touches, kept
+    separate from the read-only ``config.yaml`` so a Discord user running
+    ``code_exec`` cannot rewrite tool ``class_path`` entries (that mount is
+    ``:ro`` on purpose). An absent file, empty file, or unknown model name
+    leaves the config's own ``active_model`` untouched.
+    """
+    source = env if env is not None else dict(os.environ)
+    pointer_path = source.get(_ACTIVE_MODEL_ENV)
+    if not pointer_path:
+        return config
+    try:
+        name = Path(pointer_path).read_text().strip()
+    except OSError:
+        return config
+    if not name:
+        return config
+    if name not in config.models:
+        logger.warning(
+            "active_model pointer names %r, not in models %s — ignoring, "
+            "keeping active_model=%r.",
+            name, sorted(config.models), config.active_model,
+        )
+        return config
+    return config.model_copy(update={"active_model": name})
 
 
 def build_spectre_config_source(
@@ -338,7 +374,7 @@ async def run_async(argv: list[str] | None = None) -> None:
     logger.info(
         "Agent: %s | model: %s",
         config.agent.name,
-        config.models["default"].model,
+        config.active_model_config.model,
     )
 
     tracer = CollectingTracer() if args.trace else None

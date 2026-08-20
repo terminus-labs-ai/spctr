@@ -920,3 +920,154 @@ async def test_slash_respects_channel_allowlist() -> None:
     sent = mock_adapter.interaction_send.call_args[0][1]
     assert "aren't enabled" in sent
 
+
+
+# ---------------------------------------------------------------------------
+# /model — interface wiring (reads live config, writes the pointer file)
+# ---------------------------------------------------------------------------
+
+from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig  # noqa: E402
+from sr2_spectre.config_source import SpectreConfigSource  # noqa: E402
+from sr2_spectre.interfaces.discord.config_source import DiscordConfigView  # noqa: E402
+
+
+def _spectre_with_models(active: str = "default") -> SpectreConfig:
+    return SpectreConfig(
+        agent=AgentConfig(name="t"),
+        models={
+            "default": ModelConfig(model="m-default", base_url="http://default/v1"),
+            "fast": ModelConfig(model="m-fast", base_url="http://fast/v1"),
+        },
+        pipeline={"layers": []},
+        active_model=active,
+        discord=DiscordConfig(token="t"),
+    )
+
+
+def _view_interface(active: str = "default") -> DiscordInterface:
+    source = SpectreConfigSource.static(_spectre_with_models(active))
+    return DiscordInterface(config_source=DiscordConfigView(source))
+
+
+@pytest.mark.asyncio
+async def test_model_command_lists_models() -> None:
+    interface = _view_interface()
+    out = await interface._model_command("")
+    assert "`default`" in out and "`fast`" in out
+    assert "← active" in out
+
+
+@pytest.mark.asyncio
+async def test_model_command_writes_pointer_on_switch(tmp_path, monkeypatch) -> None:
+    pointer = tmp_path / "active_model"
+    monkeypatch.setenv("SR2_ACTIVE_MODEL_FILE", str(pointer))
+    interface = _view_interface()
+
+    out = await interface._model_command("fast")
+
+    assert "Switched to" in out and "fast" in out
+    assert pointer.read_text() == "fast\n"
+
+
+@pytest.mark.asyncio
+async def test_model_command_refuses_when_no_pointer(monkeypatch) -> None:
+    monkeypatch.delenv("SR2_ACTIVE_MODEL_FILE", raising=False)
+    interface = _view_interface()
+
+    out = await interface._model_command("fast")
+
+    assert "SR2_ACTIVE_MODEL_FILE" in out
+
+
+@pytest.mark.asyncio
+async def test_model_command_rejects_unknown_without_writing(tmp_path, monkeypatch) -> None:
+    pointer = tmp_path / "active_model"
+    monkeypatch.setenv("SR2_ACTIVE_MODEL_FILE", str(pointer))
+    interface = _view_interface()
+
+    out = await interface._model_command("ghost")
+
+    assert "Unknown model" in out
+    assert not pointer.exists()
+
+
+@pytest.mark.asyncio
+async def test_model_command_unavailable_without_whole_config() -> None:
+    # A plain DiscordConfigSource carries no SpectreConfig, so /model can't run.
+    source = DiscordConfigSource(lambda: DiscordConfig(token="t"), DiscordConfig(token="t"))
+    interface = DiscordInterface(config_source=source)
+
+    out = await interface._model_command("fast")
+
+    assert "isn't available" in out
+
+
+# ---------------------------------------------------------------------------
+# /stop — cancel the in-flight agent run
+# ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_stop_with_no_active_run_reports_idle() -> None:
+    interface = DiscordInterface(DiscordConfig())
+    out = await interface._stop_command(555)
+    assert "Nothing is running" in out
+
+
+@pytest.mark.asyncio
+async def test_run_agent_tracks_and_clears_the_task() -> None:
+    """A completed run leaves no dangling entry in _active_runs."""
+    interface = DiscordInterface(DiscordConfig(mention_only=False))
+    agent = _make_mock_agent([AgentTextDelta(text="hi"), AgentDone()])
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        MockAdapter.return_value = _make_mock_adapter()
+        await interface.start(agent)
+
+        await interface._run_agent("hello", 12345)
+
+        assert 12345 not in interface._active_runs
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_active_run_and_finalizes_partial() -> None:
+    """/stop mid-stream cancels the run, renders the partial + a stop note,
+    and keeps channel history paired."""
+    channel = 12345
+    first_delta = asyncio.Event()
+
+    async def _blocking_stream(text: str):
+        yield AgentTextDelta(text="partial answer")
+        first_delta.set()
+        await asyncio.Event().wait()  # block until cancelled
+        yield AgentDone()  # never reached
+
+    interface = DiscordInterface(DiscordConfig(mention_only=False))
+    agent = _make_mock_agent()
+    agent.stream_message = _blocking_stream
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+        await interface.start(agent)
+
+        run = asyncio.ensure_future(interface._run_agent("go", channel))
+        await first_delta.wait()  # ensure the stream has produced partial text
+        assert channel in interface._active_runs
+
+        out = await interface._stop_command(channel)
+        assert "Stopping" in out
+
+        await run  # _run_agent swallows CancelledError and finalizes
+
+        # The run task is cleared.
+        assert channel not in interface._active_runs
+        # The thinking message was edited to show the stop note.
+        edits = [c.args for c in mock_adapter.edit_message.call_args_list]
+        assert any("Stopped" in a[2] for a in edits)
+        # History stays paired: user turn + an assistant turn.
+        session = interface._session_map.get_or_create(channel)
+        roles = [m["role"] for m in session.history]
+        assert roles[-2:] == ["user", "assistant"]

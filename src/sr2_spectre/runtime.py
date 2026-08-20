@@ -126,7 +126,7 @@ class Runtime:
         # capture their LLM for life, so the indirection is what lets a
         # corrected model or base_url reach conversations that are already
         # open (see live_llm.LiveLLM).
-        self.llm = LiveLLM(config.models["default"])
+        self.llm = LiveLLM(config.active_model_config)
 
         # Live sessions, weakly held so a closed frame is not kept alive just
         # to be told about config reloads.
@@ -205,7 +205,7 @@ class Runtime:
 
         # Models and endpoints. The LiveLLM swap reaches sessions that are
         # already open, which is the whole point of the indirection.
-        if self.llm.retarget(config.models["default"]):
+        if self.llm.retarget(config.active_model_config):
             applied.append("models")
 
         if config.agent.tools != previous.agent.tools:

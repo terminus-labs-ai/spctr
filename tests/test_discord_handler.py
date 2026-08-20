@@ -368,3 +368,67 @@ class TestProbeHarbingerStatus:
 
         out = await probe_harbinger_status(runner=fake_runner)
         assert len(out) <= 2000
+
+
+# ---------------------------------------------------------------------------
+# /model — pure render logic + /status model fields
+# ---------------------------------------------------------------------------
+
+from sr2_spectre.interfaces.discord.handler import render_model_command  # noqa: E402
+
+
+class TestRenderModelCommand:
+    MODELS = {"default", "fast"}
+
+    def test_empty_lists_models_and_marks_active(self) -> None:
+        out, selection = render_model_command("", self.MODELS, "default", True)
+        assert selection is None
+        assert "`default`" in out and "`fast`" in out
+        assert "← active" in out
+        # the marker sits on the active one
+        active_line = next(ln for ln in out.splitlines() if "← active" in ln)
+        assert "default" in active_line
+
+    def test_unknown_name_errors_without_selection(self) -> None:
+        out, selection = render_model_command("ghost", self.MODELS, "default", True)
+        assert selection is None
+        assert "Unknown model" in out and "ghost" in out
+
+    def test_no_pointer_refuses_switch(self) -> None:
+        out, selection = render_model_command("fast", self.MODELS, "default", False)
+        assert selection is None
+        assert "SR2_ACTIVE_MODEL_FILE" in out
+
+    def test_reselecting_active_is_a_noop(self) -> None:
+        out, selection = render_model_command("default", self.MODELS, "default", True)
+        assert selection is None
+        assert "Already using" in out
+
+    def test_valid_switch_returns_selection(self) -> None:
+        out, selection = render_model_command("fast", self.MODELS, "default", True)
+        assert selection == "fast"
+        assert "Switched to" in out and "fast" in out
+
+    def test_switch_arg_is_stripped(self) -> None:
+        out, selection = render_model_command("  fast ", self.MODELS, "default", True)
+        assert selection == "fast"
+
+
+class TestStatusModelFields:
+    def test_status_shows_model_and_endpoint_when_present(self) -> None:
+        ctx = CommandContext(
+            channel_id=1,
+            session_id="s",
+            message_count=2,
+            active_model="fast",
+            model_label="m-fast @ http://fast/v1",
+        )
+        out = handle_command("status", "", ctx)
+        assert "**Model:**" in out and "fast" in out
+        assert "**Endpoint:**" in out and "http://fast/v1" in out
+
+    def test_status_omits_model_lines_when_absent(self) -> None:
+        ctx = CommandContext(channel_id=1, session_id="s", message_count=2)
+        out = handle_command("status", "", ctx)
+        assert "**Model:**" not in out
+        assert "**Endpoint:**" not in out

@@ -224,13 +224,13 @@ async def test_a_plain_config_still_works() -> None:
 # on_ready sync itself needs a live gateway and is not exercised here.
 
 async def test_start_registers_native_slash_commands() -> None:
-    """start() builds a command tree with the five built-in slash commands."""
+    """start() builds a command tree with the built-in slash commands."""
     adapter = _adapter()
     try:
         await adapter.start()
         assert adapter._tree is not None
         names = {cmd.name for cmd in adapter._tree.get_commands()}
-        assert names == {"ask", "reset", "status", "help", "hb"}
+        assert names == {"ask", "reset", "status", "help", "hb", "model", "stop", "cancel"}
     finally:
         await adapter.stop()
 
@@ -242,6 +242,17 @@ async def test_ask_slash_command_declares_a_text_argument() -> None:
         await adapter.start()
         ask = next(c for c in adapter._tree.get_commands() if c.name == "ask")
         assert "text" in {p.name for p in ask.parameters}
+    finally:
+        await adapter.stop()
+
+
+async def test_model_slash_command_declares_a_name_argument() -> None:
+    """/model must expose an optional `name` parameter to pick a model."""
+    adapter = _adapter()
+    try:
+        await adapter.start()
+        model = next(c for c in adapter._tree.get_commands() if c.name == "model")
+        assert "name" in {p.name for p in model.parameters}
     finally:
         await adapter.stop()
 

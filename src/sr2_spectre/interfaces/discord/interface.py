@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sr2_spectre.core import RunContext, RunMode
@@ -40,6 +42,7 @@ from sr2_spectre.interfaces.discord.handler import (
     handle_command,
     parse_slash_command,
     probe_harbinger_status,
+    render_model_command,
     resolve_area,
     should_respond,
 )
@@ -88,6 +91,9 @@ class DiscordInterface:
         # the tool path and text path clobber each other's content on the same
         # message (the "edited back and forth" bug).
         self._stream_text: dict[int, str] = {}
+        # In-flight agent runs, keyed by channel, so /stop can cancel the
+        # current turn. Set while a run is active, removed when it settles.
+        self._active_runs: dict[int, asyncio.Task[None]] = {}
 
     @property
     def config(self) -> DiscordConfig:
@@ -339,8 +345,107 @@ class DiscordInterface:
             message, channel_id, channel_obj
         )
 
-        # Regular message — process through the agent
-        await self._process_through_agent(content, target_channel_id)
+        # Regular message — process through the agent (cancellable via /stop)
+        await self._run_agent(content, target_channel_id)
+
+    def _command_context(self, channel_id: int) -> CommandContext:
+        """Build a CommandContext, enriched with live model info when available.
+
+        The whole-config path (DiscordConfigView) carries models and the
+        active-model pointer, so /status can show what the agent is talking
+        to. Other paths (tests, embedders) leave those fields None.
+        """
+        session = self._session_map.get_or_create(channel_id)
+        active_model: str | None = None
+        model_label: str | None = None
+        if isinstance(self._config_source, DiscordConfigView):
+            cfg = self._config_source.source.current
+            active_model = cfg.active_model
+            mc = cfg.active_model_config
+            model_label = mc.model if mc.base_url is None else f"{mc.model} @ {mc.base_url}"
+        return CommandContext(
+            channel_id=channel_id,
+            session_id=session.session_id,
+            message_count=len(session.history),
+            active_model=active_model,
+            model_label=model_label,
+        )
+
+    async def _run_agent(self, content: str, channel_id: int) -> None:
+        """Run one agent turn as a cancellable task so /stop can abort it.
+
+        The turn runs as a tracked ``asyncio.Task`` keyed by channel. If /stop
+        cancels it, ``CancelledError`` (a BaseException, so the stream loop's
+        ``except Exception`` never swallows it) unwinds ``_process_through_agent``
+        without finalizing; we then render the partial output plus a stop note.
+        """
+        task = asyncio.ensure_future(
+            self._process_through_agent(content, channel_id)
+        )
+        self._active_runs[channel_id] = task
+        try:
+            await task
+        except asyncio.CancelledError:
+            await self._finalize_cancelled(channel_id)
+        finally:
+            if self._active_runs.get(channel_id) is task:
+                del self._active_runs[channel_id]
+
+    async def _finalize_cancelled(self, channel_id: int) -> None:
+        """Render a stopped turn: partial streamed text + a stop marker.
+
+        Keeps channel history paired (the user turn was already appended) by
+        recording the partial text as the assistant turn, so the next message
+        does not see two user turns in a row.
+        """
+        self._cancel_pending_stream_edit()
+        session = self._session_map.get_or_create(channel_id)
+        thinking_id = session.pending_message_id
+        partial = self._stream_text.get(channel_id, "")
+        note = "⏹ Stopped."
+        display = f"{partial}\n\n{note}" if partial.strip() else note
+        if thinking_id is not None and self._adapter:
+            await self._adapter.edit_message(channel_id, thinking_id, display)
+        session.history.append(
+            {"role": "assistant",
+             "content": [{"type": "text", "text": partial or "(stopped)"}]}
+        )
+        session.pending_message_id = None
+
+    async def _stop_command(self, channel_id: int) -> str:
+        """Handle /stop (and its /cancel alias) — cancel this channel's run."""
+        task = self._active_runs.get(channel_id)
+        if task is None or task.done():
+            return "Nothing is running in this channel."
+        task.cancel()
+        return "⏹ Stopping the current run."
+
+    async def _model_command(self, text: str) -> str:
+        """Handle /model — list models or switch the active one.
+
+        Reads the live model list from the whole-config source and persists a
+        switch by writing the model name to the writable pointer file
+        (``$SR2_ACTIVE_MODEL_FILE``) — the only writable surface, since the
+        config itself is mounted read-only. The next message's config reload
+        retargets the LLM. Returns the text to send back.
+        """
+        cfg = None
+        if isinstance(self._config_source, DiscordConfigView):
+            cfg = self._config_source.source.current
+        if cfg is None:
+            return "⚠ Model switching isn't available in this configuration."
+
+        pointer = os.environ.get("SR2_ACTIVE_MODEL_FILE")
+        response, selection = render_model_command(
+            text, set(cfg.models), cfg.active_model, pointer is not None
+        )
+        if selection is not None and pointer:
+            try:
+                Path(pointer).write_text(f"{selection}\n")
+            except OSError as exc:
+                logger.warning("Failed to write model pointer %s: %s", pointer, exc)
+                return f"⚠ Could not persist the switch: {exc}"
+        return response
 
     async def _handle_command(
         self,
@@ -363,12 +468,23 @@ class DiscordInterface:
                     await self._adapter.send_message(channel_id, chunk)
             return
 
-        session = self._session_map.get_or_create(channel_id)
-        ctx = CommandContext(
-            channel_id=channel_id,
-            session_id=session.session_id,
-            message_count=len(session.history),
-        )
+        # /model — list or switch the active model. Writes the pointer file;
+        # the next message's reload retargets the LLM.
+        if command == "model":
+            response = await self._model_command(rest)
+            if self._adapter is not None:
+                for chunk in chunk_message(response, self.config.max_message_length):
+                    await self._adapter.send_message(channel_id, chunk)
+            return
+
+        # /stop (+ /cancel alias) — cancel the current run in this channel.
+        if command in ("stop", "cancel"):
+            response = await self._stop_command(channel_id)
+            if self._adapter is not None:
+                await self._adapter.send_message(channel_id, response)
+            return
+
+        ctx = self._command_context(channel_id)
         response = handle_command(command, rest, ctx)
 
         if command == "reset":
@@ -382,7 +498,7 @@ class DiscordInterface:
 
         # /ask with content — process through agent
         if command == "ask" and rest.strip():
-            await self._process_through_agent(rest, channel_id)
+            await self._run_agent(rest, channel_id)
 
     async def _handle_slash(
         self,
@@ -442,6 +558,19 @@ class DiscordInterface:
                 await self._adapter.interaction_send(interaction, chunk)
             return
 
+        # /model — list or switch the active model.
+        if name == "model":
+            response = await self._model_command(text)
+            for chunk in chunk_message(response, self.config.max_message_length):
+                await self._adapter.interaction_send(interaction, chunk)
+            return
+
+        # /stop (+ /cancel alias) — cancel the current run in this channel.
+        if name in ("stop", "cancel"):
+            response = await self._stop_command(channel_id)
+            await self._adapter.interaction_send(interaction, response)
+            return
+
         # /ask — run the agent loop. Acknowledge with the prompt as a visible
         # anchor (slash input is otherwise hidden from other members), then
         # stream into the channel exactly like a normal message.
@@ -453,16 +582,11 @@ class DiscordInterface:
                 )
                 return
             await self._adapter.interaction_send(interaction, f"💭 {prompt}")
-            await self._process_through_agent(prompt, channel_id)
+            await self._run_agent(prompt, channel_id)
             return
 
         # Text-producing commands: /reset, /status, /help.
-        session = self._session_map.get_or_create(channel_id)
-        ctx = CommandContext(
-            channel_id=channel_id,
-            session_id=session.session_id,
-            message_count=len(session.history),
-        )
+        ctx = self._command_context(channel_id)
         response = handle_command(name, text, ctx)
 
         if name == "reset":
