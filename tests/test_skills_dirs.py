@@ -835,3 +835,100 @@ class TestGrindsourcedShapedTree:
             env={"SR2_WORKSPACE": str(tmp_path)},
         )
         assert [s.name for s in skills] == ["godot-shader"]
+
+
+# ---------------------------------------------------------------------------
+# agent.default_skills opt-out (obsidian-4z94)
+# ---------------------------------------------------------------------------
+
+class TestDefaultSkillsOptOut:
+    """Builtin skills describe SR2 itself; a guest-facing agent can withhold them."""
+
+    def _runtime(self, cfg):
+        from sr2_spectre.runtime import Runtime
+
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+            return Runtime(config=cfg)
+
+    def test_defaults_registered_by_default(self):
+        """Unchanged behavior for every agent that does not opt out."""
+        from sr2_spectre.skills.builtin import DEFAULT_SKILLS
+
+        runtime = self._runtime(_base_config())
+
+        for skill in DEFAULT_SKILLS:
+            assert skill.name in runtime.skill_registry
+        assert "load_skill" in runtime.registry
+
+    def test_opt_out_withholds_builtins(self):
+        from sr2_spectre.skills.builtin import DEFAULT_SKILLS
+
+        cfg = _base_config()
+        cfg.agent.default_skills = False
+        runtime = self._runtime(cfg)
+
+        for skill in DEFAULT_SKILLS:
+            assert skill.name not in runtime.skill_registry
+        assert len(runtime.skill_registry) == 0
+
+    def test_opt_out_also_withholds_load_skill(self):
+        """A tool whose only answer is 'No skills registered.' is dead weight."""
+        cfg = _base_config()
+        cfg.agent.default_skills = False
+        runtime = self._runtime(cfg)
+
+        assert "load_skill" not in runtime.registry
+
+    def test_opt_out_keeps_load_skill_when_dirs_supply_skills(self, tmp_path: Path):
+        """The Grindforge case: studio skills yes, SR2 internals no."""
+        _bundle(tmp_path, "godot-shader", _BUNDLED_NO_FRONTMATTER)
+
+        cfg = _base_config(skills_dirs=[str(tmp_path)])
+        cfg.agent.default_skills = False
+        runtime = self._runtime(cfg)
+
+        assert "godot-shader" in runtime.skill_registry
+        assert "sr2-conventions" not in runtime.skill_registry
+        assert "solid-review" not in runtime.skill_registry
+        assert "load_skill" in runtime.registry
+
+    def test_reload_can_withdraw_builtins_and_the_tool(self):
+        """Flipping the flag at runtime must reach an already-running agent."""
+        cfg = _base_config()
+        runtime = self._runtime(cfg)
+        assert "sr2-conventions" in runtime.skill_registry
+        assert "load_skill" in runtime.registry
+
+        tightened = _base_config()
+        tightened.agent.default_skills = False
+        applied = runtime.apply_config(tightened)
+
+        assert "agent.skills" in applied
+        assert "sr2-conventions" not in runtime.skill_registry
+        assert "load_skill" not in runtime.registry
+
+    def test_reload_can_restore_builtins_and_the_tool(self):
+        cfg = _base_config()
+        cfg.agent.default_skills = False
+        runtime = self._runtime(cfg)
+        assert "load_skill" not in runtime.registry
+
+        loosened = _base_config()
+        applied = runtime.apply_config(loosened)
+
+        assert "agent.skills" in applied
+        assert "sr2-conventions" in runtime.skill_registry
+        assert "load_skill" in runtime.registry
+
+    def test_flag_defaults_true_on_agent_config(self):
+        from sr2_spectre.config import AgentConfig
+
+        assert AgentConfig().default_skills is True
+
+    def test_flag_round_trips_through_yaml(self, tmp_path: Path):
+        import yaml
+
+        from sr2_spectre.config import AgentConfig
+
+        raw = yaml.safe_load("name: brokkr\ndefault_skills: false\n")
+        assert AgentConfig(**raw).default_skills is False

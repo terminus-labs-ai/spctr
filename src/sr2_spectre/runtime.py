@@ -215,6 +215,7 @@ class Runtime:
         if (
             config.agent.skills != previous.agent.skills
             or config.agent.skills_dirs != previous.agent.skills_dirs
+            or config.agent.default_skills != previous.agent.default_skills
         ):
             self._rebuild_skills(config)
             applied.append("agent.skills")
@@ -540,22 +541,30 @@ class Runtime:
         return env or None
 
     def _bootstrap_skills(self, config: SpectreConfig) -> None:
-        """Bootstrap the SkillRegistry with DEFAULT_SKILLS + config-declared skills.
+        """Bootstrap the SkillRegistry from config.
 
-        Always registers the builtin DEFAULT_SKILLS (sr2-conventions). Then
-        loads any additional skills declared in agent.skills[] from disk
-        using load_skill_from_path.
+        Registers the builtin DEFAULT_SKILLS unless ``agent.default_skills``
+        is false, then discovers ``agent.skills_dirs[]`` by directory scan,
+        then loads ``agent.skills[]`` from disk.  Later registrations win, so
+        the order is deliberate: builtins are the weakest claim on a name and
+        an explicit per-file skill is the strongest.
 
-        Also discovers skills from agent.skills_dirs[] via directory scanning
-        with frontmatter parsing.
-
-        Auto-injects the load_skill tool so the agent can discover and load
-        skills at runtime.
+        Auto-injects the load_skill tool when there is at least one skill for
+        it to serve.
         """
-        # 1. Register builtin defaults
-        for skill in DEFAULT_SKILLS:
-            self.skill_registry.register(skill)
-        logger.info("Registered %d default skill(s)", len(DEFAULT_SKILLS))
+        # 1. Register builtin defaults, unless the agent opted out.
+        #
+        # Opt-out exists because these describe SR2's own architecture and
+        # file layout. An agent facing people who are not the operator has no
+        # use for them and should not be able to read them out (obsidian-4z94).
+        if config.agent.default_skills:
+            for skill in DEFAULT_SKILLS:
+                self.skill_registry.register(skill)
+            logger.info("Registered %d default skill(s)", len(DEFAULT_SKILLS))
+        else:
+            logger.info(
+                "Builtin default skills withheld (agent.default_skills=false)"
+            )
 
         # 2. Discover skills from skills_dirs (bulk loading)
         if config.agent.skills_dirs:
@@ -596,12 +605,23 @@ class Runtime:
         self._auto_inject_load_skill()
 
     def _auto_inject_load_skill(self) -> None:
-        """Auto-register the load_skill tool if not already present.
+        """Register or withdraw the load_skill tool to match the registry.
 
-        The load_skill tool is always available — it's the runtime entry
-        point for the skills subsystem. Unlike complete_step (which is
-        conditional on a plan resolver), skills are always useful.
+        The tool is the runtime entry point for the skills subsystem, so it
+        follows the skills: an agent with none gets a tool whose only possible
+        answer is "No skills registered.", which is schema tokens spent on
+        nothing and a menu entry inviting a pointless call.
+
+        Withdrawal matters as much as injection. A config reload can empty the
+        registry — ``agent.default_skills`` flipped to false, a skills_dirs
+        entry removed — and the tool has to go with it, or a guest-facing
+        agent keeps a live handle to skills it is no longer meant to have.
         """
+        if not len(self.skill_registry):
+            if self.registry.unregister("load_skill"):
+                logger.info("Withdrew load_skill tool (no skills registered)")
+            return
+
         if "load_skill" in self.registry:
             return
 

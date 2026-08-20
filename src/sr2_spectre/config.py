@@ -98,6 +98,18 @@ class AgentConfig(BaseModel):
     name: str = "spectre"
     tools: list[ToolConfig] = Field(default_factory=list)
     skills: list[SkillConfig] = Field(default_factory=list)
+    default_skills: bool = Field(
+        default=True,
+        description=(
+            "Register the builtin DEFAULT_SKILLS (sr2-conventions, "
+            "solid-review). Set false for a guest-facing agent: those skills "
+            "describe SR2's own architecture and file layout, which has "
+            "nothing to do with such an agent's job and should not be "
+            "readable by whoever it is talking to. Config cannot otherwise "
+            "withhold them — they are registered before agent.skills and "
+            "agent.skills_dirs are even read."
+        ),
+    )
     skills_dirs: list[str] = Field(
         default_factory=list,
         description=(
