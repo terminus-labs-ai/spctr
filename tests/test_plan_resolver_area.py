@@ -95,6 +95,30 @@ def three_candidates(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
     return plans, knowledge
 
 
+def default_root_layout(tmp_path: Path, monkeypatch) -> None:
+    """Stage the same three candidates under the *default* roots.
+
+    Production leaves ``knowledge_root`` out of the config
+    (``~/.sr2/agents/edi.yaml``), so the active project name selects the
+    directory that is globbed — ``~/.sr2/knowledge/<project>`` — not just the
+    frontmatter filter applied to files already found.
+    """
+    home = tmp_path / "home"
+    (home / ".sr2" / "plans").mkdir(parents=True)
+    for project, body in (("alpha", ALPHA), ("envproj", ENV), ("gitrepo", GITREPO)):
+        root = home / ".sr2" / "knowledge" / project
+        root.mkdir(parents=True)
+        write_knowledge(root, "k.md", project, body)
+
+    repo = tmp_path / "gitrepo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setenv("SR2_PROJECT", "envproj")
+    monkeypatch.chdir(repo)
+
+
 async def injected(resolver: PlanResolver) -> str:
     return (await resolver.resolve([turn_start()])).content[0].text
 
@@ -108,6 +132,27 @@ class TestAreaPriority:
         plans, knowledge = three_candidates(tmp_path, monkeypatch)
         resolver = PlanResolver.build(
             make_config(plans, knowledge, "__auto__"), deps_with_area("alpha")
+        )
+
+        text = await injected(resolver)
+
+        assert ALPHA in text
+        assert ENV not in text
+        assert GITREPO not in text
+
+    async def test_area_selects_the_default_knowledge_root(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """With ``knowledge_root`` implicit, the area must pick the directory.
+
+        Resolving the area only far enough to filter frontmatter leaves the
+        glob pointed at ``~/.sr2/knowledge/<SR2_PROJECT>``, so the area's own
+        directory is never read and the feature injects nothing in production.
+        """
+        default_root_layout(tmp_path, monkeypatch)
+        resolver = PlanResolver.build(
+            ResolverConfig(type="plan", config={"project": "__auto__"}),
+            deps_with_area("alpha"),
         )
 
         text = await injected(resolver)

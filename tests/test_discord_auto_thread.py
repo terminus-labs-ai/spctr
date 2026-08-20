@@ -134,6 +134,9 @@ def _make_mock_adapter() -> MagicMock:
     mock_adapter.set_message_handler = MagicMock()
     mock_adapter.create_thread = AsyncMock()
     mock_adapter.is_thread_channel = MagicMock()
+    # Area resolution (spc-48): these tests do not exercise areas, so the
+    # area-bearing channel is "none". Inert until the interface asks.
+    mock_adapter.area_channel = MagicMock(return_value=(None, None))
     return mock_adapter
 
 

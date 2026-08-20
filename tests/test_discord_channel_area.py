@@ -56,9 +56,15 @@ class TestDeriveAreaName:
             ("--general--", "general"),
             ("sr2_spectre", "sr2_spectre"),
             ("area-2", "area-2"),
+            # Nothing alphanumeric survives the strip: no name, so no area.
+            # "" must not leak downstream — resolve_area is spec'd never to
+            # return it, and "" on RunContext means "explicitly no area".
+            ("---", None),
+            ("\U0001f525", None),
+            ("", None),
         ],
     )
-    def test_derivation(self, channel_name: str, expected: str) -> None:
+    def test_derivation(self, channel_name: str, expected: str | None) -> None:
         from sr2_spectre.interfaces.discord.handler import derive_area_name
 
         assert derive_area_name(channel_name) == expected
@@ -83,6 +89,7 @@ class TestResolveArea:
             (PARENT_ID, FRACTURED, {"555": ""}, None),
             (None, None, {}, None),
             (None, None, {"555": "grindsourced"}, None),
+            (PARENT_ID, "---", {}, None),
         ],
         ids=[
             "derived-name",
@@ -91,6 +98,7 @@ class TestResolveArea:
             "empty-override-is-no-area",
             "unreadable-channel",
             "unreadable-channel-with-a-map",
+            "name-strips-to-empty",
         ],
     )
     def test_resolution(
@@ -157,6 +165,14 @@ class TestAreaChannel:
         thread.parent = None
 
         assert self._adapter().area_channel(thread) == (None, None)
+
+    def test_text_channel_with_no_readable_name_has_no_area_channel(self) -> None:
+        discord = pytest.importorskip("discord")
+        channel = MagicMock(spec=discord.TextChannel)
+        channel.id = PARENT_ID
+        channel.name = None
+
+        assert self._adapter().area_channel(channel) == (None, None)
 
     def test_dm_has_no_area_channel(self) -> None:
         discord = pytest.importorskip("discord")

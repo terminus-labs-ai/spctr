@@ -5,7 +5,9 @@ Spec: ``specs/channel-area-injection.md`` (bead spc-48).
   AC 7  — the provider dict omits ``area`` entirely when ``RunContext.area``
           is ``None``, and includes it (including as ``""``) when it is set.
   AC 12 — TUI and single-shot runs produce no ``area`` key and resolve as
-          before.
+          before. Extended to the REPL (``interfaces/repl.py``), which landed
+          after the spec and is now the default interface: same intent, an
+          interface that does not resolve areas emits no ``area`` key.
 
 The three states the rest of the pipeline reads (FR 10):
   key absent      -> this interface does not resolve areas
@@ -148,6 +150,17 @@ class TestNonDiscordInterfaces:
 
         agent, provider = _agent_and_provider()
         await TUIInterface().start(agent)
+
+        assert agent.run_context.area is None
+        assert "area" not in provider()
+        assert agent.run_context.source == os.getcwd()
+
+    async def test_repl_sets_no_area(self) -> None:
+        """The REPL is the default interface and resolves no areas."""
+        from sr2_spectre.interfaces.repl import REPLInterface
+
+        agent, provider = _agent_and_provider()
+        await REPLInterface().start(agent)
 
         assert agent.run_context.area is None
         assert "area" not in provider()
