@@ -6,6 +6,8 @@ import fnmatch
 import os
 import re
 
+from sr2_spectre.tools.workspace_floor import WorkspaceFloor
+
 # Directories that are pruned from recursive walks by default. These are
 # never useful to grep and (e.g. a 221MB .venv) can blow up output.
 _DEFAULT_IGNORE_DIRS = {
@@ -72,11 +74,13 @@ class GrepTool:
         max_line_length: int = 500,
         max_matches: int = 100,
         ignore_dirs: set[str] | None = None,
+        workspace_root: str | None = None,
     ) -> None:
         self.max_line_length = max_line_length
         self.max_matches = max_matches
         # Merge with defaults — never replace. Defaults always apply.
         self.ignore_dirs = _DEFAULT_IGNORE_DIRS | (ignore_dirs or set())
+        self.floor = WorkspaceFloor(workspace_root)
 
     async def __call__(
         self,
@@ -89,17 +93,20 @@ class GrepTool:
         # A per-call ignore set merges on top of the instance set (which itself
         # already includes the defaults). Merge, never replace.
         effective_ignore = self.ignore_dirs | (ignore_dirs or set())
+        # "." means the workspace root under a floor, not the process cwd.
+        search_root = self.floor.default_dir(path)
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None,
             _grep,
             pattern,
-            path,
+            search_root,
             glob,
             regex,
             self.max_line_length,
             self.max_matches,
             effective_ignore,
+            self.floor,
         )
 
 
@@ -111,6 +118,7 @@ def _grep(
     max_line_length: int,
     max_matches: int,
     ignore_dirs: set[str],
+    floor: WorkspaceFloor | None = None,
 ) -> str:
     if regex:
         compiled = re.compile(pattern)
@@ -125,7 +133,11 @@ def _grep(
             for filename in filenames:
                 if glob is not None and not fnmatch.fnmatch(filename, glob):
                     continue
-                files.append(os.path.join(dirpath, filename))
+                candidate = os.path.join(dirpath, filename)
+                # A symlinked file inside the tree can still point outside it.
+                if floor is not None and not floor.contains(candidate):
+                    continue
+                files.append(candidate)
     else:
         if glob is not None and not fnmatch.fnmatch(os.path.basename(path), glob):
             files = []

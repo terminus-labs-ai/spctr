@@ -8,19 +8,75 @@ signatures, and type annotations before constructing an instance.
 Designed to solve the grounding gap observed in bead obsidian-ye0: when an
 agent needs to instantiate a Pydantic model or call a constructor, grep of a
 single field name only returns that one line, not the full field list.
+
+Handles Python and GDScript. The declaration syntax differs — ``func name():``
+and ``class_name Name`` rather than ``def name():`` and ``class Name`` — but
+both languages scope blocks by indentation, so only the patterns change. The
+language is chosen by file extension.
 """
 from __future__ import annotations
 
 import re
+import os
 from dataclasses import dataclass, field
 from typing import Literal
+
+from sr2_spectre.tools.workspace_floor import WorkspaceFloor
+
+#: Declarations that occupy a single line, so there is no block to capture.
+_SINGLE_LINE_KINDS = {"signal", "variable", "constant"}
+
+GDSCRIPT_EXTENSIONS = {".gd"}
+
+
+def _gdscript_patterns(symbol_name: str) -> list[tuple[re.Pattern, str]]:
+    """Declaration patterns for GDScript, in precedence order."""
+    name = re.escape(symbol_name)
+    return [
+        # `class_name Foo` names the whole file's type; its body is the file.
+        (re.compile(r"^(\s*)class_name\s+(" + name + r")\b"), "class_name"),
+        (re.compile(r"^(\s*)class\s+(" + name + r")\b"), "class"),
+        (re.compile(r"^(\s*)(?:static\s+)?func\s+(" + name + r")\s*\("), "func"),
+        (re.compile(r"^(\s*)signal\s+(" + name + r")\b"), "signal"),
+        (re.compile(r"^(\s*)enum\s+(" + name + r")\b"), "enum"),
+        (re.compile(r"^(\s*)const\s+(" + name + r")\b"), "constant"),
+        (
+            re.compile(
+                r"^(\s*)(?:@export[^\s]*\s+)?(?:static\s+)?var\s+(" + name + r")\b"
+            ),
+            "variable",
+        ),
+    ]
+
+
+def _find_gdscript_symbol(
+    lines: list[str], symbol_name: str, file_path: str
+) -> tuple[int, int, str]:
+    """Locate a GDScript declaration. Returns (line index, indent, kind)."""
+    for idx, line in enumerate(lines):
+        for pattern, kind in _gdscript_patterns(symbol_name):
+            m = pattern.match(line)
+            if not m:
+                continue
+            indent = len(m.group(1))
+            if kind == "func":
+                return idx, indent, "method" if indent > 0 else "function"
+            if kind == "class_name":
+                return idx, indent, "class"
+            return idx, indent, kind
+    raise ValueError(
+        f"Symbol '{symbol_name}' not found in {file_path} (searched for a "
+        f"GDScript func, class, class_name, signal, enum, const or var)"
+    )
 
 
 @dataclass(frozen=True)
 class SymbolInfo:
     """Structured result of a symbol lookup."""
     name: str
-    kind: Literal["class", "function", "method"]
+    kind: Literal[
+        "class", "function", "method", "signal", "variable", "constant", "enum"
+    ]
     start_line: int          # 1-based
     end_line: int            # 1-based (inclusive)
     body: str                # raw source of the definition
@@ -59,6 +115,32 @@ def find_symbol(
             lines = f.read().splitlines()
     except OSError as exc:
         raise FileNotFoundError(f"Cannot read file: {file_path}") from exc
+
+    if os.path.splitext(file_path)[1].lower() in GDSCRIPT_EXTENSIONS:
+        match_line, match_indent, gd_kind = _find_gdscript_symbol(
+            lines, symbol_name, file_path
+        )
+        if gd_kind in _SINGLE_LINE_KINDS:
+            end_line = match_line
+        elif _is_file_scoped_class(lines, match_line, symbol_name):
+            # `class_name Foo` types the whole file, so the file is the body.
+            end_line = len(lines) - 1
+        else:
+            end_line = _find_definition_end(
+                lines, match_line, match_indent,
+                "class" if gd_kind in ("class", "enum") else gd_kind,
+            )
+        body_lines = lines[match_line : end_line + 1]
+        if context_lines > 0:
+            body_lines += lines[end_line + 1 : end_line + 1 + context_lines]
+        return SymbolInfo(
+            name=symbol_name,
+            kind=gd_kind,
+            start_line=match_line + 1,
+            end_line=end_line + 1,
+            body="\n".join(body_lines),
+            file_path=file_path,
+        )
 
     # Class definitions: 'class Name' or 'class Name(Base)'
     class_pattern = re.compile(
@@ -116,11 +198,20 @@ def find_symbol(
     )
 
 
+def _is_file_scoped_class(lines: list[str], idx: int, symbol_name: str) -> bool:
+    """True when the matched line is a `class_name` declaration."""
+    return bool(
+        re.match(r"^\s*class_name\s+" + re.escape(symbol_name) + r"\b", lines[idx])
+    )
+
+
 def _find_definition_end(
     lines: list[str],
     start: int,
     base_indent: int,
-    kind: Literal["class", "function", "method"],
+    kind: Literal[
+        "class", "function", "method", "signal", "variable", "constant", "enum"
+    ],
 ) -> int:
     """Find the last line of a class/function definition.
 
@@ -218,7 +309,7 @@ def _find_definition_end(
 # ---------------------------------------------------------------------------
 
 class ReadSymbolTool:
-    """Extract a full class or function definition from a Python source file.
+    """Extract a full class or function definition from a source file.
 
     Unlike grep (which returns individual matching lines), this tool returns
     the complete definition block: class body with all fields, or function
@@ -229,8 +320,9 @@ class ReadSymbolTool:
 
     name = "read_symbol"
     description = (
-        "Read the full definition of a class or function from a Python source "
-        "file. Returns the complete definition block including all fields, "
+        "Read the full definition of a class or function from a Python or "
+        "GDScript source file. Returns the complete definition block "
+        "including all fields, "
         "type annotations, and docstrings. Use this before constructing "
         "instances or calling functions to see required parameters and field "
         "defaults. Unlike grep (which returns individual matching lines), this "
@@ -242,15 +334,15 @@ class ReadSymbolTool:
             "file_path": {
                 "type": "string",
                 "description": (
-                    "Absolute or relative path to the Python source file "
-                    "containing the symbol."
+                    "Absolute or relative path to the source file containing "
+                    "the symbol (.py or .gd)."
                 ),
             },
             "symbol_name": {
                 "type": "string",
                 "description": (
-                    "Exact name of the class or function to look up "
-                    "(e.g. 'McpServerConfig', 'load_config')."
+                    "Exact name of the symbol to look up (e.g. "
+                    "'McpServerConfig', 'load_config', '_ready')."
                 ),
             },
             "context_lines": {
@@ -265,13 +357,17 @@ class ReadSymbolTool:
         "required": ["file_path", "symbol_name"],
     }
 
+    def __init__(self, workspace_root: str | None = None) -> None:
+        self.floor = WorkspaceFloor(workspace_root)
+
     async def __call__(
         self,
         file_path: str,
         symbol_name: str,
         context_lines: int = 0,
     ) -> str:
-        info = find_symbol(file_path, symbol_name, context_lines=context_lines)
+        effective = self.floor.checked(file_path)
+        info = find_symbol(effective, symbol_name, context_lines=context_lines)
 
         result_lines = [
             f"Symbol: {info.name} ({info.kind})",
