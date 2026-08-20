@@ -58,6 +58,49 @@ def should_respond(
 
 
 # ---------------------------------------------------------------------------
+# Area derivation — pure, no discord.py import (FR 3, FR 4, FR 5)
+# ---------------------------------------------------------------------------
+
+
+def derive_area_name(channel_name: str | None) -> str | None:
+    """Lowercase, strip leading/trailing non-alphanumerics. None stays None.
+
+    Returns None when nothing alphanumeric survives the strip (e.g. "---",
+    a bare emoji, or the empty string) — "" is never returned by this
+    function.
+    """
+    if channel_name is None:
+        return None
+
+    lowered = channel_name.lower()
+    start = 0
+    end = len(lowered)
+    while start < end and not lowered[start].isalnum():
+        start += 1
+    while end > start and not lowered[end - 1].isalnum():
+        end -= 1
+
+    stripped = lowered[start:end]
+    return stripped or None
+
+
+def resolve_area(
+    channel_id: int | None,
+    channel_name: str | None,
+    channel_areas: dict[str, str],
+) -> str | None:
+    """Override map first, then the derived name. Returns None for no area;
+    "" is never returned — an empty override maps to None.
+    """
+    if channel_id is not None:
+        key = str(channel_id)
+        if key in channel_areas:
+            return channel_areas[key] or None
+
+    return derive_area_name(channel_name)
+
+
+# ---------------------------------------------------------------------------
 # Slash command registry
 # ---------------------------------------------------------------------------
 

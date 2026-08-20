@@ -50,6 +50,10 @@ class DiscordConfig(BaseModel):
                      a new conversation starts in a parent channel and
                      route all replies into that thread instead of the
                      parent channel. Defaults to False.
+        channel_areas: Channel ID (as string) to area name. Overrides the
+                       name derived from the channel itself. An empty-string
+                       value means the channel has no area. Keyed on the
+                       parent channel for threads.
     """
     token: str = ""
     channels: list[int] = Field(default_factory=list)
@@ -58,6 +62,14 @@ class DiscordConfig(BaseModel):
     edit_stream_interval: float = 1.0
     tool_embed_enabled: bool = True
     auto_thread: bool = False
+    channel_areas: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Channel ID (as string) to area name. Overrides the name derived "
+            "from the channel itself. An empty-string value means the channel "
+            "has no area. Keyed on the parent channel for threads."
+        ),
+    )
 
     @field_validator("token", mode="before")
     @classmethod

@@ -40,6 +40,7 @@ from sr2_spectre.interfaces.discord.handler import (
     handle_command,
     parse_slash_command,
     probe_harbinger_status,
+    resolve_area,
     should_respond,
 )
 from sr2_spectre.interfaces.discord.session_map import SessionMap
@@ -220,6 +221,50 @@ class DiscordInterface:
         )
         return channel_id
 
+    def _stamp_area(self, channel_obj: Any) -> None:
+        """Derive this message's area and stamp it on the agent's RunContext.
+
+        Runs after ``should_respond`` and after ``_apply_agent_config()``, so
+        the ``channel_areas`` map in force is the one this message loaded.
+        Uses the message's own channel — not any thread later created for the
+        reply — so a fresh auto-created thread never shifts the area.
+
+        Discord always resolves an area: "no area" reaches ``RunContext`` as
+        ``""``, never ``None`` — ``None`` means "this interface does not do
+        areas" and would let ``PlanResolver`` fall through to
+        ``SR2_PROJECT``/cwd, the silent-substitution bug this feature exists
+        to remove.
+        """
+        if self._adapter is None or self._agent is None:
+            return
+
+        area_channel_id, area_channel_name = self._adapter.area_channel(channel_obj)
+        channel_areas = self.config.channel_areas
+        is_override = (
+            area_channel_id is not None and str(area_channel_id) in channel_areas
+        )
+        resolved = resolve_area(area_channel_id, area_channel_name, channel_areas)
+
+        self._agent.set_run_context(RunContext(
+            interface="discord",
+            mode=RunMode.INTERACTIVE,
+            source=None,
+            area=resolved if resolved is not None else "",
+        ))
+
+        if resolved is None:
+            logger.info("area=none (channel=%s)", area_channel_id)
+        elif is_override:
+            logger.info(
+                "area=%s (channel_areas override, channel=%s)",
+                resolved, area_channel_id,
+            )
+        else:
+            logger.info(
+                "area=%s (derived from channel name, channel=%s)",
+                resolved, area_channel_id,
+            )
+
     async def _process_message(self, message: Any) -> None:
         """Process an incoming Discord message.
 
@@ -272,6 +317,8 @@ class DiscordInterface:
             content, self.config.mention_only and not in_active_thread, bot_id, bot_mentions
         ):
             return
+
+        self._stamp_area(channel_obj)
 
         # Parse slash commands
         command, rest = parse_slash_command(content)

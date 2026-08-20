@@ -90,10 +90,13 @@ class Session:
             ctx = self._run_context
             if ctx is None:
                 return None
-            return {
+            out = {
                 "mode": ctx.mode,
                 "source": ctx.source or "",
             }
+            if ctx.area is not None:
+                out["area"] = ctx.area
+            return out
 
         self._run_context_provider = _run_context_provider
         self.sr2 = self._build_sr2()

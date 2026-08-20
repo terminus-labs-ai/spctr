@@ -16,6 +16,7 @@ from __future__ import annotations
 import glob as _glob
 import logging
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -109,8 +110,13 @@ class PlanResolver:
 
     name: str = "plan"
 
-    def __init__(self, config: ResolverConfig) -> None:
+    def __init__(
+        self,
+        config: ResolverConfig,
+        run_context_provider: Callable[[], dict[str, str] | None] | None = None,
+    ) -> None:
         self._config = config
+        self._run_context_provider = run_context_provider
         self.max_executions: int = config.max_executions
         self.execution_count: int = 0
         self.subscriptions: list[EventSubscription] = build_subscriptions(
@@ -169,26 +175,40 @@ class PlanResolver:
     # Dynamic project resolution
     # ------------------------------------------------------------------
 
-    def _resolve_project(self) -> str:
-        """Resolve the active project name.
+    def _resolve_project(self) -> str | None:
+        """Resolve the active project name — the one area -> project
+        translation point (FR 13).
 
-        If ``project`` was set to ``__auto__``, derive dynamically:
-        1. ``SR2_PROJECT`` env var (highest priority).
-        2. Walk up from ``os.getcwd()`` looking for ``.git`` — use the
+        If ``project`` was set to ``__auto__``, derive dynamically, highest
+        priority first:
+        1. The run context's ``area`` key, when present and non-empty — the
+           interface's resolved area IS the project name.
+        2. The run context's ``area`` key present and empty — explicitly no
+           project; resolution stops here (returns None), no fallback.
+        3. ``SR2_PROJECT`` env var.
+        4. Walk up from ``os.getcwd()`` looking for ``.git`` — use the
            containing directory's name.
-        3. Fallback: use ``os.getcwd()`` basename.
+        5. Fallback: use ``os.getcwd()`` basename.
 
-        Returns the project name string.
+        Returns the project name string, or None when the run context
+        supplies an explicitly empty area (case 2 above).
         """
         if not self._is_auto:
             return self._project
 
-        # 1. Env var
+        # 1 & 2. Run context area, when the provider supplies the key at all.
+        if self._run_context_provider is not None:
+            ctx = self._run_context_provider()
+            if ctx is not None and "area" in ctx:
+                area = ctx["area"]
+                return area if area else None
+
+        # 3. Env var
         env_project = os.environ.get("SR2_PROJECT")
         if env_project:
             return env_project
 
-        # 2. Walk up from cwd looking for .git
+        # 4. Walk up from cwd looking for .git
         try:
             cwd = Path.cwd().resolve()
         except OSError:
@@ -205,7 +225,7 @@ class PlanResolver:
                 break
             current = parent
 
-        # 3. Fallback: use cwd basename
+        # 5. Fallback: use cwd basename
         logger.warning(
             "PlanResolver: could not find .git walking up from %s — "
             "using cwd name '%s' as project fallback.",
@@ -214,17 +234,21 @@ class PlanResolver:
         )
         return cwd.name
 
-    def _resolve_knowledge_root(self) -> Path:
+    def _resolve_knowledge_root(self) -> Path | None:
         """Resolve the knowledge_root path.
 
         If knowledge_root was explicitly configured in YAML, return the
         pre-resolved path (unchanged). If using the default and project is
         ``__auto__``, re-derive the path from the resolved project name.
+        Returns None when the resolved project is None (explicitly no
+        project/area) — there is no default directory to point at.
         """
         if not self._is_auto or self._knowledge_root_explicit:
             return self._knowledge_root
 
         project = self._resolve_project()
+        if project is None:
+            return None
         return Path.home().expanduser() / ".sr2" / "knowledge" / project
 
     # ------------------------------------------------------------------
@@ -233,7 +257,7 @@ class PlanResolver:
 
     @classmethod
     def build(cls, config: ResolverConfig, deps: Dependencies) -> "PlanResolver":
-        return cls(config)
+        return cls(config, run_context_provider=deps.run_context_provider)
 
     def current_frame_id(self) -> str | None:
         """Return the active frame id for the lowest-order pending task.
@@ -366,7 +390,7 @@ class PlanResolver:
     # Layer resolution helpers
     # ------------------------------------------------------------------
 
-    def _resolve_layer1(self, project: str | None = None) -> str:
+    def _resolve_layer1(self, project: str | None) -> str:
         """L1: Load all project-knowledge files matching the active project.
 
         Globs ``*.md`` under ``knowledge_root``, parses frontmatter, filters
@@ -374,15 +398,16 @@ class PlanResolver:
         Returns concatenated content of matching files (body only, frontmatter
         stripped).
 
-        If *project* is provided, use it; otherwise resolve dynamically
-        (supports ``__auto__`` sentinel for per-turn derivation).
+        *project* is None when resolution explicitly yielded no project (an
+        empty run-context area) — in that case no knowledge is injected and
+        the knowledge root is never even computed.
         """
         if project is None:
-            project = self._resolve_project()
+            return ""
 
         knowledge_root = self._resolve_knowledge_root()
 
-        if not knowledge_root.is_dir():
+        if knowledge_root is None or not knowledge_root.is_dir():
             return ""
 
         pattern = str(knowledge_root / "*.md")

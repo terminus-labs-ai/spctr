@@ -418,3 +418,22 @@ class DiscordBotAdapter:
         """
         discord = _import_discord()
         return isinstance(channel, discord.Thread)
+
+    def area_channel(self, channel: Any) -> tuple[int | None, str | None]:
+        """Return (channel_id, channel_name) of the area-bearing channel.
+
+        For a Thread, this is its parent channel. For a regular text channel,
+        the channel itself. Returns (None, None) for a DM, an orphaned thread,
+        or any channel whose name cannot be read.
+        """
+        discord = _import_discord()
+        if isinstance(channel, discord.Thread):
+            channel = channel.parent
+            if channel is None:
+                return None, None
+
+        name = getattr(channel, "name", None)
+        if name is None:
+            return None, None
+
+        return getattr(channel, "id", None), name
