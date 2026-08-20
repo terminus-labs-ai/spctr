@@ -6,7 +6,9 @@ Features:
 - Session-per-channel (isolated conversation history per channel)
 - Message edit simulation for streaming output
 - Tool execution embeds
-- Slash commands (/ask, /reset, /status, /help)
+- Slash commands (/ask, /reset, /status, /help, /hb) — registered as native
+  Discord application commands (autocomplete UI, no @mention needed) and also
+  accepted as text-prefix commands for backwards compatibility
 - Error handling and reconnection support
 - Config re-read from disk on every message (edits apply without a restart)
 """

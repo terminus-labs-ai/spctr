@@ -371,10 +371,14 @@ async def run_async(argv: list[str] | None = None) -> None:
     await agent.initialize()
 
     try:
-        # _load_interface resolves the class; interfaces are instantiated with
-        # no required args (single_shot takes an optional prompt kwarg).
-        interface_cls = _load_interface(interface_name, **interface_kwargs)
-        interface = interface_cls()
+        # _load_interface resolves the class; the per-interface kwargs built
+        # above (discord's config_source, single_shot's prompt) MUST be passed
+        # to the constructor here. Instantiating argless silently drops them —
+        # for discord that means an empty-token config and a hard startup crash
+        # (regression from f49b853, which split resolve/instantiate but left
+        # this call argless).
+        interface_cls = _load_interface(interface_name)
+        interface = interface_cls(**interface_kwargs)
 
         await interface.start(agent)
         await interface.run(agent)

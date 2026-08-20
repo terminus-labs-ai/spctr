@@ -75,6 +75,9 @@ def _make_mock_adapter(is_thread: bool = False) -> MagicMock:
     mock_adapter.edit_message = AsyncMock()
     mock_adapter.send_embed = AsyncMock()
     mock_adapter.set_message_handler = MagicMock()
+    mock_adapter.set_slash_handler = MagicMock()
+    mock_adapter.interaction_send = AsyncMock()
+    mock_adapter.interaction_defer = AsyncMock()
     mock_adapter.is_thread_channel = MagicMock(return_value=is_thread)
     # Area resolution (spc-48): these tests do not exercise areas, so the
     # area-bearing channel is "none". Inert until the interface asks.
@@ -790,3 +793,130 @@ async def test_slash_status_renders_session_info() -> None:
         assert "2" in sent  # 2 messages in history
         assert "Session" in sent
         assert "Messages" in sent
+
+
+# ---------------------------------------------------------------------------
+# Native slash commands (_handle_slash) — interactions gateway path
+# ---------------------------------------------------------------------------
+
+def _make_mock_interaction(channel_id: int = 12345) -> MagicMock:
+    """Create a mock discord.py Interaction for slash-command tests."""
+    interaction = MagicMock()
+    interaction.channel_id = channel_id
+    channel = MagicMock()
+    channel.id = channel_id
+    interaction.channel = channel
+    return interaction
+
+
+async def _started_interface(config: DiscordConfig, agent: Any) -> tuple:
+    """Start an interface against a mocked adapter and return (interface, adapter)."""
+    interface = DiscordInterface(config)
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+        await interface.start(agent)
+    return interface, mock_adapter
+
+
+@pytest.mark.asyncio
+async def test_start_wires_the_slash_handler() -> None:
+    """start() must register _handle_slash so native commands reach the interface."""
+    interface, mock_adapter = await _started_interface(DiscordConfig(), _make_mock_agent())
+    mock_adapter.set_slash_handler.assert_called_once_with(interface._handle_slash)
+
+
+@pytest.mark.asyncio
+async def test_slash_help_responds_via_interaction() -> None:
+    """/help slash command answers through the interaction, not a channel message."""
+    interface, mock_adapter = await _started_interface(DiscordConfig(), _make_mock_agent())
+
+    await interface._handle_slash("help", "", _make_mock_interaction())
+
+    sent = mock_adapter.interaction_send.call_args[0][1]
+    assert "/ask" in sent
+    mock_adapter.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_slash_reset_clears_session_via_interaction() -> None:
+    """/reset slash command clears channel history and confirms via interaction."""
+    interface, mock_adapter = await _started_interface(DiscordConfig(), _make_mock_agent())
+    session = interface._session_map.get_or_create(12345)
+    session.history.append({"role": "user", "content": []})
+
+    await interface._handle_slash("reset", "", _make_mock_interaction(12345))
+
+    assert session.history == []
+    mock_adapter.interaction_send.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slash_status_reports_session_via_interaction() -> None:
+    """/status slash command renders real session info through the interaction."""
+    agent = _make_mock_agent()
+    interface, mock_adapter = await _started_interface(DiscordConfig(), agent)
+    session = interface._session_map.get_or_create(555)
+    session.history.append({"role": "user", "content": []})
+
+    await interface._handle_slash("status", "", _make_mock_interaction(555))
+
+    sent = mock_adapter.interaction_send.call_args[0][1]
+    assert session.session_id in sent
+    assert "Messages" in sent
+
+
+@pytest.mark.asyncio
+async def test_slash_hb_defers_then_posts_probe() -> None:
+    """/hb slash command defers (probe is slow) then posts the probe output."""
+    interface, mock_adapter = await _started_interface(DiscordConfig(), _make_mock_agent())
+
+    with patch(
+        "sr2_spectre.interfaces.discord.interface.probe_harbinger_status",
+        new=AsyncMock(return_value="```\nLive slots: busy=1\n```"),
+    ):
+        await interface._handle_slash("hb", "", _make_mock_interaction(777))
+
+    mock_adapter.interaction_defer.assert_awaited_once()
+    sent = mock_adapter.interaction_send.call_args[0][1]
+    assert "Live slots" in sent
+
+
+@pytest.mark.asyncio
+async def test_slash_ask_anchors_then_routes_to_agent() -> None:
+    """/ask slash command echoes the prompt as an anchor and runs the agent."""
+    interface, mock_adapter = await _started_interface(DiscordConfig(), _make_mock_agent())
+
+    with patch.object(interface, "_process_through_agent", new=AsyncMock()) as proc:
+        await interface._handle_slash("ask", "what is the weather?", _make_mock_interaction(42))
+
+    anchor = mock_adapter.interaction_send.call_args[0][1]
+    assert "what is the weather?" in anchor
+    proc.assert_awaited_once_with("what is the weather?", 42)
+
+
+@pytest.mark.asyncio
+async def test_slash_ask_without_text_warns_and_skips_agent() -> None:
+    """/ask with empty text must warn and never invoke the agent."""
+    interface, mock_adapter = await _started_interface(DiscordConfig(), _make_mock_agent())
+
+    with patch.object(interface, "_process_through_agent", new=AsyncMock()) as proc:
+        await interface._handle_slash("ask", "   ", _make_mock_interaction())
+
+    proc.assert_not_awaited()
+    mock_adapter.interaction_send.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_slash_respects_channel_allowlist() -> None:
+    """Slash commands enforce the same channel allowlist as the message path."""
+    config = DiscordConfig(channels=[111])
+    interface, mock_adapter = await _started_interface(config, _make_mock_agent())
+
+    with patch.object(interface, "_process_through_agent", new=AsyncMock()) as proc:
+        await interface._handle_slash("ask", "hi", _make_mock_interaction(999))
+
+    proc.assert_not_awaited()
+    sent = mock_adapter.interaction_send.call_args[0][1]
+    assert "aren't enabled" in sent
+

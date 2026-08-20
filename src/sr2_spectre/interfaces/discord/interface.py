@@ -121,6 +121,10 @@ class DiscordInterface:
 
         self._adapter.set_message_handler(_handle_message)
 
+        # Wire native slash commands (must be set before adapter.start(), which
+        # syncs the command tree in on_ready).
+        self._adapter.set_slash_handler(self._handle_slash)
+
         await self._adapter.start()
 
     def _apply_agent_config(self) -> None:
@@ -379,6 +383,96 @@ class DiscordInterface:
         # /ask with content — process through agent
         if command == "ask" and rest.strip():
             await self._process_through_agent(rest, channel_id)
+
+    async def _handle_slash(
+        self,
+        name: str,
+        text: str,
+        interaction: Any,
+    ) -> None:
+        """Dispatch a native Discord slash command.
+
+        Mirrors the text-prefix path (``_handle_command``) but responds through
+        the interaction instead of a channel message. Slash commands arrive on
+        the interactions gateway, so they bypass the on_message mention/channel
+        filters — the channel allowlist is re-applied here to match the message
+        path.
+
+        Args:
+            name: Command name (without leading /), already lowercase.
+            text: Command argument text (only ``/ask`` uses it).
+            interaction: The discord.py Interaction (treated opaquely; all
+                discord.py calls route through the adapter).
+        """
+        if self._adapter is None or self._agent is None:
+            return
+
+        # The adapter reloaded config when the interaction arrived; push the
+        # non-Discord half into the agent, mirroring the message path.
+        self._apply_agent_config()
+
+        channel_obj = getattr(interaction, "channel", None)
+        channel_id = getattr(interaction, "channel_id", None)
+        if channel_id is None and channel_obj is not None:
+            channel_id = getattr(channel_obj, "id", None)
+        if channel_id is None:
+            await self._adapter.interaction_send(
+                interaction, "⚠ Could not resolve this channel."
+            )
+            return
+
+        # Re-apply the channel allowlist the message path enforces in the
+        # adapter's dispatch_message — slash commands skip that filter.
+        channels = self.config.channels
+        if channels and channel_id not in channels:
+            await self._adapter.interaction_send(
+                interaction, "⚠ Commands aren't enabled in this channel."
+            )
+            return
+
+        if channel_obj is not None:
+            self._stamp_area(channel_obj)
+
+        # /hb — probe Harbinger via the CLI, bypassing the LLM. Can take a few
+        # seconds, so defer first to keep the interaction alive.
+        if name == "hb":
+            await self._adapter.interaction_defer(interaction)
+            output = await probe_harbinger_status()
+            for chunk in chunk_message(output, self.config.max_message_length):
+                await self._adapter.interaction_send(interaction, chunk)
+            return
+
+        # /ask — run the agent loop. Acknowledge with the prompt as a visible
+        # anchor (slash input is otherwise hidden from other members), then
+        # stream into the channel exactly like a normal message.
+        if name == "ask":
+            prompt = text.strip()
+            if not prompt:
+                await self._adapter.interaction_send(
+                    interaction, "⚠ `/ask` needs a message. Try `/ask <your question>`."
+                )
+                return
+            await self._adapter.interaction_send(interaction, f"💭 {prompt}")
+            await self._process_through_agent(prompt, channel_id)
+            return
+
+        # Text-producing commands: /reset, /status, /help.
+        session = self._session_map.get_or_create(channel_id)
+        ctx = CommandContext(
+            channel_id=channel_id,
+            session_id=session.session_id,
+            message_count=len(session.history),
+        )
+        response = handle_command(name, text, ctx)
+
+        if name == "reset":
+            self._session_map.reset(channel_id)
+
+        if response is not None:
+            for chunk in chunk_message(response, self.config.max_message_length):
+                await self._adapter.interaction_send(interaction, chunk)
+        else:
+            await self._adapter.interaction_send(interaction, "Done.")
 
     async def _process_through_agent(
         self,

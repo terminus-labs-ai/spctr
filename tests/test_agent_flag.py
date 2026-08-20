@@ -290,3 +290,86 @@ class TestRunAsyncWithAgent:
 # ---------------------------------------------------------------------------
 
 from sr2_spectre.cli import run_async
+
+
+# ---------------------------------------------------------------------------
+# 5: run_async passes per-interface kwargs to the interface constructor
+# ---------------------------------------------------------------------------
+
+class TestRunAsyncPassesInterfaceKwargs:
+    """Regression guard for f49b853.
+
+    _load_interface returns the CLASS; run_async instantiates it. The
+    per-interface kwargs (discord's config_source, single_shot's prompt) MUST
+    reach the constructor. A refactor left the call argless — the discord bots
+    got a default empty-token config and crashed at startup with
+    "Discord bot token is required" on the first restart after the regression.
+    """
+
+    @pytest.mark.asyncio
+    async def test_discord_interface_receives_config_source(
+        self, tmp_path: Path
+    ) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "edi.yaml").write_text(
+            textwrap.dedent("""\
+                agent:
+                  name: edi
+                models:
+                  default:
+                    model: test
+                    base_url: http://localhost:11434/v1
+                pipeline:
+                  layers:
+                    - name: system
+                      target: system
+                      resolvers:
+                        - type: static
+                          config:
+                            text: You are helpful.
+            """)
+        )
+
+        mock_config = MagicMock()
+        mock_config.agent.name = "edi"
+        mock_config.models = {"default": MagicMock(model="test", base_url=None)}
+
+        captured: dict = {}
+
+        class _CapturingInterface:
+            def __init__(self, **kwargs) -> None:
+                captured.update(kwargs)
+
+            async def start(self, agent) -> None:  # noqa: ANN001
+                pass
+
+            async def run(self, agent) -> None:  # noqa: ANN001
+                pass
+
+            async def stop(self) -> None:
+                pass
+
+        sentinel_source = object()
+
+        with (
+            patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
+            patch("sr2_spectre.cli._configure_logging"),
+            patch("sr2_spectre.cli._load_interface", return_value=_CapturingInterface),
+            patch("sr2_spectre.cli.Agent", return_value=AsyncMock()),
+            patch("sr2_spectre.cli.build_spectre_config_source", return_value=MagicMock()),
+            patch("sr2_spectre.cli.DiscordConfigView", return_value=sentinel_source),
+        ):
+            await run_async([
+                "--agent", "edi",
+                "--agents-dir", str(agents_dir),
+                "--interface", "discord",
+            ])
+
+        assert captured.get("config_source") is sentinel_source, (
+            "run_async dropped config_source — the discord bot would start with "
+            "an empty-token default config and crash (f49b853 regression)."
+        )
+

@@ -74,6 +74,11 @@ class DiscordBotAdapter:
         # interface wires the handler, so resetting it there drops every
         # message (handler clobbered back to None).
         self._on_message_handler: Any = None
+        # Native Discord slash commands (app_commands). The tree is built in
+        # start(); the handler is set via set_slash_handler() BEFORE start(),
+        # same lifecycle contract as the message handler above.
+        self._tree: Any = None
+        self._slash_handler: Any = None
 
     @property
     def config(self) -> DiscordConfig:
@@ -117,10 +122,13 @@ class DiscordBotAdapter:
         self._bot = discord.Client(intents=intents)
         self._running = True
 
+        self._register_slash_commands()
+
         @self._bot.event
         async def on_ready() -> None:
             user = self._bot.user
             logger.info("Discord bot logged in as %s (ID: %s)", user.name, user.id)
+            await self._sync_slash_commands()
 
         @self._bot.event
         async def on_message(message: Any) -> None:
@@ -157,6 +165,144 @@ class DiscordBotAdapter:
         discord.Message object.
         """
         self._on_message_handler = handler
+
+    def set_slash_handler(self, handler: Any) -> None:
+        """Set the async callback for native slash-command interactions.
+
+        Signature: ``async (name: str, text: str, interaction) -> None``.
+        Set this BEFORE start(): the command callbacks built in
+        _register_slash_commands() read it at invocation time, and the
+        on_ready sync makes the commands live.
+        """
+        self._slash_handler = handler
+
+    # ------------------------------------------------------------------
+    # Native Discord slash commands (app_commands)
+    # ------------------------------------------------------------------
+
+    def _register_slash_commands(self) -> None:
+        """Build the app_commands tree and register the built-in commands.
+
+        Each callback delegates to the interface's slash handler (set via
+        set_slash_handler). Descriptions come from the engine-independent
+        handler registry so the slash and text-prefix command sets stay in
+        sync. A plain discord.Client has no command tree of its own, so one
+        is constructed here and synced per-guild in on_ready.
+        """
+        discord = _import_discord()
+        from sr2_spectre.interfaces.discord.handler import get_registered_commands
+
+        tree = discord.app_commands.CommandTree(self._bot)
+        self._tree = tree
+        registry = get_registered_commands()
+
+        def _desc(name: str, fallback: str) -> str:
+            cmd = registry.get(name)
+            return cmd.description if cmd is not None else fallback
+
+        async def _dispatch(name: str, text: str, interaction: Any) -> None:
+            if self._slash_handler is None:
+                logger.warning("Slash command /%s fired with no handler set", name)
+                return
+            await self._slash_handler(name, text, interaction)
+
+        @tree.command(name="ask", description="Send a message to the agent")
+        @discord.app_commands.describe(text="What to ask the agent")
+        async def _ask(interaction: Any, text: str) -> None:  # noqa: ANN001
+            await _dispatch("ask", text, interaction)
+
+        @tree.command(
+            name="reset",
+            description=_desc("reset", "Start a new conversation in this channel"),
+        )
+        async def _reset(interaction: Any) -> None:  # noqa: ANN001
+            await _dispatch("reset", "", interaction)
+
+        @tree.command(
+            name="status",
+            description=_desc("status", "Show current session info"),
+        )
+        async def _status(interaction: Any) -> None:  # noqa: ANN001
+            await _dispatch("status", "", interaction)
+
+        @tree.command(
+            name="help",
+            description=_desc("help", "Show available commands"),
+        )
+        async def _help(interaction: Any) -> None:  # noqa: ANN001
+            await _dispatch("help", "", interaction)
+
+        @tree.command(
+            name="hb",
+            description="Probe Harbinger: live slots, run outcomes, done & blocked beads",
+        )
+        async def _hb(interaction: Any) -> None:  # noqa: ANN001
+            await _dispatch("hb", "", interaction)
+
+    async def _sync_slash_commands(self) -> None:
+        """Sync slash commands to every connected guild for instant availability.
+
+        Per-guild sync propagates immediately; a global sync can take up to an
+        hour to appear in clients. Guilds joined after startup pick the commands
+        up on the next restart. Never raises — a failed sync is logged and the
+        bot keeps running (text-prefix commands still work).
+
+        The GLOBAL command scope is then cleared: our commands are registered
+        per-guild above, so any global commands present belong to a previous
+        registration under this same application (e.g. a prior bot identity).
+        Pushing an empty global set deletes those leftovers so only the intended
+        commands remain. Global deletions can take up to an hour to disappear
+        from clients; guild commands update instantly.
+        """
+        if self._tree is None:
+            return
+        try:
+            total = 0
+            guilds = list(getattr(self._bot, "guilds", []))
+            for guild in guilds:
+                self._tree.copy_global_to(guild=guild)
+                synced = await self._tree.sync(guild=guild)
+                total += len(synced)
+            # Clear stale global commands AFTER the guild loop, so copy_global_to
+            # above still sees our command set. clear_commands empties the tree's
+            # global scope; the empty sync() deletes them on Discord's side.
+            self._tree.clear_commands(guild=None)
+            cleared = await self._tree.sync()
+            logger.info(
+                "Synced %d slash command(s) across %d guild(s); global scope now "
+                "holds %d command(s)",
+                total, len(guilds), len(cleared),
+            )
+        except Exception as exc:
+            logger.error("Slash command sync failed: %s", exc)
+
+    async def interaction_defer(self, interaction: Any) -> None:
+        """Acknowledge a slash interaction so Discord does not time it out.
+
+        Discord requires an initial response within ~3 seconds; deferring buys
+        up to 15 minutes for a followup. No-op if already responded. Never
+        raises.
+        """
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.defer()
+        except Exception as exc:
+            logger.error("Failed to defer interaction: %s", exc)
+
+    async def interaction_send(self, interaction: Any, content: str) -> None:
+        """Send content back to a slash interaction.
+
+        Uses the initial response the first time and followups thereafter, so a
+        handler may call this repeatedly (e.g. for chunked output). Never
+        raises.
+        """
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(content)
+            else:
+                await interaction.response.send_message(content)
+        except Exception as exc:
+            logger.error("Failed to respond to interaction: %s", exc)
 
     async def run(self) -> None:
         """Run the bot until stopped."""

@@ -215,3 +215,152 @@ async def test_a_plain_config_still_works() -> None:
 
     assert adapter.config.mention_only is True
     assert adapter._config_source.reload().mention_only is True
+
+
+# --- Native slash commands (app_commands) -------------------------------
+#
+# start() builds a real discord.app_commands.CommandTree offline. These
+# assert the tree is populated with the expected built-in commands; the
+# on_ready sync itself needs a live gateway and is not exercised here.
+
+async def test_start_registers_native_slash_commands() -> None:
+    """start() builds a command tree with the five built-in slash commands."""
+    adapter = _adapter()
+    try:
+        await adapter.start()
+        assert adapter._tree is not None
+        names = {cmd.name for cmd in adapter._tree.get_commands()}
+        assert names == {"ask", "reset", "status", "help", "hb"}
+    finally:
+        await adapter.stop()
+
+
+async def test_ask_slash_command_declares_a_text_argument() -> None:
+    """/ask must expose a `text` parameter so Discord prompts for input."""
+    adapter = _adapter()
+    try:
+        await adapter.start()
+        ask = next(c for c in adapter._tree.get_commands() if c.name == "ask")
+        assert "text" in {p.name for p in ask.parameters}
+    finally:
+        await adapter.stop()
+
+
+async def test_slash_callback_delegates_to_the_slash_handler() -> None:
+    """Invoking a tree command must call the handler with (name, text, interaction)."""
+    adapter = _adapter()
+    calls: list[tuple[str, str, object]] = []
+
+    async def _handler(name: str, text: str, interaction: object) -> None:
+        calls.append((name, text, interaction))
+
+    adapter.set_slash_handler(_handler)
+    try:
+        await adapter.start()
+        reset = next(c for c in adapter._tree.get_commands() if c.name == "reset")
+        sentinel = object()
+        await reset.callback(sentinel)
+        assert calls == [("reset", "", sentinel)]
+    finally:
+        await adapter.stop()
+
+
+async def test_slash_command_with_no_handler_is_a_noop() -> None:
+    """A command firing before the handler is wired must not raise."""
+    adapter = _adapter()
+    try:
+        await adapter.start()
+        ask = next(c for c in adapter._tree.get_commands() if c.name == "ask")
+        await ask.callback(object(), "hello")  # no handler set — must not raise
+    finally:
+        await adapter.stop()
+
+
+class _FakeResponse:
+    def __init__(self, done: bool) -> None:
+        self._done = done
+        self.sent: list[str] = []
+
+    def is_done(self) -> bool:
+        return self._done
+
+    async def send_message(self, content: str) -> None:
+        self.sent.append(content)
+
+    async def defer(self) -> None:
+        self._done = True
+
+
+class _FakeFollowup:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send(self, content: str) -> None:
+        self.sent.append(content)
+
+
+class _FakeInteraction:
+    def __init__(self, done: bool = False) -> None:
+        self.response = _FakeResponse(done)
+        self.followup = _FakeFollowup()
+
+
+async def test_interaction_send_uses_initial_response_then_followups() -> None:
+    """First interaction_send is the initial response; later ones are followups."""
+    adapter = _adapter()
+    interaction = _FakeInteraction(done=False)
+
+    await adapter.interaction_send(interaction, "first")
+    assert interaction.response.sent == ["first"]
+
+    interaction.response._done = True
+    await adapter.interaction_send(interaction, "second")
+    assert interaction.followup.sent == ["second"]
+
+
+async def test_interaction_defer_marks_the_response_done() -> None:
+    """interaction_defer acknowledges an un-answered interaction exactly once."""
+    adapter = _adapter()
+    interaction = _FakeInteraction(done=False)
+
+    await adapter.interaction_defer(interaction)
+    assert interaction.response.is_done() is True
+
+    # Deferring again is a no-op (already done) and must not raise.
+    await adapter.interaction_defer(interaction)
+
+
+async def test_sync_clears_global_scope_after_syncing_guilds() -> None:
+    """_sync_slash_commands syncs per-guild, THEN clears the global scope.
+
+    Ordering matters: copy_global_to must run while the tree still holds our
+    commands, and the global scope is cleared afterwards to delete leftover
+    commands from a prior registration under the same application (the hermes
+    global commands bug). The final global sync must push the emptied set.
+    """
+    adapter = _adapter()
+    calls: list[tuple[str, object]] = []
+    guild = SimpleNamespace(id=42)
+
+    class _FakeTree:
+        def copy_global_to(self, guild: object) -> None:
+            calls.append(("copy", guild))
+
+        async def sync(self, guild: object = None) -> list:
+            calls.append(("sync", guild))
+            return []
+
+        def clear_commands(self, guild: object = None) -> None:
+            calls.append(("clear", guild))
+
+    adapter._tree = _FakeTree()
+    adapter._bot = SimpleNamespace(guilds=[guild])
+
+    await adapter._sync_slash_commands()
+
+    # Guild sync happens before the global clear...
+    assert calls.index(("copy", guild)) < calls.index(("clear", None))
+    assert calls.index(("sync", guild)) < calls.index(("clear", None))
+    # ...and the global scope is cleared, then synced empty last.
+    assert ("clear", None) in calls
+    assert calls[-1] == ("sync", None)
