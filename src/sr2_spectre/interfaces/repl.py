@@ -205,6 +205,15 @@ class REPLInterface:
 
         thinking_acc: list[str] = []
         text_acc: list[str] = []
+        # The live-frame buffer (text_acc) shows every text delta as it streams,
+        # but a turn can span MULTIPLE LLM roundtrips: interim round ("let me
+        # check X") -> tool result -> final round (the real answer).  Committing
+        # the whole accumulated blob re-states the interim scratch text that
+        # already streamed, so the user reads it twice (once raw while
+        # streaming, once parsed in the committed markdown).  final_text_acc
+        # keeps only the text emitted after the LAST tool result — the final
+        # LLM round — and is what gets committed as markdown.
+        final_text_acc: list[str] = []
         total_tool_calls = 0
         stream_exc: Exception | None = None
 
@@ -229,6 +238,7 @@ class REPLInterface:
                 async for ev in agent.stream_message(text):
                     if isinstance(ev, AgentTextDelta):
                         text_acc.append(ev.text)
+                        final_text_acc.append(ev.text)
                         live.update(_frame())
                     elif isinstance(ev, AgentThinkingDelta):
                         thinking_acc.append(ev.text)
@@ -243,17 +253,34 @@ class REPLInterface:
                             self.console.print(f"[red]✗ {ev.name} failed[/red]")
                         else:
                             self.console.print(f"[green]✓ {ev.name} done[/green]")
+                        # A new LLM round is starting: whatever text streamed
+                        # before this result is interim narration, not the
+                        # answer.  Drop it so the final-round text is clean.
+                        final_text_acc.clear()
                     elif isinstance(ev, AgentDone):
                         total_tool_calls = ev.tool_calls_executed
             except Exception as exc:
                 stream_exc = exc
                 self.console.print(f"[red]Stream error: {exc}[/red]")
 
-        # Commit final reply as Markdown (even on partial error)
-        last_text = "".join(text_acc)
-        if last_text:
+        # Commit ONLY the final LLM round as Markdown.  On a multi-roundtrip
+        # turn the interim round(s) already streamed verbatim; re-rendering
+        # them here would read the same text twice (raw, then parsed).  On a
+        # partial error the final round never completed, so fall back to the
+        # whole accumulated buffer — that's the best we have and it still
+        # shows the user what streamed before the failure.
+        if stream_exc:
+            committed = "".join(text_acc)
+        elif final_text_acc:
+            committed = "".join(final_text_acc)
+        else:
+            # No tool-result boundary reset the buffer, or the turn ended on a
+            # tool call with no trailing answer — fall back to the full
+            # accumulated text so nothing the model said is lost.
+            committed = "".join(text_acc)
+        if committed:
             no_color = bool(int(os.environ.get("NO_COLOR", "0")))
-            self.console.print(render_markdown(last_text), highlight=not no_color)
+            self.console.print(render_markdown(committed), highlight=not no_color)
         elif not thinking_acc and stream_exc is None:
             self.console.print("[dim](no response)[/dim]")
 

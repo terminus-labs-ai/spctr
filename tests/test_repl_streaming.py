@@ -132,6 +132,99 @@ async def test_stream_turn_renders_thinking(make_mock_agent) -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_turn_multiroundtrip_no_double_commit(make_mock_agent, monkeypatch) -> None:
+    """Regression: a turn spanning multiple LLM roundtrips must NOT re-commit
+    the interim round's text as markdown.
+
+    The interim round ("First, let me check that.") streams live and is wiped
+    by the transient Live region on exit; only the FINAL round (text after the
+    last tool result) is committed as markdown.  Committing the whole
+    accumulated blob (interim + final) made the user read the interim text
+    twice — once raw while streaming, once parsed in the committed copy.
+
+    We spy on render_markdown (the single committed-markdown path) rather than
+    asserting on the raw sink, because the in-memory sink does not perform the
+    line-erasure that a real terminal does for a transient Live frame.
+    """
+    import sr2_spectre.interfaces.repl as repl_mod
+    from sr2_spectre.events import (
+        AgentDone,
+        AgentToolResult,
+        AgentToolStart,
+        AgentTextDelta,
+    )
+
+    committed: list[str] = []
+    real_render = repl_mod.render_markdown
+
+    def _spy_render(text, console=None):
+        committed.append(text)
+        return real_render(text, console)
+
+    monkeypatch.setattr(repl_mod, "render_markdown", _spy_render)
+
+    agent = make_mock_agent(stream_events=[
+        # interim round (round 1)
+        AgentTextDelta(text="First, let me "),
+        AgentTextDelta(text="check that."),
+        AgentToolStart(name="terminal", input={"command": "ls"}),
+        AgentToolResult(name="terminal", is_error=False),
+        # final round (round 2) — the real answer
+        AgentTextDelta(text="The answer is "),
+        AgentTextDelta(text="**42**."),
+        AgentDone(tool_calls_executed=1),
+    ])
+    iface, _sink = _make_repl_with_sink()
+
+    await iface._stream_turn(agent, "what is the answer?")
+
+    # Exactly ONE markdown commit for a clean turn.
+    assert len(committed) == 1, f"expected 1 markdown commit, got {len(committed)}"
+    committed_text = committed[0]
+    # It is ONLY the final round — the real answer.
+    assert "The answer is" in committed_text
+    assert "42" in committed_text
+    # The interim scratch text is NOT re-committed.
+    assert "First, let me check that." not in committed_text, (
+        "Interim round text was committed as markdown — multi-roundtrip turns "
+        "double-render the interim text (raw while streaming, parsed in the "
+        f"committed copy). Committed: {committed_text!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_error_path_preserves_partial_text(make_mock_agent) -> None:
+    """On a stream error the whole accumulated buffer is still committed (not
+    just the final round, which never completed) so the user sees what streamed."""
+    from sr2_spectre.events import (
+        AgentTextDelta,
+        AgentToolResult,
+        AgentToolStart,
+    )
+
+    agent = make_mock_agent()
+
+    async def _erroring_stream(text: str):
+        # interim round text, then a tool result, then a crash mid-final-round
+        yield AgentTextDelta(text="Interim scratch. ")
+        yield AgentToolStart(name="terminal", input={"command": "ls"})
+        yield AgentToolResult(name="terminal", is_error=False)
+        yield AgentTextDelta(text="Partial final. ")
+        raise RuntimeError("boom")
+
+    agent.stream_message = MagicMock(side_effect=lambda text: _erroring_stream(text))
+    iface, sink = _make_repl_with_sink()
+
+    await iface._stream_turn(agent, "hi")
+
+    out = _output(sink)
+    assert "boom" in out
+    # Both interim and partial-final are preserved on the error path.
+    assert "Interim scratch." in out
+    assert "Partial final." in out
+
+
+@pytest.mark.asyncio
 async def test_stream_turn_tool_start_and_result(make_mock_agent) -> None:
     from sr2_spectre.events import (
         AgentDone,
