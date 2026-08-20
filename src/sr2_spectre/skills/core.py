@@ -181,25 +181,101 @@ class SkillRegistry:
 # Directory-based skill discovery
 # ---------------------------------------------------------------------------
 
-def _parse_skill_frontmatter(text: str, file_path: Path) -> Skill | None:
-    """Parse a skill file's frontmatter and return a Skill, or None to skip.
+_DESCRIPTION_MAX_CHARS = 200
 
-    Uses the shared frontmatter extractor from planning/frontmatter.py.
-    Requires a ``name`` field in the YAML block.  The body after the
-    frontmatter delimiters becomes the skill content.
+
+def _derive_description(body: str, name: str) -> str:
+    """Derive a one-line description from a skill body.
+
+    Used for bundled skills whose identity came from the path rather than
+    from frontmatter.  The description is the only thing the model sees in
+    ``load_skill(list_only=true)``, so ``Skill: {name}`` is a last resort
+    rather than the default — a skill nobody can tell apart never gets
+    loaded.  ``Skill.__post_init__`` rejects an empty description, so this
+    always returns a non-empty string.
+
+    Args:
+        body: Skill content, frontmatter already stripped.
+        name: Skill name, used for the last-resort string.
+
+    Returns:
+        The first non-heading, non-blank paragraph, truncated to
+        ``_DESCRIPTION_MAX_CHARS``, or ``Skill: {name}`` when the body
+        carries no prose.
+    """
+    paragraph: list[str] = []
+    in_fence = False
+
+    for raw_line in body.splitlines():
+        line = raw_line.strip()
+
+        # Fenced code is not prose. Toggling rather than skipping to the
+        # closing fence keeps a code block that opens before any paragraph
+        # from contributing its contents.
+        if line.startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+
+        if not line:
+            # A blank line ends the paragraph, but only once one has
+            # started: leading blanks and the gap after a heading are not
+            # the end of anything.
+            if paragraph:
+                break
+            continue
+
+        if line.startswith("#"):
+            continue
+
+        # A leading blockquote marker is decoration, not description.
+        paragraph.append(line.lstrip("> ").strip())
+
+    derived = " ".join(part for part in paragraph if part).strip()
+    if not derived:
+        return f"Skill: {name}"
+
+    if len(derived) > _DESCRIPTION_MAX_CHARS:
+        head = derived[:_DESCRIPTION_MAX_CHARS]
+        # Prefer a word boundary, but do not return an empty string when the
+        # first "word" is longer than the cap.
+        clipped = head.rsplit(" ", 1)[0].rstrip(" ,.;:") or head
+        derived = f"{clipped}\u2026"
+
+    return derived
+
+
+def _load_frontmatter_mapping(
+    text: str,
+    file_path: Path,
+    *,
+    lenient: bool,
+) -> dict[str, Any] | None:
+    """Return a skill file's frontmatter as a mapping, or None if unusable.
+
+    Logs the reason it is unusable.  *lenient* changes only the wording and
+    the severity — whether an unusable block is fatal is the caller's
+    decision, not this function's.
 
     Args:
         text: Full file content.
         file_path: Path for logging context.
+        lenient: True when the caller can name the skill from its path.
 
     Returns:
-        A Skill instance, or None if the file should be skipped.
+        The frontmatter mapping, or None when absent, unparseable, or not
+        a mapping.
     """
+    outcome = "naming it from its directory" if lenient else "skipping as skill"
+
     raw = extract_raw_frontmatter(text)
     if raw is None:
-        logger.warning(
-            "No frontmatter in %s — skipping as skill",
+        logger.log(
+            logging.DEBUG if lenient else logging.WARNING,
+            "No frontmatter in %s — %s",
             file_path,
+            outcome,
         )
         return None
 
@@ -207,29 +283,72 @@ def _parse_skill_frontmatter(text: str, file_path: Path) -> Skill | None:
         data = yaml.safe_load(raw)
     except yaml.YAMLError as exc:
         logger.warning(
-            "YAML parse error in %s: %s — skipping as skill",
+            "YAML parse error in %s: %s — %s",
             file_path,
             exc,
+            outcome,
         )
         return None
 
     if not isinstance(data, dict):
         logger.warning(
-            "Frontmatter in %s is not a mapping — skipping as skill",
+            "Frontmatter in %s is not a mapping — %s",
             file_path,
+            outcome,
         )
         return None
 
-    name = data.get("name")
-    if not name:
-        logger.warning(
-            "No 'name' in frontmatter of %s — skipping as skill",
-            file_path,
-        )
-        return None
+    return data
 
-    name = str(name).strip()
-    description = str(data.get("description", "")).strip() or f"Skill: {name}"
+
+def _parse_skill_frontmatter(
+    text: str,
+    file_path: Path,
+    *,
+    fallback_name: str | None = None,
+) -> Skill | None:
+    """Parse a skill file's frontmatter and return a Skill, or None to skip.
+
+    Uses the shared frontmatter extractor from planning/frontmatter.py.
+    The body after the frontmatter delimiters becomes the skill content.
+
+    Frontmatter is **required** for the flat ``<dir>/<name>.md`` form, where
+    a file's mere presence says nothing about its intent: a stray README or
+    notes file dropped in a skills directory must not become a skill.  It is
+    **optional** for the bundled ``<dir>/<name>/SKILL.md`` form, where the
+    path is itself the declaration — the directory names the skill and the
+    filename says what it is.  Callers opt into that by passing
+    *fallback_name*.  Frontmatter still wins wherever it is usable.
+
+    Args:
+        text: Full file content.
+        file_path: Path for logging context.
+        fallback_name: Name to fall back to when frontmatter is missing or
+            carries no usable ``name``.  None means frontmatter is required
+            and the file is skipped instead.
+
+    Returns:
+        A Skill instance, or None if the file should be skipped.
+    """
+    lenient = fallback_name is not None
+
+    data = _load_frontmatter_mapping(text, file_path, lenient=lenient)
+    if data is None:
+        if not lenient:
+            return None
+        data = {}
+
+    name = str(data.get("name") or "").strip()
+    named_by_path = not name
+    if named_by_path:
+        if not lenient:
+            logger.warning(
+                "No 'name' in frontmatter of %s — skipping as skill",
+                file_path,
+            )
+            return None
+        name = str(fallback_name)
+
     version = str(data.get("version", "0.1.0")).strip()
 
     raw_tags = data.get("tags", [])
@@ -248,6 +367,18 @@ def _parse_skill_frontmatter(text: str, file_path: Path) -> Skill | None:
     else:
         content = text
 
+    description = str(data.get("description") or "").strip()
+    if not description:
+        # Path-derived identity gets a path-derived description. When
+        # frontmatter named the skill, its author had the same chance to
+        # describe it, so an omission there is respected rather than
+        # second-guessed.
+        description = (
+            _derive_description(content, name)
+            if named_by_path
+            else f"Skill: {name}"
+        )
+
     return Skill(
         name=name,
         description=description,
@@ -263,10 +394,27 @@ def discover_skills_in_dir(
 ) -> list[Skill]:
     """Discover and load skills from a directory.
 
-    Globs ``*.md`` files in *dir_path*, parses each file's YAML
-    frontmatter for ``name`` / ``description`` / ``version`` / ``tags``,
-    and returns a list of Skill instances.  Files without valid
-    frontmatter or a ``name`` field are skipped with a warning.
+    Two layouts are recognised, and only these two:
+
+    ``<dir>/<name>.md``
+        Flat form.  Frontmatter is required — a bare ``.md`` file says
+        nothing about its own intent, so a README or a scratch note
+        dropped in a skills directory must not silently become a skill.
+
+    ``<dir>/<name>/SKILL.md``
+        Bundled form, the Claude/agents convention.  Frontmatter is
+        optional: the path already declares the skill, so a file with none
+        is named after its directory.
+
+    The bundled glob is deliberately ``*/SKILL.md`` — depth exactly two,
+    filename exactly ``SKILL.md``.  That one constraint is what keeps the
+    false positives out, and every one of them exists in the wild:
+    ``<name>/README.md`` and ``<name>/SECURITY.md`` beside a real skill,
+    ``_shared/*.md`` support fragments, and ``<name>/references/*.md``
+    bundled resources.  A recursive ``**/*.md`` would register all of them.
+
+    Ordering is flat-then-bundled, each sorted.  Registration is last-wins,
+    so discovery order has to be stable across runs.
 
     This is the bulk-loading counterpart to ``load_skill_from_path``
     (single-file).  It uses the shared frontmatter parser from
@@ -300,16 +448,28 @@ def discover_skills_in_dir(
         return []
 
     skills: list[Skill] = []
-    md_files = sorted(resolved.glob("*.md"))
 
-    for md_file in md_files:
+    # (file, fallback_name). A fallback name is what makes frontmatter
+    # optional, so only the bundled form carries one.
+    candidates: list[tuple[Path, str | None]] = [
+        (f, None) for f in sorted(resolved.glob("*.md"))
+    ]
+    candidates += [
+        (f, f.parent.name) for f in sorted(resolved.glob("*/SKILL.md"))
+    ]
+
+    for md_file, fallback_name in candidates:
         try:
             text = md_file.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             logger.warning("Cannot read %s: %s — skipping", md_file, exc)
             continue
 
-        skill = _parse_skill_frontmatter(text, md_file)
+        skill = _parse_skill_frontmatter(
+            text,
+            md_file,
+            fallback_name=fallback_name,
+        )
         if skill is not None:
             skills.append(skill)
 

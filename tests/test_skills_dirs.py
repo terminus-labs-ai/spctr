@@ -508,3 +508,330 @@ Discovered content.
         # Per-file loads after dirs, so it wins
         assert skill.description == "From per-file config"
         assert skill.version == "2.0.0"
+
+
+# ---------------------------------------------------------------------------
+# Bundled <name>/SKILL.md layout (obsidian-8si8)
+# ---------------------------------------------------------------------------
+
+_BUNDLED_WITH_FRONTMATTER = """\
+---
+name: from-frontmatter
+description: Frontmatter description
+version: 2.0.0
+tags: [alpha]
+---
+Bundled body.
+"""
+
+_BUNDLED_NO_FRONTMATTER = """\
+# Godot Shader Skill
+
+You are an expert at writing Godot 4.x shaders for 2D effects.
+
+## Shader Types
+
+More detail follows.
+"""
+
+
+def _bundle(root: Path, name: str, text: str) -> Path:
+    """Write a bundled skill at ``root/<name>/SKILL.md``."""
+    d = root / name
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / "SKILL.md"
+    f.write_text(text)
+    return f
+
+
+class TestDeriveDescription:
+    """_derive_description produces a usable, non-empty description."""
+
+    def test_first_paragraph_after_heading(self):
+        from sr2_spectre.skills.core import _derive_description
+
+        body = "# Heading\n\nThe first real paragraph.\n\nA second one.\n"
+        assert _derive_description(body, "x") == "The first real paragraph."
+
+    def test_skips_fenced_code(self):
+        from sr2_spectre.skills.core import _derive_description
+
+        body = "# Heading\n\n```glsl\nshader_type canvas_item;\n```\n\nProse at last.\n"
+        assert _derive_description(body, "x") == "Prose at last."
+
+    def test_joins_wrapped_lines_of_one_paragraph(self):
+        from sr2_spectre.skills.core import _derive_description
+
+        body = "Line one\nline two\n\nSecond paragraph.\n"
+        assert _derive_description(body, "x") == "Line one line two"
+
+    def test_strips_blockquote_marker(self):
+        from sr2_spectre.skills.core import _derive_description
+
+        assert _derive_description("> Quoted intro.\n", "x") == "Quoted intro."
+
+    def test_truncates_long_paragraph(self):
+        from sr2_spectre.skills.core import _DESCRIPTION_MAX_CHARS, _derive_description
+
+        body = "word " * 200
+        out = _derive_description(body, "x")
+        assert len(out) <= _DESCRIPTION_MAX_CHARS + 1  # +1 for the ellipsis
+        assert out.endswith("…")
+
+    def test_last_resort_when_no_prose(self):
+        from sr2_spectre.skills.core import _derive_description
+
+        assert _derive_description("# Only a heading\n", "my-skill") == "Skill: my-skill"
+        assert _derive_description("", "my-skill") == "Skill: my-skill"
+
+    def test_never_returns_empty(self):
+        """Skill.__post_init__ raises on an empty description."""
+        from sr2_spectre.skills.core import _derive_description
+
+        for body in ("", "   \n\n  ", "#\n", "```\ncode\n```\n"):
+            assert _derive_description(body, "n")
+
+
+class TestBundledSkillParsing:
+    """_parse_skill_frontmatter is lenient only when given a fallback_name."""
+
+    def test_frontmatter_wins_over_path(self, tmp_path: Path):
+        from sr2_spectre.skills.core import _parse_skill_frontmatter
+
+        f = _bundle(tmp_path, "dir-name", _BUNDLED_WITH_FRONTMATTER)
+        skill = _parse_skill_frontmatter(
+            _BUNDLED_WITH_FRONTMATTER, f, fallback_name="dir-name"
+        )
+        assert skill is not None
+        assert skill.name == "from-frontmatter"
+        assert skill.description == "Frontmatter description"
+        assert skill.version == "2.0.0"
+        assert skill.tags == ("alpha",)
+
+    def test_no_frontmatter_named_from_directory(self, tmp_path: Path):
+        from sr2_spectre.skills.core import _parse_skill_frontmatter
+
+        f = _bundle(tmp_path, "godot-shader", _BUNDLED_NO_FRONTMATTER)
+        skill = _parse_skill_frontmatter(
+            _BUNDLED_NO_FRONTMATTER, f, fallback_name="godot-shader"
+        )
+        assert skill is not None
+        assert skill.name == "godot-shader"
+        assert skill.description == (
+            "You are an expert at writing Godot 4.x shaders for 2D effects."
+        )
+        assert skill.version == "0.1.0"
+        assert skill.tags == ()
+        # No frontmatter to strip: content is the whole file.
+        assert skill.content == _BUNDLED_NO_FRONTMATTER
+
+    def test_frontmatter_without_name_falls_back(self, tmp_path: Path):
+        from sr2_spectre.skills.core import _parse_skill_frontmatter
+
+        f = _bundle(tmp_path, "bundle-dir", _SKILL_NO_NAME)
+        skill = _parse_skill_frontmatter(
+            _SKILL_NO_NAME, f, fallback_name="bundle-dir"
+        )
+        assert skill is not None
+        assert skill.name == "bundle-dir"
+        # A description WAS supplied, so it is honoured.
+        assert skill.description == "Has no name"
+
+    def test_bad_yaml_falls_back(self, tmp_path: Path):
+        from sr2_spectre.skills.core import _parse_skill_frontmatter
+
+        f = _bundle(tmp_path, "bundle-dir", _SKILL_BAD_YAML)
+        skill = _parse_skill_frontmatter(
+            _SKILL_BAD_YAML, f, fallback_name="bundle-dir"
+        )
+        assert skill is not None
+        assert skill.name == "bundle-dir"
+
+    def test_non_mapping_frontmatter_falls_back(self, tmp_path: Path):
+        from sr2_spectre.skills.core import _parse_skill_frontmatter
+
+        text = "---\n- a\n- b\n---\nBody prose.\n"
+        f = _bundle(tmp_path, "bundle-dir", text)
+        skill = _parse_skill_frontmatter(text, f, fallback_name="bundle-dir")
+        assert skill is not None
+        assert skill.name == "bundle-dir"
+        assert skill.description == "Body prose."
+
+    def test_whitespace_only_name_falls_back(self, tmp_path: Path):
+        from sr2_spectre.skills.core import _parse_skill_frontmatter
+
+        text = "---\nname: '   '\n---\nBody prose.\n"
+        f = _bundle(tmp_path, "bundle-dir", text)
+        skill = _parse_skill_frontmatter(text, f, fallback_name="bundle-dir")
+        assert skill is not None
+        assert skill.name == "bundle-dir"
+
+    def test_flat_form_still_requires_frontmatter(self, tmp_path: Path, caplog):
+        """No fallback_name means the old strict behavior, unchanged."""
+        from sr2_spectre.skills.core import _parse_skill_frontmatter
+
+        f = tmp_path / "notes.md"
+        with caplog.at_level(logging.WARNING):
+            skill = _parse_skill_frontmatter(_SKILL_NO_FRONTMATTER, f)
+        assert skill is None
+        assert "No frontmatter" in caplog.text
+        assert "notes.md" in caplog.text
+
+
+class TestBundledSkillDiscovery:
+    """discover_skills_in_dir accepts both layouts and nothing else."""
+
+    def test_discovers_bundled_skill(self, tmp_path: Path):
+        _bundle(tmp_path, "godot-shader", _BUNDLED_NO_FRONTMATTER)
+
+        skills = discover_skills_in_dir(str(tmp_path))
+        assert [s.name for s in skills] == ["godot-shader"]
+
+    def test_flat_without_frontmatter_still_skipped(self, tmp_path: Path):
+        (tmp_path / "README.md").write_text("# Just a readme\n\nNot a skill.\n")
+
+        assert discover_skills_in_dir(str(tmp_path)) == []
+
+    def test_ignores_siblings_of_skill_md(self, tmp_path: Path):
+        """README.md / SECURITY.md beside a real skill — caveman marketplace."""
+        _bundle(tmp_path, "caveman", _BUNDLED_NO_FRONTMATTER)
+        (tmp_path / "caveman" / "README.md").write_text(
+            "---\nname: sneaky-readme\n---\nBody.\n"
+        )
+        (tmp_path / "caveman" / "SECURITY.md").write_text(
+            "---\nname: sneaky-security\n---\nBody.\n"
+        )
+
+        names = [s.name for s in discover_skills_in_dir(str(tmp_path))]
+        assert names == ["caveman"]
+
+    def test_ignores_support_fragment_directories(self, tmp_path: Path):
+        """`_shared/*.md` fragments — jobhunt-skills."""
+        _bundle(tmp_path, "apply", _BUNDLED_NO_FRONTMATTER)
+        shared = tmp_path / "_shared"
+        shared.mkdir()
+        (shared / "chrome-mcp.md").write_text(
+            "---\nname: chrome-mcp\n---\nFragment.\n"
+        )
+        (shared / "writing-rules.md").write_text("# Rules\n\nProse.\n")
+
+        names = [s.name for s in discover_skills_in_dir(str(tmp_path))]
+        assert names == ["apply"]
+
+    def test_ignores_depth_three_resources(self, tmp_path: Path):
+        """`<name>/references/*.md` bundled resources — godot-interactive."""
+        _bundle(tmp_path, "godot-interactive", _BUNDLED_WITH_FRONTMATTER)
+        refs = tmp_path / "godot-interactive" / "references"
+        refs.mkdir()
+        (refs / "live-editor-tool-map.md").write_text(
+            "---\nname: tool-map\n---\nReference.\n"
+        )
+        nested = tmp_path / "godot-interactive" / "nested" / "deeper"
+        nested.mkdir(parents=True)
+        (nested / "SKILL.md").write_text("---\nname: too-deep\n---\nBody.\n")
+
+        names = [s.name for s in discover_skills_in_dir(str(tmp_path))]
+        assert names == ["from-frontmatter"]
+
+    def test_both_layouts_coexist(self, tmp_path: Path):
+        (tmp_path / "flat-skill.md").write_text(
+            _SKILL_WITH_FRONTMATTER.replace("my-awesome-skill", "flat-skill")
+        )
+        _bundle(tmp_path, "bundled-skill", _BUNDLED_NO_FRONTMATTER)
+
+        names = [s.name for s in discover_skills_in_dir(str(tmp_path))]
+        assert sorted(names) == ["bundled-skill", "flat-skill"]
+
+    def test_ordering_is_deterministic(self, tmp_path: Path):
+        for n in ("c", "a", "b"):
+            _bundle(tmp_path, n, _BUNDLED_NO_FRONTMATTER)
+            (tmp_path / f"z{n}.md").write_text(f"---\nname: z{n}\n---\nBody.\n")
+
+        runs = [[s.name for s in discover_skills_in_dir(str(tmp_path))] for _ in range(3)]
+        assert runs[0] == runs[1] == runs[2]
+        # Flat form first, then bundled; each sorted.
+        assert runs[0] == ["za", "zb", "zc", "a", "b", "c"]
+
+    def test_last_registration_wins_within_a_dir(self, tmp_path: Path):
+        """A flat file and a bundle claiming one name: bundled is registered last."""
+        from sr2_spectre.skills.core import SkillRegistry
+
+        (tmp_path / "dup.md").write_text(
+            "---\nname: dup\ndescription: from flat\n---\nBody.\n"
+        )
+        _bundle(tmp_path, "dup", "---\ndescription: from bundle\n---\nBody.\n")
+
+        registry = SkillRegistry()
+        for skill in discover_skills_in_dir(str(tmp_path)):
+            registry.register(skill)
+
+        assert len(registry) == 1
+        assert registry.get("dup").description == "from bundle"
+
+
+class TestGrindsourcedShapedTree:
+    """The motivating case: a real .agents/skills tree, 4 of 5 without frontmatter."""
+
+    def test_discovers_every_bundle(self, tmp_path: Path):
+        bare = (
+            "godot-code-gen",
+            "godot-live-edit",
+            "godot-scene-design",
+            "godot-shader",
+        )
+        for name in bare:
+            _bundle(
+                tmp_path,
+                name,
+                f"# {name} Skill\n\nYou are an expert at {name}.\n",
+            )
+        _bundle(
+            tmp_path,
+            "godot-interactive",
+            "---\nname: godot-interactive\ndescription: Live editor workflows.\n---\nBody.\n",
+        )
+        # Bundled resources that must not register.
+        refs = tmp_path / "godot-interactive" / "references"
+        refs.mkdir()
+        (refs / "fast-probe-presets.md").write_text("# Presets\n\nProse.\n")
+        (tmp_path / "godot-interactive" / "agents").mkdir()
+        (tmp_path / "godot-interactive" / "agents" / "openai.yaml").write_text("a: b\n")
+
+        skills = discover_skills_in_dir(str(tmp_path))
+
+        assert sorted(s.name for s in skills) == [
+            "godot-code-gen",
+            "godot-interactive",
+            "godot-live-edit",
+            "godot-scene-design",
+            "godot-shader",
+        ]
+        # Every one carries a description the model can tell apart.
+        by_name = {s.name: s for s in skills}
+        assert by_name["godot-shader"].description == (
+            "You are an expert at godot-shader."
+        )
+        assert by_name["godot-interactive"].description == "Live editor workflows."
+
+    def test_reaches_the_registry_through_skills_dirs(self, tmp_path: Path):
+        from sr2_spectre.runtime import Runtime
+
+        skills_dir = tmp_path / ".agents" / "skills"
+        _bundle(skills_dir, "godot-shader", _BUNDLED_NO_FRONTMATTER)
+
+        cfg = _base_config(skills_dirs=[str(skills_dir)])
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+            runtime = Runtime(config=cfg)
+
+        assert "godot-shader" in runtime.skill_registry
+
+    def test_skills_dirs_interpolates_env_var(self, tmp_path: Path):
+        """`${SR2_WORKSPACE}/.agents/skills` is the intended Grindforge config."""
+        skills_dir = tmp_path / ".agents" / "skills"
+        _bundle(skills_dir, "godot-shader", _BUNDLED_NO_FRONTMATTER)
+
+        skills = discover_skills_in_dir(
+            "${SR2_WORKSPACE}/.agents/skills",
+            env={"SR2_WORKSPACE": str(tmp_path)},
+        )
+        assert [s.name for s in skills] == ["godot-shader"]
