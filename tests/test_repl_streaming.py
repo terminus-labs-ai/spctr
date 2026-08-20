@@ -46,6 +46,53 @@ def _output(sink: _LineSink) -> str:
 
 
 @pytest.mark.asyncio
+async def test_stream_turn_live_region_wipes_and_streams(make_mock_agent) -> None:
+    """Regression guard for the double-render + no-streaming bug (spc-76).
+
+    The Live region must be created with transient=True (so the plain-text
+    streaming frame erases itself on exit — otherwise the final reply is
+    committed to scrollback twice) and auto_refresh must NOT be forced off
+    (auto_refresh=False is what silenced Rich's in-place redraws, making
+    deltas appear as one blob instead of streaming).
+    """
+    import rich.live
+    from sr2_spectre.events import AgentDone, AgentTextDelta
+
+    captured: dict = {}
+    real_live = rich.live.Live
+
+    class _SpyLive(real_live):
+        def __init__(self, renderable, console=None, **kwargs):
+            captured["kwargs"] = kwargs
+            super().__init__(renderable, console=console, **kwargs)
+
+    agent = make_mock_agent(stream_events=[
+        AgentTextDelta(text="Hello "),
+        AgentTextDelta(text="world"),
+        AgentDone(tool_calls_executed=0),
+    ])
+    iface, sink = _make_repl_with_sink()
+
+    orig = rich.live.Live
+    rich.live.Live = _SpyLive
+    try:
+        await iface._stream_turn(agent, "hi")
+    finally:
+        rich.live.Live = orig
+
+    assert "kwargs" in captured, "Live was not created by _stream_turn"
+    kwargs = captured["kwargs"]
+    # transient=True => live frame erased on exit => single committed copy
+    assert kwargs.get("transient") is True, (
+        f"Live must be transient to avoid double-render; got {kwargs}"
+    )
+    # auto_refresh must not be disabled (that kills live streaming)
+    assert kwargs.get("auto_refresh", True) is not False, (
+        f"auto_refresh=False silences streaming; got {kwargs}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_stream_turn_renders_text(make_mock_agent) -> None:
     from sr2_spectre.events import AgentDone, AgentTextDelta
 

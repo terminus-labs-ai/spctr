@@ -219,11 +219,12 @@ class REPLInterface:
                 out.append("".join(text_acc))
             return out
 
-        # auto_refresh=False: Rich's Live refresher re-renders the current frame
-        # on its own timer AND on every update(), which double-writes each delta
-        # into terminal scrollback (visible as duplicated text).  With it off,
-        # only our explicit live.update() calls render — one write per event.
-        with Live(_frame(), console=self.console, auto_refresh=False) as live:
+        # Stream live in a Rich Live region.  transient=True wipes the live
+        # frame on exit (no stale plain-text copy lingers in scrollback); the
+        # final reply is committed once below via console.print(Markdown).
+        # auto_refresh stays at its default (True) so Rich redraws in place
+        # as deltas arrive — auto_refresh=False is what killed live streaming.
+        with Live(_frame(), console=self.console, transient=True) as live:
             try:
                 async for ev in agent.stream_message(text):
                     if isinstance(ev, AgentTextDelta):
