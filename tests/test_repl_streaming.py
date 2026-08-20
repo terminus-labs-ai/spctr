@@ -114,8 +114,23 @@ async def test_stream_turn_renders_text(make_mock_agent) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stream_turn_renders_thinking(make_mock_agent) -> None:
+async def test_stream_turn_streams_thinking_in_the_live_frame(make_mock_agent) -> None:
+    """Thinking is scratch: it streams in the transient frame, never committed.
+
+    Asserting on the console sink would not distinguish the two — the sink
+    records the live frames as well, because it cannot replay their erasure.
+    So this inspects what _stream_turn actually hands to Live.update().
+    """
+    import rich.live
     from sr2_spectre.events import AgentDone, AgentThinkingDelta, AgentTextDelta
+
+    frames: list[str] = []
+    real_live = rich.live.Live
+
+    class _SpyLive(real_live):
+        def update(self, renderable, **kwargs):
+            frames.append(getattr(renderable, "plain", str(renderable)))
+            return super().update(renderable, **kwargs)
 
     agent = make_mock_agent(stream_events=[
         AgentThinkingDelta(text="let me think"),
@@ -124,27 +139,30 @@ async def test_stream_turn_renders_thinking(make_mock_agent) -> None:
     ])
     iface, sink = _make_repl_with_sink()
 
-    await iface._stream_turn(agent, "hi")
+    rich.live.Live = _SpyLive
+    try:
+        await iface._stream_turn(agent, "hi")
+    finally:
+        rich.live.Live = real_live
 
-    out = _output(sink)
-    assert "let me think" in out
-    assert "answer" in out
+    assert any("let me think" in f for f in frames), frames
+    # The reply itself is committed to scrollback; the thinking is not.
+    assert "answer" in _output(sink)
 
 
 @pytest.mark.asyncio
-async def test_stream_turn_multiroundtrip_no_double_commit(make_mock_agent, monkeypatch) -> None:
-    """Regression: a turn spanning multiple LLM roundtrips must NOT re-commit
-    the interim round's text as markdown.
+async def test_stream_turn_commits_each_round_once(make_mock_agent, monkeypatch) -> None:
+    """A multi-roundtrip turn commits each round's text exactly once, in order.
 
-    The interim round ("First, let me check that.") streams live and is wiped
-    by the transient Live region on exit; only the FINAL round (text after the
-    last tool result) is committed as markdown.  Committing the whole
-    accumulated blob (interim + final) made the user read the interim text
-    twice — once raw while streaming, once parsed in the committed copy.
+    A turn can span several LLM roundtrips: narration ("let me check that"),
+    a tool call, then the real answer.  Every round is committed as Markdown
+    at the moment it ends, so nothing the model said is dropped and nothing
+    is printed twice.  The transient Live frame holds only the round that is
+    still streaming.
 
-    We spy on render_markdown (the single committed-markdown path) rather than
-    asserting on the raw sink, because the in-memory sink does not perform the
-    line-erasure that a real terminal does for a transient Live frame.
+    Note this is a *rendering* test, not a scrollback test — the in-memory
+    console performs no erasure, so it cannot prove the live frame was wiped.
+    tests/test_repl_pty.py covers that against a real terminal.
     """
     import sr2_spectre.interfaces.repl as repl_mod
     from sr2_spectre.events import (
@@ -164,12 +182,12 @@ async def test_stream_turn_multiroundtrip_no_double_commit(make_mock_agent, monk
     monkeypatch.setattr(repl_mod, "render_markdown", _spy_render)
 
     agent = make_mock_agent(stream_events=[
-        # interim round (round 1)
+        # round 1 — narration leading up to the tool call
         AgentTextDelta(text="First, let me "),
         AgentTextDelta(text="check that."),
         AgentToolStart(name="terminal", input={"command": "ls"}),
         AgentToolResult(name="terminal", is_error=False),
-        # final round (round 2) — the real answer
+        # round 2 — the real answer
         AgentTextDelta(text="The answer is "),
         AgentTextDelta(text="**42**."),
         AgentDone(tool_calls_executed=1),
@@ -178,18 +196,43 @@ async def test_stream_turn_multiroundtrip_no_double_commit(make_mock_agent, monk
 
     await iface._stream_turn(agent, "what is the answer?")
 
-    # Exactly ONE markdown commit for a clean turn.
-    assert len(committed) == 1, f"expected 1 markdown commit, got {len(committed)}"
-    committed_text = committed[0]
-    # It is ONLY the final round — the real answer.
-    assert "The answer is" in committed_text
-    assert "42" in committed_text
-    # The interim scratch text is NOT re-committed.
-    assert "First, let me check that." not in committed_text, (
-        "Interim round text was committed as markdown — multi-roundtrip turns "
-        "double-render the interim text (raw while streaming, parsed in the "
-        f"committed copy). Committed: {committed_text!r}"
+    assert committed == ["First, let me check that.", "The answer is **42**."], committed
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_commits_nothing_twice_within_a_round(make_mock_agent, monkeypatch) -> None:
+    """Text committed when a round ends is not carried into the next commit."""
+    import sr2_spectre.interfaces.repl as repl_mod
+    from sr2_spectre.events import (
+        AgentDone,
+        AgentToolResult,
+        AgentToolStart,
+        AgentTextDelta,
     )
+
+    committed: list[str] = []
+    real_render = repl_mod.render_markdown
+    monkeypatch.setattr(
+        repl_mod,
+        "render_markdown",
+        lambda text, console=None: (committed.append(text), real_render(text, console))[1],
+    )
+
+    agent = make_mock_agent(stream_events=[
+        AgentTextDelta(text="round one. "),
+        AgentToolStart(name="a", input={}),
+        AgentToolResult(name="a", is_error=False),
+        AgentTextDelta(text="round two. "),
+        AgentToolStart(name="b", input={}),
+        AgentToolResult(name="b", is_error=False),
+        AgentTextDelta(text="round three."),
+        AgentDone(tool_calls_executed=2),
+    ])
+    iface, _sink = _make_repl_with_sink()
+
+    await iface._stream_turn(agent, "go")
+
+    assert committed == ["round one. ", "round two. ", "round three."], committed
 
 
 @pytest.mark.asyncio

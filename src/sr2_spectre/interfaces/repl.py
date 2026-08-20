@@ -6,6 +6,8 @@ work exactly like a normal shell session:
 
 - prompt_toolkit PromptSession gives real readline shortcuts, multiline
   input, persistent history and slash-command completion.
+- Enter submits the message and Shift+Enter (or Alt+Enter) inserts a newline,
+  which is the inverse of prompt_toolkit's multiline default.
 - Rich renders streaming output to stdout: text deltas stream live, thinking
   is dimmed/italicized, tool calls show as status lines, the final reply is
   rendered as Markdown.
@@ -25,8 +27,10 @@ from typing import TYPE_CHECKING, Iterable
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion, FuzzyWordCompleter
 from prompt_toolkit.document import Document
-from prompt_toolkit.filters import IsMultiline
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.text import Text
@@ -60,7 +64,9 @@ Commands:
   /save [path]  — save session to JSON (default: ~/.sr2-spectre/session.json)
   /load <path>  — load session from JSON
 
-Multiline input: end a line with a backslash (\\) to continue on the next line.
+Multiline input: Enter sends the message, Shift+Enter (or Alt+Enter) adds a
+newline.  Shift+Enter only reaches the REPL if your terminal is set to send a
+distinct sequence for it; Alt+Enter always works.
 Ctrl-D or /quit exits.  History is persisted between runs.
 """
 
@@ -78,6 +84,42 @@ def render_markdown(text: str, console: Console | None = None) -> Text | Markdow
         return Markdown(text)
     except Exception:
         return Text(text)
+
+
+def _rows(text: str, width: int) -> int:
+    """Terminal rows a plain string occupies at *width* columns."""
+    if width < 1:
+        width = 1
+    return sum(max(1, -(-len(line) // width)) for line in text.split("\n"))
+
+
+def _tail_rows(text: str, width: int, max_rows: int) -> str:
+    """Return the tail of *text* that fits in at most *max_rows* terminal rows.
+
+    A Rich ``Live`` region can only erase itself while every one of its rows is
+    still on screen: the escape sequence it emits walks the cursor up N rows and
+    clears each one.  Rows that scrolled off the top are unreachable, so a live
+    frame taller than the terminal leaves a permanent, unparsed copy of the
+    reply in scrollback — which is then printed a second time as Markdown.
+    Cropping the frame to a tail that always fits keeps the erase total.
+    """
+    if width < 1:
+        width = 1
+    if max_rows < 1:
+        return ""
+    kept: list[str] = []
+    rows = 0
+    for line in reversed(text.split("\n")):
+        line_rows = max(1, -(-len(line) // width))
+        if rows + line_rows > max_rows:
+            room = max_rows - rows
+            if room > 0:
+                kept.append(line[-room * width:])
+            break
+        kept.append(line)
+        rows += line_rows
+    kept.reverse()
+    return "\n".join(kept)
 
 
 def _history_file() -> Path:
@@ -111,6 +153,55 @@ class _SlashCompleter(Completer):
         yield from self._fuzzy.get_completions(document, complete_event)
 
 
+# Shift+Enter has no encoding of its own in a default terminal: it sends the
+# same "\r" as Enter.  The two escape encodings that DO carry the modifier are
+# both folded onto Keys.ControlM by prompt_toolkit, which makes them
+# indistinguishable from a plain Enter.  Re-point them at ControlJ so the
+# newline binding below can claim them when the terminal emits them.
+_SHIFT_ENTER_SEQUENCES = (
+    "\x1b[27;2;13~",  # xterm modifyOtherKeys=2
+    "\x1b[13;2u",  # kitty / CSI-u keyboard protocol
+)
+
+
+def _install_shift_enter_sequences() -> None:
+    """Map the Shift+Enter escape sequences to ControlJ.  Idempotent."""
+    for sequence in _SHIFT_ENTER_SEQUENCES:
+        ANSI_SEQUENCES[sequence] = Keys.ControlJ
+
+
+_install_shift_enter_sequences()
+
+
+def _make_key_bindings() -> KeyBindings:
+    """Enter submits; Shift+Enter (or Alt+Enter) inserts a newline.
+
+    prompt_toolkit's multiline default is the inverse — Enter inserts and
+    Meta+Enter accepts — so both keys are bound explicitly.  A session's own
+    bindings are merged after the defaults, and the last match wins, so these
+    take precedence.
+    """
+    kb = KeyBindings()
+
+    @kb.add("c-m")  # Enter
+    def _submit(event) -> None:
+        buffer = event.current_buffer
+        # A highlighted completion takes the keystroke first, otherwise
+        # picking a slash command would also fire the message.
+        completion = buffer.complete_state and buffer.complete_state.current_completion
+        if completion is not None:
+            buffer.apply_completion(completion)
+            return
+        buffer.validate_and_handle()
+
+    @kb.add("c-j")  # Shift+Enter (remapped above), Ctrl+J
+    @kb.add("escape", "c-m")  # Alt/Meta+Enter — what most terminals send
+    def _newline(event) -> None:
+        event.current_buffer.insert_text("\n")
+
+    return kb
+
+
 def _make_prompt_session(completer):
     """Build the PromptSession.  Factored out so tests can monkeypatch it
     without fighting parameterized generic syntax (PromptSession[str])."""
@@ -118,10 +209,10 @@ def _make_prompt_session(completer):
         message="> ",
         history=FileHistory(str(_history_file())),
         completer=completer,
-        # Only treat a trailing backslash as "continue on next line" when the
-        # buffer is already multiline.  A plain single-line prompt with
-        # multiline=True would swallow EVERY backslash (breaking normal text).
-        multiline=IsMultiline(),
+        # Newlines only reach the buffer through the explicit Shift+Enter
+        # binding; multiline=True is what lets the buffer hold them at all.
+        multiline=True,
+        key_bindings=_make_key_bindings(),
     )
 
 
@@ -196,54 +287,87 @@ class REPLInterface:
     async def _stream_turn(self, agent: "Agent", text: str) -> None:
         """Consume one agent.stream_message() and render events to the console.
 
-        - AgentTextDelta: stream live via a Rich Live region (plain text).
-        - AgentThinkingDelta: stream live in dim italic above/below text.
-        - AgentToolStart/AgentToolResult: status lines before the reply body.
-        - AgentDone: final; commit accumulated text as Markdown.
+        Rendering model — every byte the model produces reaches scrollback
+        exactly once, as Markdown:
+
+        - Text and thinking deltas stream into a transient Rich ``Live``
+          region, cropped to a tail that always fits on screen (see
+          ``_tail_rows``).  That region is scratch: it is erased, never
+          committed.
+        - A turn can span several LLM roundtrips (narration -> tool -> answer).
+          Each round's text is flushed to scrollback as Markdown at the moment
+          the round ends — when its first tool call starts, or when the stream
+          finishes — so interim narration is preserved in reading order
+          instead of being discarded or re-printed.
+        - Tool calls show as status lines between the committed rounds.
         """
         self._running = True  # keep loop alive during turn
 
         thinking_acc: list[str] = []
         text_acc: list[str] = []
-        # The live-frame buffer (text_acc) shows every text delta as it streams,
-        # but a turn can span MULTIPLE LLM roundtrips: interim round ("let me
-        # check X") -> tool result -> final round (the real answer).  Committing
-        # the whole accumulated blob re-states the interim scratch text that
-        # already streamed, so the user reads it twice (once raw while
-        # streaming, once parsed in the committed markdown).  final_text_acc
-        # keeps only the text emitted after the LAST tool result — the final
-        # LLM round — and is what gets committed as markdown.
-        final_text_acc: list[str] = []
         total_tool_calls = 0
         stream_exc: Exception | None = None
+        committed_any = False
 
         from rich.live import Live
 
         def _frame() -> Text:
+            """The live scratch frame: a tail of thinking + text that fits on screen.
+
+            Two rows of headroom below the cap keep the frame strictly shorter
+            than the terminal even as the prompt and status lines move around,
+            so Rich's erase walk can always reach every row it drew.
+            """
+            size = self.console.size
+            width = size.width
+            max_rows = max(3, size.height - 4)
+
+            body = _tail_rows("".join(text_acc), width, max_rows) if text_acc else ""
+            remaining = max_rows - _rows(body, width) if body else max_rows
+
             out = Text()
-            if thinking_acc:
-                out.append("".join(thinking_acc), style="dim italic")
-                out.append("\n")
-            if text_acc:
-                out.append("".join(text_acc))
+            if thinking_acc and remaining > 1:
+                head = _tail_rows("".join(thinking_acc), width, remaining - 1)
+                if head:
+                    out.append(head, style="dim italic")
+                    out.append("\n")
+            if body:
+                out.append(body)
             return out
 
-        # Stream live in a Rich Live region.  transient=True wipes the live
-        # frame on exit (no stale plain-text copy lingers in scrollback); the
-        # final reply is committed once below via console.print(Markdown).
-        # auto_refresh stays at its default (True) so Rich redraws in place
-        # as deltas arrive — auto_refresh=False is what killed live streaming.
+        def _commit(live: "Live") -> None:
+            """Flush the round's accumulated text to scrollback as Markdown.
+
+            The live region is emptied *first* so the console.print below draws
+            into a cleared area — Rich erases the previous frame, prints the
+            committed Markdown above, then redraws the (now empty) frame.
+            """
+            nonlocal committed_any
+            body = "".join(text_acc)
+            text_acc.clear()
+            thinking_acc.clear()
+            live.update(_frame())
+            if body.strip():
+                no_color = bool(int(os.environ.get("NO_COLOR", "0")))
+                self.console.print(render_markdown(body), highlight=not no_color)
+                committed_any = True
+
+        # transient=True: the scratch frame erases itself on exit.  Combined
+        # with the row cap in _frame() that erase is always complete, which is
+        # what keeps the streamed (unparsed) copy out of scrollback.
         with Live(_frame(), console=self.console, transient=True) as live:
             try:
                 async for ev in agent.stream_message(text):
                     if isinstance(ev, AgentTextDelta):
                         text_acc.append(ev.text)
-                        final_text_acc.append(ev.text)
                         live.update(_frame())
                     elif isinstance(ev, AgentThinkingDelta):
                         thinking_acc.append(ev.text)
                         live.update(_frame())
                     elif isinstance(ev, AgentToolStart):
+                        # The round is over: its text is the narration that led
+                        # to this call, so commit it above the status line.
+                        _commit(live)
                         input_preview = ""
                         if ev.input:
                             input_preview = f"({str(ev.input)[:60]})"
@@ -253,35 +377,19 @@ class REPLInterface:
                             self.console.print(f"[red]✗ {ev.name} failed[/red]")
                         else:
                             self.console.print(f"[green]✓ {ev.name} done[/green]")
-                        # A new LLM round is starting: whatever text streamed
-                        # before this result is interim narration, not the
-                        # answer.  Drop it so the final-round text is clean.
-                        final_text_acc.clear()
                     elif isinstance(ev, AgentDone):
                         total_tool_calls = ev.tool_calls_executed
             except Exception as exc:
                 stream_exc = exc
                 self.console.print(f"[red]Stream error: {exc}[/red]")
 
-        # Commit ONLY the final LLM round as Markdown.  On a multi-roundtrip
-        # turn the interim round(s) already streamed verbatim; re-rendering
-        # them here would read the same text twice (raw, then parsed).  On a
-        # partial error the final round never completed, so fall back to the
-        # whole accumulated buffer — that's the best we have and it still
-        # shows the user what streamed before the failure.
-        if stream_exc:
-            committed = "".join(text_acc)
-        elif final_text_acc:
-            committed = "".join(final_text_acc)
-        else:
-            # No tool-result boundary reset the buffer, or the turn ended on a
-            # tool call with no trailing answer — fall back to the full
-            # accumulated text so nothing the model said is lost.
-            committed = "".join(text_acc)
-        if committed:
-            no_color = bool(int(os.environ.get("NO_COLOR", "0")))
-            self.console.print(render_markdown(committed), highlight=not no_color)
-        elif not thinking_acc and stream_exc is None:
+            # Whatever the last round produced — including a partial round cut
+            # short by the error above — is committed here, inside the Live so
+            # the scratch frame is cleared before the Markdown lands.
+            had_thinking = bool(thinking_acc)
+            _commit(live)
+
+        if not committed_any and not had_thinking and stream_exc is None:
             self.console.print("[dim](no response)[/dim]")
 
         if stream_exc is not None:

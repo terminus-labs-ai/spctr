@@ -337,3 +337,69 @@ def test_default_save_path_under_home() -> None:
     p = default_save_path()
     assert p.name == "session.json"
     assert ".sr2-spectre" in str(p)
+
+
+# ---------------------------------------------------------------------------
+# Enter / Shift+Enter bindings (regression: prompt_toolkit's multiline default
+# is inverted — Enter inserted a newline and Meta+Enter submitted)
+# ---------------------------------------------------------------------------
+
+async def _feed_keys(keys: str, timeout: float = 3.0) -> str:
+    """Drive a real prompt session with raw key input and return the result.
+
+    Returns the sentinel ``"<no submit>"`` when the keys never accept the
+    buffer, so a binding that silently stops submitting is a visible failure
+    rather than a hung test.
+    """
+    import asyncio
+
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.input import create_pipe_input
+    from prompt_toolkit.output import DummyOutput
+
+    from sr2_spectre.interfaces.repl import _COMMANDS, _SlashCompleter, _make_prompt_session
+
+    with create_pipe_input() as pipe_input:
+        with create_app_session(input=pipe_input, output=DummyOutput()):
+            session = _make_prompt_session(_SlashCompleter(_COMMANDS))
+            pipe_input.send_text(keys)
+            try:
+                return await asyncio.wait_for(session.prompt_async(), timeout=timeout)
+            except asyncio.TimeoutError:
+                return "<no submit>"
+
+
+@pytest.mark.asyncio
+async def test_enter_submits(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("sr2_spectre.interfaces.repl._history_file", lambda: tmp_path / "h")
+    assert await _feed_keys("hello\r") == "hello"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "sequence"),
+    [
+        ("xterm modifyOtherKeys", "\x1b[27;2;13~"),
+        ("kitty CSI-u", "\x1b[13;2u"),
+        ("meta/alt+enter", "\x1b\r"),
+    ],
+)
+async def test_shift_enter_inserts_newline(name, sequence, tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("sr2_spectre.interfaces.repl._history_file", lambda: tmp_path / "h")
+    assert await _feed_keys(f"a{sequence}b\r") == "a\nb"
+
+
+def test_shift_enter_sequences_are_distinct_from_enter() -> None:
+    """The shift-modified encodings must not resolve to plain Enter.
+
+    prompt_toolkit ships them folded onto Keys.ControlM, which is what made
+    Shift+Enter indistinguishable from Enter in the first place.
+    """
+    from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+    from prompt_toolkit.keys import Keys
+
+    from sr2_spectre.interfaces.repl import _SHIFT_ENTER_SEQUENCES
+
+    for sequence in _SHIFT_ENTER_SEQUENCES:
+        assert ANSI_SEQUENCES[sequence] is Keys.ControlJ
+    assert ANSI_SEQUENCES["\x0d"] is Keys.ControlM
