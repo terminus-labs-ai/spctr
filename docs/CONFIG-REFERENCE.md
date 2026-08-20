@@ -219,6 +219,16 @@ Ordered list of context compilation layers. Each layer:
 | `memory` | Memory store lookup | `scope` (str), `limit` (int), `prefix` (str) |
 | `knowledge` | Knowledge file resolution | `knowledge_root` (str) |
 
+`project: __auto__` resolves per turn, highest priority first: the run
+context's `area` (see [Area resolution](#area-resolution)), then
+`SR2_PROJECT`, then the nearest `.git` walking up from `cwd`, then the `cwd`
+basename. An explicitly empty area stops resolution there — no knowledge is
+injected and no fallback runs. When `knowledge_root` is left implicit it
+follows from the resolved name, `~/.sr2/knowledge/<project>/`.
+
+The `project:` field keeps its name; it is the one point where an incoming
+area is translated to this resolver's notion of a project.
+
 ---
 
 ## Config Resolution (4-tier merge)
@@ -277,6 +287,7 @@ discord:
   edit_stream_interval: 1.0
   tool_embed_enabled: true
   auto_thread: false
+  channel_areas: {}
 ```
 
 | Field | Type | Default | Description |
@@ -288,6 +299,49 @@ discord:
 | `edit_stream_interval` | float | `1.0` | Seconds between stream edits (0 = disabled) |
 | `tool_embed_enabled` | bool | `true` | Show tool execution as embeds |
 | `auto_thread` | bool | `false` | Start a thread for each new conversation |
+| `channel_areas` | dict[str, str] | `{}` | Channel ID (as a **string**) to area name. Overrides the name derived from the channel. `""` means "this channel has no area". Keyed on the **parent** channel for threads |
+
+### Area resolution
+
+On every inbound message the interface derives an **area** from the message's
+channel and stamps it on the agent's `RunContext`. Resolution runs per
+message, so a `channel_areas` edit applies to the next message with no
+restart.
+
+Order, highest priority first:
+
+1. `channel_areas[str(channel_id)]` when the ID is present in the map — an
+   empty-string value means "this channel has no area".
+2. Otherwise the channel name, lowercased, with leading and trailing
+   non-alphanumeric characters stripped. No other transformation.
+
+For a Thread, the **parent** channel supplies both the ID and the name, so a
+follow-up inside an auto-created thread resolves to the same area as the
+message that opened it. A DM, an orphaned thread, an unreadable channel name,
+or a name with nothing alphanumeric in it (`---`, a bare emoji) all yield no
+area.
+
+Discord always stamps *something*: "no area" reaches `RunContext` as `""`,
+never `None`. That distinction is load-bearing — see the [interface
+development guide](INTERFACE-DEV-GUIDE.md#runcontextarea-three-states).
+
+The interface does not check whether the derived area exists anywhere;
+existence is each consumer's concern. Today the only consumer is the `plan`
+resolver (see [Resolver types](#resolver-types)). A channel with no area
+injects no project knowledge rather than falling back to whatever `cwd`
+happens to be.
+
+Each message logs one INFO line naming the area and how it was derived:
+
+```
+area=fractured-roots (derived from channel name, channel=123456789)
+area=fractured-roots (channel_areas override, channel=123456789)
+area=none (channel=123456789)
+```
+
+Renaming a Discord channel silently changes the area it resolves to. That is
+an accepted trade for not hand-maintaining a map of numeric IDs; this log line
+and the `channel_areas` override are the mitigations.
 
 ### Config reload
 

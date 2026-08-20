@@ -44,6 +44,34 @@ async def start(self, agent: "Agent") -> None:
 - **`interface`**: Your interface name — shown in logs and diagnostics.
 - **`mode`**: `RunMode.INTERACTIVE` if the user is present (TUI, Discord). `RunMode.HEADLESS` for scripting/CI.
 - **`source`**: Optional context (working directory, channel name, request ID).
+- **`area`**: Optional. Leave it unset unless your interface resolves areas — see below.
+
+### `RunContext.area`: three states
+
+`area` defaults to `None`, and resolvers see it through the run-context
+provider, which omits the key entirely when it is `None`. That gives three
+states, and consumers are required to tell all three apart:
+
+| `RunContext.area` | What resolvers see | Meaning |
+|---|---|---|
+| `None` (default) | key **absent** | this interface does not resolve areas — fall through to existing behavior |
+| `""` | key present, empty | explicitly **no** area — inject nothing, do **not** fall through |
+| `"fractured-roots"` | key present, non-empty | use it |
+
+Most interfaces want the default. `tui`, `single_shot` and `repl` all leave
+`area` at `None`, so the `plan` resolver keeps deriving its project from
+`SR2_PROJECT` and the `cwd` `.git` walk exactly as before.
+
+Only set it if your interface genuinely knows which area a message belongs to.
+If you do, **never stamp `None` to mean "no area"** — that reads as "this
+interface does not do areas" and lets consumers fall through to `cwd`, which
+silently answers from the wrong area's context. Stamp `""` instead.
+
+`RunContext` is frozen, so stamping per message means constructing a new one
+and calling `set_run_context()` again. That is safe: `Session` reads the run
+context at resolve time within the same turn, and turns on one session are
+serialized under the session lock. The Discord interface does exactly this in
+`_process_message` — see [Area resolution](CONFIG-REFERENCE.md#area-resolution).
 
 ## Driving the Agent
 
@@ -240,7 +268,7 @@ the agent's.
 
 ## Best Practices
 
-1. **Set `RunContext` in `start()`** — The agent uses this for logging and mode-specific behavior.
+1. **Set `RunContext` in `start()`** — The agent uses this for logging and mode-specific behavior. Leave `area` unset unless your interface resolves areas; if it does, re-stamp per message and use `""` — never `None` — for "no area".
 
 2. **Use `stream_message()` for interactive interfaces** — Users want to see responses as they arrive, not wait for the full response.
 
