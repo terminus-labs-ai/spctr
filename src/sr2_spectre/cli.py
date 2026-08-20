@@ -179,8 +179,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--interface",
         type=str,
-        default="single_shot",
-        help="Interface to run: single_shot, tui (default: single_shot)",
+        default="repl",
+        help="Interface to run: repl, single_shot, tui (default: repl)",
     )
 
     parser.add_argument(
@@ -217,6 +217,7 @@ def _load_interface(interface_name: str, **kwargs: Any) -> Any:
     """Load an interface class by name."""
     known_interfaces = {
         "single_shot": "sr2_spectre.interfaces.single_shot.SingleShotInterface",
+        "repl": "sr2_spectre.interfaces.repl.REPLInterface",
         "tui": "sr2_spectre.interfaces.tui.TUIInterface",
         "discord": "sr2_spectre.interfaces.discord.interface.DiscordInterface",
     }
@@ -225,7 +226,10 @@ def _load_interface(interface_name: str, **kwargs: Any) -> Any:
     module_path, class_name = class_path.rsplit(".", 1)
     mod = importlib.import_module(module_path)
     cls = getattr(mod, class_name)
-    return cls(**kwargs)
+    # Return the CLASS (not an instance): instantiation happens in run_async()
+    # after agent initialization.  Callers that historically relied on getting
+    # an instance back should instantiate explicitly.
+    return cls
 
 
 
@@ -367,7 +371,10 @@ async def run_async(argv: list[str] | None = None) -> None:
     await agent.initialize()
 
     try:
-        interface = _load_interface(interface_name, **interface_kwargs)
+        # _load_interface resolves the class; interfaces are instantiated with
+        # no required args (single_shot takes an optional prompt kwarg).
+        interface_cls = _load_interface(interface_name, **interface_kwargs)
+        interface = interface_cls()
 
         await interface.start(agent)
         await interface.run(agent)

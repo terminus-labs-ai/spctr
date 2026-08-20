@@ -56,9 +56,10 @@ def test_interface_exports_only_interface() -> None:
 # CLI --interface flag
 # ---------------------------------------------------------------------------
 
-def test_parse_args_interface_defaults_to_single_shot() -> None:
+def test_parse_args_interface_defaults_to_repl() -> None:
+    """REPL is the default interactive interface (obsidian-hp8c)."""
     args = _parse_args(["config.yaml", "hello"])
-    assert args.interface == "single_shot"
+    assert args.interface == "repl"
 
 
 def test_parse_args_interface_flag() -> None:
@@ -115,8 +116,9 @@ def test_no_output_plugin_or_registry() -> None:
 # ---------------------------------------------------------------------------
 
 def test_load_interface_tui() -> None:
+    """_load_interface returns the interface CLASS; instantiate explicitly."""
     from sr2_spectre.cli import _load_interface
     from sr2_spectre.interfaces.tui import TUIInterface
 
-    instance = _load_interface("tui")
-    assert isinstance(instance, TUIInterface)
+    cls = _load_interface("tui")
+    assert cls is TUIInterface

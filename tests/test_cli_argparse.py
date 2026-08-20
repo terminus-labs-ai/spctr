@@ -27,12 +27,12 @@ class TestParseArgsCorrectForms:
         assert args.prompt == ["What is the weather?"]
         assert args.interface == "single_shot"
 
-    def test_single_shot_prompt_default_interface(self) -> None:
-        """--interface single_shot is the default; omitting it works."""
+    def test_repl_default_interface(self) -> None:
+        """--interface repl is the default; omitting it works (obsidian-hp8c)."""
         args = _parse_args(["config.yaml", "What is 2+2?"])
         assert args.config == "config.yaml"
         assert args.prompt == ["What is 2+2?"]
-        assert args.interface == "single_shot"  # default
+        assert args.interface == "repl"  # default
 
     def test_tui_without_prompt(self) -> None:
         """sr2-spectre config.yaml --interface tui"""

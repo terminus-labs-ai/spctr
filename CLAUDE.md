@@ -126,8 +126,10 @@ Spectre tell an operator exactly which config file set a given value.
 Spectre ships multiple front ends that all sit on top of one shared
 `Runtime` (`src/sr2_spectre/runtime.py`): `single_shot`
 (`src/sr2_spectre/interfaces/single_shot.py`, for scripting — one prompt in,
-one response out, process exits), `tui`
-(`src/sr2_spectre/interfaces/tui.py`, for interactive terminal sessions),
+one response out, process exits), `repl` (default;
+`src/sr2_spectre/interfaces/repl.py`, interactive terminal session via
+prompt_toolkit + Rich — native selection and shortcuts), `tui`
+(`src/sr2_spectre/interfaces/tui.py`, Textual full-screen app, legacy),
 and Discord (`src/sr2_spectre/interfaces/discord/`, for a persistent bot
 process). Each interface is a thin adapter that turns its own I/O model
 (stdin/stdout, a terminal UI loop, or Discord gateway events) into calls

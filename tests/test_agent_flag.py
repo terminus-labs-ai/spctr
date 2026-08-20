@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -24,6 +24,11 @@ from sr2_spectre.cli import _parse_args, resolve_agent_config_path
 # ---------------------------------------------------------------------------
 # 1: resolve_agent_config_path — core resolution logic
 # ---------------------------------------------------------------------------
+
+def _fake_interface_cls(instance):
+    """Class whose instantiation returns ``instance`` (for _load_interface patches)."""
+    return type("_FakeInterfaceCls", (), {"__new__": staticmethod(lambda cls: instance)})
+
 
 class TestResolveAgentConfigPath:
     """Tests for the pure-function agent path resolution."""
@@ -150,7 +155,7 @@ class TestRunAsyncWithAgent:
         with (
             patch("sr2_spectre.cli.resolve_config", side_effect=capture_resolve_config),
             patch("sr2_spectre.cli._configure_logging"),
-            patch("sr2_spectre.cli._load_interface", return_value=mock_interface),
+            patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(mock_interface)),
             patch("sr2_spectre.cli.Agent", return_value=mock_agent),
         ):
             await run_async([
@@ -213,7 +218,7 @@ class TestRunAsyncWithAgent:
         with (
             patch("sr2_spectre.cli.resolve_config", side_effect=capture_resolve_config),
             patch("sr2_spectre.cli._configure_logging"),
-            patch("sr2_spectre.cli._load_interface", return_value=mock_interface),
+            patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(mock_interface)),
             patch("sr2_spectre.cli.Agent", return_value=mock_agent),
             patch("pathlib.Path.home", return_value=fake_home),
         ):
@@ -270,7 +275,7 @@ class TestRunAsyncWithAgent:
         with (
             patch("sr2_spectre.cli.resolve_config", side_effect=capture_resolve_config),
             patch("sr2_spectre.cli._configure_logging"),
-            patch("sr2_spectre.cli._load_interface", return_value=mock_interface),
+            patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(mock_interface)),
             patch("sr2_spectre.cli.Agent", return_value=mock_agent),
         ):
             await run_async([str(config_yaml)])

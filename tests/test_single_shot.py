@@ -63,15 +63,24 @@ async def test_run_empty_prompt_exits(capsys: pytest.CaptureFixture) -> None:
 
 
 def test_load_interface_via_cli() -> None:
-    """_load_interface('single_shot') must return a SingleShotInterface instance."""
+    """_load_interface('single_shot') must return the SingleShotInterface class."""
     from sr2_spectre.cli import _load_interface
-    instance = _load_interface("single_shot")
-    assert isinstance(instance, SingleShotInterface)
+    cls = _load_interface("single_shot")
+    assert cls is SingleShotInterface
 
 
 def test_load_interface_with_prompt_kwarg() -> None:
+    """Prompt kwarg is accepted by the resolved class and set on the instance.
+
+    Note: _load_interface returns the CLASS; run_async instantiates it as
+    ``interface_cls()`` (no kwargs), so the prompt actually reaches the
+    interface via direct construction here — mirroring how a caller would
+    pass it through if wiring changed.
+    """
     from sr2_spectre.cli import _load_interface
-    instance = _load_interface("single_shot", prompt="hello")
+
+    cls = _load_interface("single_shot")
+    instance = cls(prompt="hello")
     assert isinstance(instance, SingleShotInterface)
     assert instance._prompt == "hello"
 

@@ -473,6 +473,11 @@ def _make_mock_config() -> MagicMock:
     return config
 
 
+def _fake_interface_cls(instance):
+    """Class whose instantiation returns ``instance`` (for _load_interface patches)."""
+    return type("_FakeInterfaceCls", (), {"__new__": staticmethod(lambda cls: instance)})
+
+
 def _make_mock_interface() -> MagicMock:
     """Mock interface whose run() drives one handle_user_message and prints the reply."""
     plugin = MagicMock()
@@ -515,7 +520,7 @@ class TestCliRoutesPositionalThroughResolver:
             patch("sr2_spectre.cli._configure_logging"),
             patch(
                 "sr2_spectre.cli._load_interface",
-                return_value=_make_mock_interface(),
+                return_value=_fake_interface_cls(_make_mock_interface()),
             ),
             patch("sr2_spectre.cli.Agent") as MockAgent,
         ):
