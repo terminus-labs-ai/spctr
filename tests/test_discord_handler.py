@@ -24,6 +24,7 @@ from sr2_spectre.interfaces.discord.handler import (
     probe_harbinger_status,
     register_command,
     should_respond,
+    split_for_retry,
 )
 
 
@@ -230,6 +231,118 @@ class TestHandleCommand:
 
     def test_unknown_command_returns_none(self) -> None:
         assert handle_command("unknown", "stuff", _ctx()) is None
+
+
+# ---------------------------------------------------------------------------
+# /area, /retry, /status area readout (obsidian-fqps.5)
+# ---------------------------------------------------------------------------
+
+class TestAreaCommand:
+    def test_registered_in_registry(self) -> None:
+        assert "area" in get_registered_commands()
+
+    def test_shows_resolved_area(self) -> None:
+        ctx = CommandContext(0, "s", 0, area="normandy")
+        response = handle_command("area", "", ctx)
+        assert response is not None
+        assert "normandy" in response
+
+    def test_empty_area_reports_none(self) -> None:
+        ctx = CommandContext(0, "s", 0, area="")
+        response = handle_command("area", "", ctx)
+        assert response is not None
+        assert "none" in response.lower()
+        assert "`" not in response  # no code-fenced area name
+
+    def test_missing_area_reports_none(self) -> None:
+        ctx = CommandContext(0, "s", 0, area=None)
+        response = handle_command("area", "", ctx)
+        assert response is not None
+        assert "none" in response.lower()
+
+
+class TestStatusAreaReadout:
+    def test_status_includes_area_when_present(self) -> None:
+        ctx = CommandContext(0, "discord-0", 0, area="normandy")
+        response = handle_command("status", "", ctx)
+        assert response is not None
+        assert "Area" in response
+        assert "normandy" in response
+
+    def test_status_shows_none_for_empty_area(self) -> None:
+        ctx = CommandContext(0, "discord-0", 0, area="")
+        response = handle_command("status", "", ctx)
+        assert response is not None
+        assert "Area" in response
+        assert "none" in response.lower()
+
+    def test_status_omits_area_when_unknown(self) -> None:
+        ctx = CommandContext(0, "discord-0", 0, area=None)
+        response = handle_command("status", "", ctx)
+        assert response is not None
+        assert "Area" not in response
+
+
+class TestRetryRegistration:
+    def test_registered_in_registry(self) -> None:
+        assert "retry" in get_registered_commands()
+
+    def test_retry_returns_none(self) -> None:
+        """/retry produces no sync text — handled async in the interface."""
+        assert handle_command("retry", "", _ctx()) is None
+
+    def test_help_lists_area_and_retry(self) -> None:
+        response = handle_command("help", "", _ctx())
+        assert response is not None
+        assert "/area" in response
+        assert "/retry" in response
+
+
+def _user(text: str) -> dict:
+    return {"role": "user", "content": [{"type": "text", "text": text}]}
+
+
+def _assistant(text: str) -> dict:
+    return {"role": "assistant", "content": [{"type": "text", "text": text}]}
+
+
+class TestSplitForRetry:
+    def test_empty_history_returns_none(self) -> None:
+        assert split_for_retry([]) is None
+
+    def test_no_user_turn_returns_none(self) -> None:
+        assert split_for_retry([_assistant("hi")]) is None
+
+    def test_recalls_last_user_and_trims_from_it(self) -> None:
+        history = [_user("first"), _assistant("a1"), _user("second"), _assistant("a2")]
+        result = split_for_retry(history)
+        assert result is not None
+        text, trimmed = result
+        assert text == "second"
+        # Everything from the recalled user turn onward is dropped.
+        assert trimmed == [_user("first"), _assistant("a1")]
+
+    def test_trailing_user_turn_is_recalled(self) -> None:
+        history = [_user("only")]
+        result = split_for_retry(history)
+        assert result is not None
+        text, trimmed = result
+        assert text == "only"
+        assert trimmed == []
+
+    def test_skips_empty_text_user_turn(self) -> None:
+        history = [_user("real"), _assistant("a1"), _user("")]
+        result = split_for_retry(history)
+        assert result is not None
+        text, trimmed = result
+        assert text == "real"
+        assert trimmed == []
+
+    def test_does_not_mutate_input(self) -> None:
+        history = [_user("first"), _assistant("a1"), _user("second")]
+        original = list(history)
+        split_for_retry(history)
+        assert history == original
 
 
 # ---------------------------------------------------------------------------

@@ -45,6 +45,7 @@ from sr2_spectre.interfaces.discord.handler import (
     render_model_command,
     resolve_area,
     should_respond,
+    split_for_retry,
 )
 from sr2_spectre.interfaces.discord.session_map import SessionMap
 
@@ -363,12 +364,15 @@ class DiscordInterface:
             active_model = cfg.active_model
             mc = cfg.active_model_config
             model_label = mc.model if mc.base_url is None else f"{mc.model} @ {mc.base_url}"
+        rc = self._agent.run_context if self._agent is not None else None
+        area = rc.area if rc is not None and isinstance(rc.area, str) else None
         return CommandContext(
             channel_id=channel_id,
             session_id=session.session_id,
             message_count=len(session.history),
             active_model=active_model,
             model_label=model_label,
+            area=area,
         )
 
     async def _run_agent(self, content: str, channel_id: int) -> None:
@@ -484,6 +488,22 @@ class DiscordInterface:
                 await self._adapter.send_message(channel_id, response)
             return
 
+        # /retry — re-run the last user message, dropping the turn it replaces.
+        if command == "retry":
+            if self._adapter is not None:
+                session = self._session_map.get_or_create(channel_id)
+                recalled = split_for_retry(session.history)
+                if recalled is None:
+                    await self._adapter.send_message(
+                        channel_id,
+                        "Nothing to retry — no earlier message in this channel.",
+                    )
+                else:
+                    text, trimmed = recalled
+                    session.history[:] = trimmed
+                    await self._run_agent(text, channel_id)
+            return
+
         ctx = self._command_context(channel_id)
         response = handle_command(command, rest, ctx)
 
@@ -569,6 +589,23 @@ class DiscordInterface:
         if name in ("stop", "cancel"):
             response = await self._stop_command(channel_id)
             await self._adapter.interaction_send(interaction, response)
+            return
+
+        # /retry — re-run the last user message. Ack with the recalled prompt as
+        # a visible anchor, then stream into the channel like a normal message.
+        if name == "retry":
+            session = self._session_map.get_or_create(channel_id)
+            recalled = split_for_retry(session.history)
+            if recalled is None:
+                await self._adapter.interaction_send(
+                    interaction,
+                    "Nothing to retry — no earlier message in this channel.",
+                )
+                return
+            text, trimmed = recalled
+            session.history[:] = trimmed
+            await self._adapter.interaction_send(interaction, f"🔁 {text}")
+            await self._run_agent(text, channel_id)
             return
 
         # /ask — run the agent loop. Acknowledge with the prompt as a visible

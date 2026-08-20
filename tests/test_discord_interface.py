@@ -1071,3 +1071,131 @@ async def test_stop_cancels_active_run_and_finalizes_partial() -> None:
         session = interface._session_map.get_or_create(channel)
         roles = [m["role"] for m in session.history]
         assert roles[-2:] == ["user", "assistant"]
+
+
+# ---------------------------------------------------------------------------
+# /area (show) and /retry — obsidian-fqps.5
+# ---------------------------------------------------------------------------
+
+from sr2_spectre.core import RunContext, RunMode  # noqa: E402
+
+
+def _agent_with_area(area: str) -> MagicMock:
+    """A mock agent whose run_context carries a resolved area."""
+    agent = _make_mock_agent()
+    agent.run_context = RunContext(
+        interface="discord", mode=RunMode.INTERACTIVE, source=None, area=area
+    )
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_area_command_reports_resolved_area() -> None:
+    """/area (text-prefix) shows the area the channel resolves to."""
+    channel_id = 4242
+    interface = DiscordInterface(DiscordConfig())
+    agent = _agent_with_area("normandy")
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+        await interface.start(agent)
+
+        msg = _make_mock_message(content="/area", channel_id=channel_id)
+        await interface._process_message(msg)
+
+        sent = mock_adapter.send_message.call_args[0][1]
+        assert "normandy" in sent
+
+
+@pytest.mark.asyncio
+async def test_slash_area_reports_via_interaction() -> None:
+    """/area (native) answers through the interaction with the resolved area."""
+    agent = _agent_with_area("grindforge")
+    interface, mock_adapter = await _started_interface(DiscordConfig(), agent)
+
+    await interface._handle_slash("area", "", _make_mock_interaction(555))
+
+    sent = mock_adapter.interaction_send.call_args[0][1]
+    assert "grindforge" in sent
+    mock_adapter.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_retry_reruns_last_user_message() -> None:
+    """/retry (text-prefix) trims the last turn and re-runs its user message."""
+    channel_id = 700
+    interface = DiscordInterface(DiscordConfig())
+    agent = _make_mock_agent()
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        MockAdapter.return_value = _make_mock_adapter()
+        await interface.start(agent)
+
+        session = interface._session_map.get_or_create(channel_id)
+        session.history.append({"role": "user", "content": [{"type": "text", "text": "hello"}]})
+        session.history.append({"role": "assistant", "content": [{"type": "text", "text": "hi"}]})
+
+        with patch.object(interface, "_run_agent", new=AsyncMock()) as run:
+            msg = _make_mock_message(content="/retry", channel_id=channel_id)
+            await interface._process_message(msg)
+
+        run.assert_awaited_once_with("hello", channel_id)
+        # The recalled turn (user + its reply) is dropped so the rerun does not
+        # duplicate it; _run_agent (patched here) would re-append the user turn.
+        assert session.history == []
+
+
+@pytest.mark.asyncio
+async def test_retry_with_no_history_reports_nothing() -> None:
+    """/retry with an empty channel history reports there is nothing to retry."""
+    channel_id = 701
+    interface = DiscordInterface(DiscordConfig())
+    agent = _make_mock_agent()
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+        await interface.start(agent)
+
+        with patch.object(interface, "_run_agent", new=AsyncMock()) as run:
+            msg = _make_mock_message(content="/retry", channel_id=channel_id)
+            await interface._process_message(msg)
+
+        run.assert_not_awaited()
+        sent = mock_adapter.send_message.call_args[0][1]
+        assert "Nothing to retry" in sent
+
+
+@pytest.mark.asyncio
+async def test_slash_retry_reruns_last_user_message() -> None:
+    """/retry (native) anchors the recalled prompt and re-runs the agent."""
+    channel_id = 800
+    agent = _make_mock_agent()
+    interface, mock_adapter = await _started_interface(DiscordConfig(), agent)
+
+    session = interface._session_map.get_or_create(channel_id)
+    session.history.append({"role": "user", "content": [{"type": "text", "text": "again?"}]})
+    session.history.append({"role": "assistant", "content": [{"type": "text", "text": "sure"}]})
+
+    with patch.object(interface, "_run_agent", new=AsyncMock()) as run:
+        await interface._handle_slash("retry", "", _make_mock_interaction(channel_id))
+
+    run.assert_awaited_once_with("again?", channel_id)
+    anchor = mock_adapter.interaction_send.call_args[0][1]
+    assert "again?" in anchor
+    assert session.history == []
+
+
+@pytest.mark.asyncio
+async def test_slash_retry_with_no_history_reports_nothing() -> None:
+    """/retry (native) with no history reports there is nothing to retry."""
+    agent = _make_mock_agent()
+    interface, mock_adapter = await _started_interface(DiscordConfig(), agent)
+
+    with patch.object(interface, "_run_agent", new=AsyncMock()) as run:
+        await interface._handle_slash("retry", "", _make_mock_interaction(801))
+
+    run.assert_not_awaited()
+    sent = mock_adapter.interaction_send.call_args[0][1]
+    assert "Nothing to retry" in sent

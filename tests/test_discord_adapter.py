@@ -230,7 +230,10 @@ async def test_start_registers_native_slash_commands() -> None:
         await adapter.start()
         assert adapter._tree is not None
         names = {cmd.name for cmd in adapter._tree.get_commands()}
-        assert names == {"ask", "reset", "status", "help", "hb", "model", "stop", "cancel"}
+        assert names == {
+            "ask", "reset", "status", "help", "hb", "model", "stop", "cancel",
+            "area", "retry",
+        }
     finally:
         await adapter.stop()
 

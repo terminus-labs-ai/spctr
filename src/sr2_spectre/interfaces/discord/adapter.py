@@ -265,6 +265,20 @@ class DiscordBotAdapter:
         async def _cancel(interaction: Any) -> None:  # noqa: ANN001
             await _dispatch("cancel", "", interaction)
 
+        @tree.command(
+            name="area",
+            description=_desc("area", "Show the area this channel resolves to"),
+        )
+        async def _area(interaction: Any) -> None:  # noqa: ANN001
+            await _dispatch("area", "", interaction)
+
+        @tree.command(
+            name="retry",
+            description=_desc("retry", "Re-run the last message in this channel"),
+        )
+        async def _retry(interaction: Any) -> None:  # noqa: ANN001
+            await _dispatch("retry", "", interaction)
+
     async def _sync_slash_commands(self) -> None:
         """Sync slash commands to every connected guild for instant availability.
 

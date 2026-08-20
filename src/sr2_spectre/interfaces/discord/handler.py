@@ -122,6 +122,7 @@ class CommandContext:
     message_count: int
     active_model: str | None = None
     model_label: str | None = None
+    area: str | None = None
 
 
 # Handler signature: (rest: str, ctx: CommandContext) -> str | None
@@ -187,6 +188,8 @@ def _handle_status(rest: str, ctx: CommandContext) -> str | None:
         lines.append(f"**Model:** `{ctx.active_model}`")
     if ctx.model_label is not None:
         lines.append(f"**Endpoint:** {ctx.model_label}")
+    if ctx.area is not None:
+        lines.append(f"**Area:** `{ctx.area}`" if ctx.area else "**Area:** none")
     return "\n".join(lines)
 
 
@@ -228,6 +231,30 @@ def _handle_model(rest: str, ctx: CommandContext) -> str | None:
     description (mirroring /ask). The real logic runs in the Discord
     interface, which alone has the model list and the writable pointer file.
     Returns None; the interface intercepts /model before registry dispatch.
+    """
+    return None
+
+
+def _handle_area(rest: str, ctx: CommandContext) -> str | None:
+    """ /area — show the area this channel resolves to (read-only).
+
+    Areas are set per-channel via the ``channel_areas`` config map (or derived
+    from the channel name). This command only *reports* the resolved value;
+    switching at runtime is intentionally not offered — ``config.yaml`` is
+    mounted read-only and the area drives workspace confinement.
+    """
+    if ctx.area:
+        return f"**Area:** `{ctx.area}`"
+    return "**Area:** none — this channel resolves to no area."
+
+
+def _handle_retry(rest: str, ctx: CommandContext) -> str | None:
+    """ /retry — re-run the last user message in this channel.
+
+    Registered only so /help and the native command tree carry its
+    description (mirroring /ask). The real logic runs in the Discord
+    interface, which holds the per-channel history and the agent run loop.
+    Returns None; the interface intercepts /retry before registry dispatch.
     """
     return None
 
@@ -317,10 +344,51 @@ register_command(SlashCommand(
     handler=_handle_stop,
 ))
 
+register_command(SlashCommand(
+    name="area",
+    description="Show the area this channel resolves to",
+    handler=_handle_area,
+))
+
+register_command(SlashCommand(
+    name="retry",
+    description="Re-run the last message in this channel",
+    handler=_handle_retry,
+))
+
 
 # Known slash commands (sync registry + async commands handled by the interface).
 # parse_slash_command checks this set; handle_command only dispatches registry commands.
 SLASH_COMMANDS: set[str] = set(_COMMAND_REGISTRY.keys()) | {"hb", "cancel"}
+
+
+# ---------------------------------------------------------------------------
+# /retry — recall the last user turn (pure; the interface runs the agent)
+# ---------------------------------------------------------------------------
+
+
+def _first_text(entry: dict) -> str | None:
+    """Return the first text block's text from a history entry, or None."""
+    for block in entry.get("content", []):
+        if block.get("type") == "text":
+            return block.get("text", "")
+    return None
+
+
+def split_for_retry(history: list[dict]) -> tuple[str, list[dict]] | None:
+    """Find the last user turn to re-run.
+
+    Returns ``(text, history_before_that_turn)`` — the text of the most recent
+    user message and the history truncated to just before it, so the caller can
+    re-run that message and regenerate a fresh reply without duplicating the
+    turn. Returns ``None`` when there is no user turn carrying text to retry.
+    """
+    for i in range(len(history) - 1, -1, -1):
+        if history[i].get("role") == "user":
+            text = _first_text(history[i])
+            if text:
+                return text, history[:i]
+    return None
 
 
 # ---------------------------------------------------------------------------
