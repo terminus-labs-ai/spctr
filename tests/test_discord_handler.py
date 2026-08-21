@@ -23,6 +23,7 @@ from sr2_spectre.interfaces.discord.handler import (
     parse_slash_command,
     probe_harbinger_status,
     register_command,
+    tail_for_stream,
     should_respond,
     split_for_retry,
 )
@@ -545,3 +546,37 @@ class TestStatusModelFields:
         out = handle_command("status", "", ctx)
         assert "**Model:**" not in out
         assert "**Endpoint:**" not in out
+
+
+
+class TestTailForStream:
+    """tail_for_stream() — in-progress progress trims to the LATEST content.
+
+    Regression: the live progress message head-truncated once accumulated
+    tool lines first overflowed the limit, freezing the view on stale tool
+    lines for the rest of a long run ("40 minutes of no visibility").
+    """
+
+    def test_short_text_unchanged(self) -> None:
+        assert tail_for_stream("hello", 2000) == "hello"
+
+    def test_text_at_limit_unchanged(self) -> None:
+        text = "a" * 2000
+        assert tail_for_stream(text, 2000) == text
+
+    def test_keeps_tail_not_head(self) -> None:
+        # Old tool lines first, latest activity + text last.
+        text = "OLD\n" * 1000 + "LATEST ACTIVITY"
+        out = tail_for_stream(text, 2000)
+        assert out.endswith("LATEST ACTIVITY")  # newest content survives
+        assert len(out) <= 2000
+        # Most of the stale head is dropped, not frozen in view.
+        assert out.count("OLD") < text.count("OLD")
+
+    def test_result_within_limit(self) -> None:
+        out = tail_for_stream("x" * 5000, 2000)
+        assert len(out) <= 2000
+
+    def test_marks_truncation(self) -> None:
+        out = tail_for_stream("x" * 5000, 2000)
+        assert out.startswith("[…]")

@@ -569,6 +569,30 @@ def chunk_message(text: str, max_length: int = 2000) -> list[str]:
     return chunks
 
 
+def tail_for_stream(text: str, max_length: int = DISCORD_MAX_LEN) -> str:
+    """Trim in-progress streaming text to the LAST ``max_length`` chars.
+
+    The live progress message is a single Discord message edited in place, so
+    it cannot grow past the length limit. Unlike the final response (which is
+    split across several messages by :func:`chunk_message`), the in-progress
+    view only needs the LATEST activity, so we keep the tail rather than the
+    head. Keeping the head froze the message on stale tool lines once a long
+    run first overflowed the limit (the "40 minutes of no visibility" bug).
+
+    Args:
+        text: The accumulated progress text.
+        max_length: Maximum length of the rendered message (default: 2000).
+
+    Returns:
+        ``text`` unchanged when it fits, otherwise a leading ellipsis marker
+        followed by the trailing content, total length <= ``max_length``.
+    """
+    if len(text) <= max_length:
+        return text
+    marker = "[…]\n"
+    return marker + text[-(max_length - len(marker)):]
+
+
 # ---------------------------------------------------------------------------
 # Embed builders
 # ---------------------------------------------------------------------------

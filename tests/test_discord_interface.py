@@ -799,6 +799,51 @@ async def test_slash_status_renders_session_info() -> None:
 # Native slash commands (_handle_slash) — interactions gateway path
 # ---------------------------------------------------------------------------
 
+@pytest.mark.asyncio
+async def test_long_run_progress_shows_latest_activity_not_frozen_head() -> None:
+    """In-progress edits must show the LATEST activity on a long, overflowing run.
+
+    Regression ("40 minutes of no visibility"): the progress message
+    head-truncated to max_message_length. Once accumulated tool lines first
+    exceeded the limit, every later edit kept the STALE head and dropped the
+    newest tool activity and streamed text. The tail-window fix keeps the end,
+    so the final in-progress edit reflects the most recent events.
+    """
+    # Small limit so a handful of tool events overflows it deterministically.
+    interface = DiscordInterface(
+        DiscordConfig(tool_embed_enabled=True, max_message_length=200)
+    )
+    events = [
+        AgentToolStart(tool_id=f"t{i}", name=f"tool_{i:02d}", input={"n": i})
+        for i in range(40)
+    ]
+    events.append(AgentTextDelta(text="FINAL_ANSWER"))
+    events.append(AgentDone())
+    agent = _make_mock_agent(events)
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+        msg = _make_mock_message(content="do a long run", channel_id=7777)
+        await interface._process_message(msg)
+
+        edit_contents = [c[0][2] for c in mock_adapter.edit_message.call_args_list]
+
+        # Every in-progress edit stays within the configured limit.
+        in_progress = [c for c in edit_contents if c.endswith("...")]
+        assert in_progress, "expected in-progress edits"
+        for content in in_progress:
+            assert len(content) <= 200
+
+        # The last in-progress edit (before finalization) must carry the LATEST
+        # tool activity, not the frozen earliest tools.
+        last_in_progress = in_progress[-1]
+        assert "tool_39" in last_in_progress, "latest tool activity was dropped"
+        assert "tool_00" not in last_in_progress, "frozen on stale head"
+
+
 def _make_mock_interaction(channel_id: int = 12345) -> MagicMock:
     """Create a mock discord.py Interaction for slash-command tests."""
     interaction = MagicMock()

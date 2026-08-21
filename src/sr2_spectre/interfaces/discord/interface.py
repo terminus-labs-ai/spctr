@@ -46,6 +46,7 @@ from sr2_spectre.interfaces.discord.handler import (
     resolve_area,
     should_respond,
     split_for_retry,
+    tail_for_stream,
 )
 from sr2_spectre.interfaces.discord.session_map import SessionMap
 
@@ -861,7 +862,7 @@ class DiscordInterface:
         parts.append(text + "..." if text else "⏳ Thinking...")
 
         content = "\n\n".join(parts)
-        content = content[: self.config.max_message_length]
+        content = tail_for_stream(content, self.config.max_message_length)
 
         # Supersede any pending edit — this render reflects the latest state.
         self._cancel_pending_stream_edit()
