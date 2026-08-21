@@ -155,15 +155,21 @@ class TestNonDiscordInterfaces:
         assert "area" not in provider()
         assert agent.run_context.source == os.getcwd()
 
-    async def test_repl_sets_no_area(self) -> None:
-        """The REPL is the default interface and resolves no areas."""
+    async def test_repl_sets_area_from_cwd_name(self) -> None:
+        """The REPL resolves its area from the current folder's name.
+
+        Unlike the TUI/single-shot interfaces, the REPL is Diego's interactive
+        driver and is launched from the area folder itself, so the folder name
+        IS the area (parity with Discord channel-to-area resolution).
+        """
         from sr2_spectre.interfaces.repl import REPLInterface
 
         agent, provider = _agent_and_provider()
         await REPLInterface().start(agent)
 
-        assert agent.run_context.area is None
-        assert "area" not in provider()
+        expected = os.path.basename(os.getcwd())
+        assert agent.run_context.area == expected
+        assert provider()["area"] == expected
         assert agent.run_context.source == os.getcwd()
 
     async def test_single_shot_sets_no_area(self) -> None:

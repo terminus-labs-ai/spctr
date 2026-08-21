@@ -238,6 +238,11 @@ class REPLInterface:
             interface="repl",
             mode=RunMode.INTERACTIVE,
             source=os.getcwd(),
+            # The REPL has no channel, so the area is the current folder's
+            # name (e.g. running in .../projects/fractured-roots -> that area).
+            # Empty only at the filesystem root; fall back to None (cwd/.git
+            # discovery) there rather than stamping an explicit "no area".
+            area=Path.cwd().name or None,
         ))
 
     async def stop(self) -> None:

@@ -98,6 +98,26 @@ async def test_start_sets_run_context(make_mock_agent) -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_stamps_area_from_cwd_name(make_mock_agent, tmp_path, monkeypatch) -> None:
+    """start(agent) stamps RunContext.area from the current folder name.
+
+    The REPL has no channel to key an area off, so the folder it is launched
+    in IS the area (parity with Discord channel-to-area resolution, spc-48).
+    """
+    area_dir = tmp_path / "fractured-roots"
+    area_dir.mkdir()
+    monkeypatch.chdir(area_dir)
+
+    agent = make_mock_agent()
+    interface = REPLInterface()
+    await interface.start(agent)
+
+    mock_ctx = agent.set_run_context.call_args[0][0]
+    assert mock_ctx.area == "fractured-roots"
+    assert mock_ctx.source == str(area_dir)
+
+
+@pytest.mark.asyncio
 async def test_stop_sets_running_false() -> None:
     interface = REPLInterface()
     interface._running = True
