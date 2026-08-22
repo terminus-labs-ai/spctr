@@ -50,6 +50,16 @@ bd close <id>         # Complete work
 - If push fails, resolve and retry until it succeeds
 <!-- END BEADS INTEGRATION -->
 
+## Vault continuity
+
+When work is tracked from `/data/obsidian`, its source area `NOW.md` is a
+compact present-state view. At meaningful close, rewrite it with one executable
+next action near the top, at most five current-state bullets, and only current
+bead/spec plus latest restart-relevant acceptance-pack pointers. Remove
+completed or superseded detail; never append a session summary, log, open-bead
+inventory, test baseline, or evidence. Never create or update `handoff.md`, and
+never edit the generated vault-root `NOW.md`.
+
 ## v2 Product-Owner Build Sessions
 
 For a spec-defined task bead, `/data/obsidian/workflow/README.md` and
