@@ -511,6 +511,76 @@ Discovered content.
 
 
 # ---------------------------------------------------------------------------
+# Per-file skills[] path interpolation (obsidian-4eon)
+# ---------------------------------------------------------------------------
+
+class TestPerFileSkillsEnvVar:
+    """agent.skills[].path interpolates ${VAR} like skills_dirs does."""
+
+    def test_per_file_skill_env_var_path(self, tmp_path: Path):
+        """`${SR2_WORKSPACE}/.agents/skills/x/SKILL.md` — the Grindforge case."""
+        from sr2_spectre.config import SkillConfig
+        from sr2_spectre.runtime import Runtime
+
+        skill_dir = tmp_path / ".agents" / "skills" / "godot-shader"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("# Shader skill\n\nContent.\n")
+
+        cfg = _base_config()
+        cfg.agent.skills = [
+            SkillConfig(
+                name="godot-shader",
+                path="${SR2_WORKSPACE}/.agents/skills/godot-shader/SKILL.md",
+            )
+        ]
+
+        with patch.dict("os.environ", {"SR2_WORKSPACE": str(tmp_path)}), \
+             patch("sr2_spectre.live_llm.LiteLLMCallable"):
+            runtime = Runtime(config=cfg)
+
+        assert "godot-shader" in runtime.skill_registry
+
+    def test_per_file_skill_unset_env_var_warns_and_skips(self, tmp_path: Path, caplog, monkeypatch):
+        """An unset ${VAR} skips the skill with a warning — like skills_dirs."""
+        from sr2_spectre.config import SkillConfig
+        from sr2_spectre.runtime import Runtime
+
+        monkeypatch.delenv("SR2_DOES_NOT_EXIST_VAR", raising=False)
+        cfg = _base_config()
+        cfg.agent.skills = [
+            SkillConfig(
+                name="unresolvable",
+                path="${SR2_DOES_NOT_EXIST_VAR}/skills/x.md",
+            )
+        ]
+
+        with caplog.at_level(logging.WARNING), \
+             patch("sr2_spectre.live_llm.LiteLLMCallable"):
+            runtime = Runtime(config=cfg)
+
+        assert "unresolvable" not in runtime.skill_registry
+        assert "unresolvable" in caplog.text
+
+    def test_per_file_skill_tilde_path(self, tmp_path: Path, monkeypatch):
+        """Tilde paths keep working through the new resolution path."""
+        from sr2_spectre.config import SkillConfig
+        from sr2_spectre.runtime import Runtime
+
+        (tmp_path / "tilde-skill.md").write_text("# Tilde\n\nContent.\n")
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        cfg = _base_config()
+        cfg.agent.skills = [
+            SkillConfig(name="tilde-skill", path="~/tilde-skill.md")
+        ]
+
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+            runtime = Runtime(config=cfg)
+
+        assert "tilde-skill" in runtime.skill_registry
+
+
+# ---------------------------------------------------------------------------
 # Bundled <name>/SKILL.md layout (obsidian-8si8)
 # ---------------------------------------------------------------------------
 

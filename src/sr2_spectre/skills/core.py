@@ -56,8 +56,13 @@ def load_skill_from_path(
     version: str = "0.1.0",
     description: str = "",
     tags: list[str] | tuple[str, ...] | None = None,
+    env: dict[str, str] | None = None,
 ) -> Skill:
     """Load a skill's content from a file on disk.
+
+    The path supports ``~`` and ``${VAR}`` interpolation, resolved via
+    ``resolve_path`` — the same rules ``discover_skills_in_dir`` applies
+    to ``skills_dirs`` entries (obsidian-4eon).
 
     Args:
         name: Skill identifier.
@@ -65,14 +70,19 @@ def load_skill_from_path(
         version: Skill version.
         description: Override description (if empty, derived from filename).
         tags: Optional tags.
+        env: Environment variables for ``${VAR}`` interpolation. Defaults
+            to ``os.environ``.
 
     Returns:
         A Skill with content populated from the file.
 
     Raises:
         FileNotFoundError: If the path does not exist.
+        ConfigPathError: If a ``${VAR}`` token references an unset env var.
     """
-    p = Path(path).expanduser().resolve()
+    from sr2_spectre.path_resolution import resolve_path
+
+    p = resolve_path(str(Path(path).expanduser()), Path.cwd(), env)
     if not p.is_file():
         raise FileNotFoundError(f"Skill content file not found: {p}")
 

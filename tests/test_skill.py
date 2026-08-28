@@ -216,6 +216,55 @@ class TestLoadSkillFromPath:
         )
         assert skill.content == "path object content"
 
+    def test_env_var_interpolation(self, tmp_path: Path):
+        """`${VAR}` in the path is interpolated, like skills_dirs (obsidian-4eon)."""
+        content_file = tmp_path / "skills" / "env-skill.md"
+        content_file.parent.mkdir(parents=True)
+        content_file.write_text("env interpolated content")
+
+        skill = load_skill_from_path(
+            name="env-skill",
+            path="${SR2_TEST_WORKSPACE}/skills/env-skill.md",
+            env={"SR2_TEST_WORKSPACE": str(tmp_path)},
+        )
+        assert skill.content == "env interpolated content"
+
+    def test_env_var_interpolation_uses_os_environ_by_default(self, tmp_path: Path, monkeypatch):
+        """Without an explicit env, os.environ is the interpolation source."""
+        content_file = tmp_path / "os-env-skill.md"
+        content_file.write_text("os env content")
+
+        monkeypatch.setenv("SR2_TEST_WORKSPACE", str(tmp_path))
+        skill = load_skill_from_path(
+            name="os-env-skill",
+            path="${SR2_TEST_WORKSPACE}/os-env-skill.md",
+        )
+        assert skill.content == "os env content"
+
+    def test_unset_env_var_raises_config_path_error(self, tmp_path: Path, monkeypatch):
+        """An unset ${VAR} is a hard error, not a silent bad path."""
+        from sr2_spectre.path_resolution import ConfigPathError
+
+        monkeypatch.delenv("SR2_UNSET_VAR", raising=False)
+        with pytest.raises(ConfigPathError, match="SR2_UNSET_VAR"):
+            load_skill_from_path(
+                name="bad",
+                path="${SR2_UNSET_VAR}/missing.md",
+                env={},
+            )
+
+    def test_tilde_still_expanded(self, tmp_path: Path, monkeypatch):
+        """`~` expansion keeps working alongside ${VAR} support."""
+        content_file = tmp_path / "tilde-skill.md"
+        content_file.write_text("tilde content")
+
+        monkeypatch.setenv("HOME", str(tmp_path))
+        skill = load_skill_from_path(
+            name="tilde-skill",
+            path="~/tilde-skill.md",
+        )
+        assert skill.content == "tilde content"
+
 
 # ---------------------------------------------------------------------------
 # Built-in SR2 conventions skill
