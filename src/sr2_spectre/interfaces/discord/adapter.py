@@ -140,6 +140,10 @@ class DiscordBotAdapter:
         This is the process's single entry point for a Discord message, so it
         is where the config is re-read: the filters below, and the handler
         downstream, run against the config this message just loaded.
+
+        Every filter that can drop a message logs a line naming the reason,
+        so a silently dropped follow-up (the channels + auto_thread bug)
+        cannot happen again without a trace.
         """
         config = self._config_source.reload()
 
@@ -151,12 +155,59 @@ class DiscordBotAdapter:
         if config.channels and not hasattr(message, "channel"):
             return
 
-        # Channel filter
-        if config.channels and message.channel.id not in config.channels:
+        # User allowlist — independent of guild and channel
+        if config.users and message.author.id not in config.users:
+            logger.info(
+                "Dropped message in channel %d from user %d (not in users allowlist)",
+                getattr(message.channel, "id", None),
+                message.author.id,
+            )
+            return
+
+        # Guild allowlist — DMs have no guild and are unaffected
+        guild = getattr(message, "guild", None)
+        if config.guilds and guild is not None and guild.id not in config.guilds:
+            logger.info(
+                "Dropped message in channel %d from guild %d (not in guilds allowlist)",
+                getattr(message.channel, "id", None),
+                guild.id,
+            )
+            return
+
+        # Channel filter — a thread counts as in-list when its parent
+        # channel is. Without the parent check, auto_thread routes replies
+        # into a thread whose id is not the parent's id, and every
+        # follow-up in the thread is silently dropped (the bot answers
+        # once, then goes quiet).
+        if config.channels and not self.channel_allowed(message.channel):
+            logger.info(
+                "Dropped message in channel %d (not in channels allowlist)",
+                getattr(message.channel, "id", None),
+            )
             return
 
         if self._on_message_handler is not None:
             await self._on_message_handler(message)
+
+    def channel_allowed(self, channel: Any) -> bool:
+        """Return True if *channel* passes the channels allowlist.
+
+        A regular channel must itself be in the list. A thread passes
+        when its parent channel is in the list — the thread's own id is
+        a fresh snowflake minted when the thread was created, so
+        matching it directly would never work.
+
+        The parent lookup is duck-typed (``channel.parent``) rather than
+        an ``isinstance`` against ``discord.Thread`` so the check works
+        without importing discord.py.
+        """
+        channel_id = getattr(channel, "id", None)
+        if channel_id is not None and channel_id in self.config.channels:
+            return True
+
+        parent = getattr(channel, "parent", None)
+        parent_id = getattr(parent, "id", None)
+        return parent_id is not None and parent_id in self.config.channels
 
     def set_message_handler(self, handler: Any) -> None:
         """Set the message handler callback for incoming messages.

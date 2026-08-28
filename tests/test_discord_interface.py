@@ -79,6 +79,9 @@ def _make_mock_adapter(is_thread: bool = False) -> MagicMock:
     mock_adapter.interaction_send = AsyncMock()
     mock_adapter.interaction_defer = AsyncMock()
     mock_adapter.is_thread_channel = MagicMock(return_value=is_thread)
+    # Thread-parent-aware channel allowlist check. Default allow; tests that
+    # exercise the filter set this explicitly.
+    mock_adapter.channel_allowed = MagicMock(return_value=True)
     # Area resolution (spc-48): these tests do not exercise areas, so the
     # area-bearing channel is "none". Inert until the interface asks.
     mock_adapter.area_channel = MagicMock(return_value=(None, None))
@@ -957,6 +960,8 @@ async def test_slash_respects_channel_allowlist() -> None:
     """Slash commands enforce the same channel allowlist as the message path."""
     config = DiscordConfig(channels=[111])
     interface, mock_adapter = await _started_interface(config, _make_mock_agent())
+    # Channel 999 is not in the allowlist (and has no allowed parent).
+    mock_adapter.channel_allowed = MagicMock(return_value=False)
 
     with patch.object(interface, "_process_through_agent", new=AsyncMock()) as proc:
         await interface._handle_slash("ask", "hi", _make_mock_interaction(999))

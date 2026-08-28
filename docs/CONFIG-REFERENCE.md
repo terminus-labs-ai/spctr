@@ -282,6 +282,8 @@ The Discord interface has its own top-level config section, `discord`:
 discord:
   token: "your-bot-token"
   channels: []
+  guilds: []
+  users: []
   mention_only: false
   max_message_length: 2000
   edit_stream_interval: 1.0
@@ -293,7 +295,9 @@ discord:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `token` | str | `""` | Discord bot token (**restart required** — the gateway session is already open with it) |
-| `channels` | list[int] | `[]` | Channel IDs to monitor (empty = all) |
+| `channels` | list[int] | `[]` | Channel IDs to monitor (empty = all). A **thread** counts as in-list when its parent channel is — so `auto_thread: true` follow-ups in auto-created threads keep working |
+| `guilds` | list[int] | `[]` | Guild (server) IDs to respond in (empty = every guild the bot is in). Messages from other servers are dropped; DMs are unaffected |
+| `users` | list[int] | `[]` | User IDs to respond to (empty = every user). When set, this is the strictest filter — messages from other users are dropped in any guild or channel |
 | `mention_only` | bool | `false` | Only respond when mentioned |
 | `max_message_length` | int | `2000` | Max chars per message (Discord limit) |
 | `edit_stream_interval` | float | `1.0` | Seconds between stream edits (0 = disabled) |

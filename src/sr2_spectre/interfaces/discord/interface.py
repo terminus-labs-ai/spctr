@@ -562,8 +562,10 @@ class DiscordInterface:
 
     # Re-apply the channel allowlist the message path enforces in the
     # adapter's dispatch_message — slash commands skip that filter.
-    channels = self.config.channels
-    if channels and channel_id not in channels:
+    # channel_allowed covers threads via their parent, matching the
+    # message path (otherwise / commands in an auto_thread would be
+    # rejected even though the parent channel is allowed).
+    if self.config.channels and not self._adapter.channel_allowed(channel_obj):
       await self._adapter.interaction_send(
         interaction, "⚠ Commands aren't enabled in this channel."
       )

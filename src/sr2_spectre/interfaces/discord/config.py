@@ -34,7 +34,15 @@ class DiscordConfig(BaseModel):
         token: Discord bot token (required for a real connection; can be
                empty for tests that mock the bot client).
         channels: List of channel IDs to monitor. Empty list means all
-                  text channels the bot has access to.
+                  text channels the bot has access to. Threads inherit
+                  membership from their parent channel.
+        guilds: List of guild (server) IDs to respond in. Empty list
+                means every guild the bot is a member of. When set, a
+                message outside these guilds is dropped (DMs are
+                unaffected by this filter).
+        users: List of user IDs to respond to. Empty list means every
+               user. When set, messages from any other user are dropped
+               regardless of guild or channel.
         mention_only: If True, only respond when the bot is mentioned
                       (via @BotName or <@BotID>). If False, respond to
                       every message in configured channels.
@@ -56,7 +64,27 @@ class DiscordConfig(BaseModel):
                        parent channel for threads.
     """
     token: str = ""
-    channels: list[int] = Field(default_factory=list)
+    channels: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Channel IDs to monitor. Empty means all channels. A thread "
+            "counts as in-list when its parent channel is in the list."
+        ),
+    )
+    guilds: list[int] = Field(
+        default_factory=list,
+        description=(
+            "Guild (server) IDs to respond in. Empty means every guild. "
+            "DMs are not affected by this filter."
+        ),
+    )
+    users: list[int] = Field(
+        default_factory=list,
+        description=(
+            "User IDs to respond to. Empty means every user. When set, "
+            "messages from other users are dropped in any guild or channel."
+        ),
+    )
     mention_only: bool = False
     max_message_length: int = 2000
     edit_stream_interval: float = 1.0
