@@ -58,6 +58,18 @@ class AgentToolResult(AgentEvent):
 
 
 @dataclass
+class AgentError(AgentEvent):
+    """A bounded, actionable error that aborted the turn.
+
+    Emitted in place of an uncaught traceback when a turn fails for a known,
+    describable reason (e.g. a truncated structured tool call). The message is
+    safe to surface verbatim to a user or an automated runner.
+    """
+    type: str = field(default="error", init=False)
+    message: str = ""
+
+
+@dataclass
 class AgentDone(AgentEvent):
     """Emitted once, as the final event in every stream_message() call."""
     type: str = field(default="done", init=False)
@@ -70,5 +82,6 @@ __all__ = [
     "AgentThinkingDelta",
     "AgentToolStart",
     "AgentToolResult",
+    "AgentError",
     "AgentDone",
 ]

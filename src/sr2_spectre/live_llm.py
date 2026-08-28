@@ -22,11 +22,14 @@ import logging
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
+import json
+
 from sr2.integrations.litellm import LiteLLMCallable
 
 if TYPE_CHECKING:
     from sr2.protocols.llm import CompletionRequest, CompletionResponse, StreamEvent
 
+from sr2_spectre.action_safety import TruncatedActionError
 from sr2_spectre.config import ModelConfig
 
 logger = logging.getLogger(__name__)
@@ -91,5 +94,18 @@ class LiveLLM:
         # Bound once, up front: a retarget part-way through must not splice two
         # endpoints into a single response.
         inner = self._inner
-        async for event in inner.stream(request):
-            yield event
+        try:
+            async for event in inner.stream(request):
+                yield event
+        except json.JSONDecodeError as exc:
+            # The provider parses the accumulated tool-call argument stream
+            # with json.loads. When the response hits its configured output
+            # allowance mid-tool-call, that stream ends inside a string and
+            # the parser fails with "Unterminated string" — an opaque error
+            # that aborts the turn before any action is taken. Convert it at
+            # this boundary into a bounded, actionable capability error: the
+            # fix is to decompose the action into smaller tool calls, NOT to
+            # silently raise the token budget.
+            raise TruncatedActionError(
+                detail=f"{exc.msg} (at char {exc.pos})",
+            ) from exc

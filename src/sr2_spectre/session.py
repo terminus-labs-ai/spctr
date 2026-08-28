@@ -23,10 +23,12 @@ from sr2.orchestrator import SR2
 from sr2.pipeline.events import Event, EventPhase
 from sr2.pipeline.token_counting import CharacterTokenCounter
 
+from sr2_spectre.action_safety import MalformedActionError
 from sr2_spectre.config import SpectreConfig
 from sr2_spectre.core import RunContext, TurnResult
 from sr2_spectre.events import (
     AgentDone,
+    AgentError,
     AgentEvent,
     AgentThinkingDelta,
     AgentTextDelta,
@@ -186,6 +188,22 @@ class Session:
                 f"(original size: {len(content)} bytes, tool: {name})]"
             )
 
+        # Pre-execution structural gate. A truncated or malformed structured
+        # action must never be half-applied: reject it here with a bounded,
+        # actionable error instead of letting the registry fail mid-write.
+        # Raw string inputs (an accumulated argument stream that never made it
+        # through a parser) are validated here as the choke point.
+        if isinstance(block.input, str):
+            from sr2_spectre.action_safety import validate_structured_action
+
+            try:
+                block.input = validate_structured_action(
+                    block.input, tool_name=block.name
+                )
+            except MalformedActionError as exc:
+                content = _truncate(f"ERROR: {exc}", block.name)
+                return ToolResultBlock(tool_use_id=block.id, content=content, is_error=True)
+
         try:
             out = await self._registry.execute(block.name, block.input)
 
@@ -261,6 +279,17 @@ class Session:
                 notice = "Tool iteration limit reached; stopping."
                 text_acc.append(notice)
                 yield AgentTextDelta(text=notice)
+            except MalformedActionError as exc:
+                # A structured tool call overran its response allowance and
+                # arrived truncated/malformed. The turn cannot continue on it,
+                # but the failure is known and describable — surface it as a
+                # bounded, actionable error event instead of an uncaught JSON
+                # parser traceback. Nothing was executed: the action failed at
+                # parse time, before any repository change.
+                notice = f"ERROR: {exc}"
+                text_acc.append(notice)
+                yield AgentError(message=notice)
+                logger.warning("Turn aborted on malformed structured action: %s", exc)
 
             last_text = "".join(text_acc)
             assistant_content = [TextBlock(text=last_text)] if last_text else []
