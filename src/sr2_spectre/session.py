@@ -32,6 +32,7 @@ from sr2_spectre.events import (
     AgentTextDelta,
     AgentToolResult,
     AgentToolStart,
+    AgentUsage,
 )
 from sr2_spectre.tools.output import ToolOutput
 from sr2_spectre.tools.registry import ToolRegistry
@@ -63,6 +64,7 @@ class Session:
         self.frame_id = frame_id
         self.config = config
         self._registry = registry
+        self._token_counter = CharacterTokenCounter()
         self.history: list[Message] = []
         self._lock = asyncio.Lock()
 
@@ -117,7 +119,7 @@ class Session:
         return SR2(
             pipeline_config=self.config.pipeline,
             llm={"default": self._llm},
-            token_counter=CharacterTokenCounter(),
+            token_counter=self._token_counter,
             session_id=self.frame_id,
             tool_source=self._registry,
             tracer=self._tracer,
@@ -233,6 +235,13 @@ class Session:
             thinking_acc: list[str] = []
             total_tool_calls = 0
             tool_id_to_name: dict[str, str] = {}
+            turn_input_tokens = 0
+            turn_output_tokens = 0
+            # Local estimate of the context size at the start of this turn —
+            # available regardless of whether the backend reports usage.
+            context_tokens = sum(
+                self._token_counter.count(msg.content) for msg in prior
+            )
 
             try:
                 async for ev in self.sr2.turn(user_input=increment):
@@ -242,6 +251,13 @@ class Session:
                     elif ev.type == "thinking" and ev.text:
                         thinking_acc.append(ev.text)
                         yield AgentThinkingDelta(text=ev.text)
+                    elif ev.type == "usage" and ev.usage is not None:
+                        turn_input_tokens += ev.usage.input_tokens
+                        turn_output_tokens += ev.usage.output_tokens
+                        yield AgentUsage(
+                            input_tokens=ev.usage.input_tokens,
+                            output_tokens=ev.usage.output_tokens,
+                        )
                     elif ev.type == "tool_use_emitted" and ev.tool_uses:
                         for tu in ev.tool_uses:
                             total_tool_calls += 1
@@ -270,17 +286,26 @@ class Session:
                 "Turn complete, %d tool calls",
                 total_tool_calls,
             )
-            yield AgentDone(tool_calls_executed=total_tool_calls)
+            yield AgentDone(
+                tool_calls_executed=total_tool_calls,
+                input_tokens=turn_input_tokens,
+                output_tokens=turn_output_tokens,
+                context_tokens=context_tokens,
+            )
 
     async def handle_user_message(self, text: str) -> TurnResult:
         """Process a user message and return a TurnResult."""
         text_parts: list[str] = []
         total = 0
+        tokens = 0
         async for ev in self.stream_message(text):
             if isinstance(ev, AgentTextDelta):
                 text_parts.append(ev.text)
             elif isinstance(ev, AgentDone):
                 total = ev.tool_calls_executed
+                tokens = ev.input_tokens + ev.output_tokens
         return TurnResult(
-            text="".join(text_parts), tool_calls_executed=total
+            text="".join(text_parts),
+            tool_calls_executed=total,
+            total_tokens=tokens,
         )

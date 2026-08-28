@@ -94,3 +94,22 @@ class TestSessionMap:
         assert len(s2.history) == 1
         assert s1.history[0]["text"] == "hello channel 1"
         assert s2.history[0]["text"] == "hello channel 2"
+
+
+class TestChannelSessionTokenUsage:
+    def test_token_defaults_are_zero(self) -> None:
+        session = ChannelSession(channel_id=123, session_id="discord-123")
+        assert session.tokens_in == 0
+        assert session.tokens_out == 0
+        assert session.context_tokens == 0
+
+    def test_reset_zeroes_token_counters(self) -> None:
+        sm = SessionMap()
+        session = sm.get_or_create(123)
+        session.tokens_in = 500
+        session.tokens_out = 200
+        session.context_tokens = 900
+        sm.reset(123)
+        assert session.tokens_in == 0
+        assert session.tokens_out == 0
+        assert session.context_tokens == 0

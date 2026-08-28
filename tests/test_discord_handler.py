@@ -580,3 +580,43 @@ class TestTailForStream:
     def test_marks_truncation(self) -> None:
         out = tail_for_stream("x" * 5000, 2000)
         assert out.startswith("[…]")
+
+
+# ---------------------------------------------------------------------------
+# /status token readout (spc-82)
+# ---------------------------------------------------------------------------
+
+class TestStatusTokenReadout:
+    def test_status_shows_tokens_when_reported(self) -> None:
+        ctx = CommandContext(
+            0, "discord-0", 3, tokens_in=1200, tokens_out=350
+        )
+        response = handle_command("status", "", ctx)
+        assert response is not None
+        assert "Tokens" in response
+        assert "1,200" in response
+        assert "350" in response
+
+    def test_status_shows_context_estimate_always(self) -> None:
+        ctx = CommandContext(0, "discord-0", 3, context_tokens=4521)
+        response = handle_command("status", "", ctx)
+        assert response is not None
+        assert "Context" in response
+        assert "4,521" in response
+
+    def test_status_omits_token_lines_when_zero(self) -> None:
+        """Fresh channel (no usage, no context) shows neither line."""
+        ctx = CommandContext(0, "discord-0", 0)
+        response = handle_command("status", "", ctx)
+        assert response is not None
+        assert "Tokens" not in response
+        assert "Context" not in response
+
+    def test_status_shows_context_without_real_usage(self) -> None:
+        """Endpoint silent on usage: context estimate still renders."""
+        ctx = CommandContext(0, "discord-0", 2, context_tokens=128)
+        response = handle_command("status", "", ctx)
+        assert response is not None
+        assert "Tokens" not in response
+        assert "Context" in response
+        assert "128" in response

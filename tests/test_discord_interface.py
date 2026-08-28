@@ -1244,3 +1244,112 @@ async def test_slash_retry_with_no_history_reports_nothing() -> None:
     run.assert_not_awaited()
     sent = mock_adapter.interaction_send.call_args[0][1]
     assert "Nothing to retry" in sent
+
+
+# ---------------------------------------------------------------------------
+# Token usage accumulation + /status readout (spc-82)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_agent_done_accumulates_tokens_per_channel() -> None:
+    """AgentDone usage is accumulated per channel and visible in /status."""
+    channel_id = 42424
+    interface = DiscordInterface(DiscordConfig())
+    agent = _make_mock_agent([
+        AgentTextDelta(text="Hello"),
+        AgentDone(
+            tool_calls_executed=0,
+            input_tokens=100,
+            output_tokens=25,
+            context_tokens=320,
+        ),
+    ])
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        await interface._process_message(
+            _make_mock_message(content="say hi", channel_id=channel_id)
+        )
+
+        session = interface._session_map.get_or_create(channel_id)
+        assert session.tokens_in == 100
+        assert session.tokens_out == 25
+        assert session.context_tokens == 320
+
+        # /status renders the accumulated usage
+        await interface._process_message(
+            _make_mock_message(content="/status", channel_id=channel_id)
+        )
+        sent = mock_adapter.send_message.call_args[0][1]
+        assert "Tokens" in sent
+        assert "100" in sent
+        assert "25" in sent
+        assert "Context" in sent
+
+
+@pytest.mark.asyncio
+async def test_tokens_accumulate_across_turns_and_reset_clears() -> None:
+    """Usage accumulates across turns; /reset zeroes it."""
+    channel_id = 51515
+    interface = DiscordInterface(DiscordConfig())
+    agent = _make_mock_agent([
+        AgentTextDelta(text="ok"),
+        AgentDone(tool_calls_executed=0, input_tokens=10, output_tokens=5),
+    ])
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        await interface._process_message(
+            _make_mock_message(content="turn 1", channel_id=channel_id)
+        )
+        await interface._process_message(
+            _make_mock_message(content="turn 2", channel_id=channel_id)
+        )
+
+        session = interface._session_map.get_or_create(channel_id)
+        assert session.tokens_in == 20
+        assert session.tokens_out == 10
+
+        await interface._process_message(
+            _make_mock_message(content="/reset", channel_id=channel_id)
+        )
+        assert session.tokens_in == 0
+        assert session.tokens_out == 0
+        assert session.context_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_status_without_usage_omits_tokens_line() -> None:
+    """When the endpoint never reports usage, /status shows no Tokens line
+    (but still shows the context estimate when history exists)."""
+    channel_id = 60606
+    interface = DiscordInterface(DiscordConfig())
+    agent = _make_mock_agent([
+        AgentTextDelta(text="ok"),
+        AgentDone(tool_calls_executed=0, context_tokens=512),
+    ])
+
+    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+        mock_adapter = _make_mock_adapter()
+        MockAdapter.return_value = mock_adapter
+
+        await interface.start(agent)
+
+        await interface._process_message(
+            _make_mock_message(content="turn", channel_id=channel_id)
+        )
+        await interface._process_message(
+            _make_mock_message(content="/status", channel_id=channel_id)
+        )
+        sent = mock_adapter.send_message.call_args[0][1]
+        assert "Tokens" not in sent
+        assert "Context" in sent
+        assert "512" in sent

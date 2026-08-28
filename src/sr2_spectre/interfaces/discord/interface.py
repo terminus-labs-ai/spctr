@@ -29,7 +29,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.events import AgentTextDelta, AgentToolResult, AgentToolStart
+from sr2_spectre.events import (
+  AgentDone,
+  AgentTextDelta,
+  AgentToolResult,
+  AgentToolStart,
+)
 from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
 from sr2_spectre.interfaces.discord.config import DiscordConfig
 from sr2_spectre.interfaces.discord.config_source import (
@@ -376,6 +381,9 @@ class DiscordInterface:
       active_model=active_model,
       model_label=model_label,
       area=area,
+      tokens_in=session.tokens_in,
+      tokens_out=session.tokens_out,
+      context_tokens=session.context_tokens,
     )
 
   async def _run_agent(self, content: str, channel_id: int) -> None:
@@ -765,7 +773,14 @@ class DiscordInterface:
         elif isinstance(event, AgentToolResult):
           await self._render_tool_result(event, channel_id)
 
-        # AgentDone is handled after the loop
+        elif isinstance(event, AgentDone):
+          # Accumulate token usage per channel so /status can show it.
+          # Real usage is 0 when the endpoint never reports it; the local
+          # context estimate is always present.
+          session = self._session_map.get_or_create(channel_id)
+          session.tokens_in += event.input_tokens
+          session.tokens_out += event.output_tokens
+          session.context_tokens = event.context_tokens
 
     except Exception as exc:
       logger.error("Agent stream error: %s", exc)

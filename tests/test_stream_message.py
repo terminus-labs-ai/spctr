@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from sr2.config.models import ToolLoopLimitError
-from sr2.models import Message, TextBlock, ToolResultBlock, ToolUseBlock
+from sr2.models import Message, TextBlock, TokenUsage, ToolResultBlock, ToolUseBlock
 from sr2.protocols.llm import StreamEvent
 from sr2_spectre.agent import Agent
 from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
@@ -35,6 +35,7 @@ from sr2_spectre.events import (
     AgentTextDelta,
     AgentToolResult,
     AgentToolStart,
+    AgentUsage,
 )
 
 
@@ -1003,3 +1004,124 @@ class TestStreamMessageThinking:
 
         assert thinking_idx < tool_start_idx
         assert tool_start_idx < text_idx
+
+
+# ---------------------------------------------------------------------------
+# J. Token usage capture (spc-82)
+# ---------------------------------------------------------------------------
+
+class TestStreamMessageUsageCapture:
+    @pytest.mark.asyncio
+    async def test_usage_events_yield_agent_usage(self):
+        """StreamEvent(type='usage') events are surfaced as AgentUsage."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(type="text", text="Answer"),
+            StreamEvent(
+                type="usage",
+                usage=TokenUsage(input_tokens=100, output_tokens=25),
+            ),
+            StreamEvent(type="end"),
+        ])
+        agent = _make_agent(mock_sr2)
+
+        events = await _collect(agent.stream_message("Question"))
+
+        usages = [e for e in events if isinstance(e, AgentUsage)]
+        assert len(usages) == 1
+        assert usages[0].input_tokens == 100
+        assert usages[0].output_tokens == 25
+
+    @pytest.mark.asyncio
+    async def test_done_carries_usage_totals(self):
+        """AgentDone sums real usage across the turn."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(
+                type="usage",
+                usage=TokenUsage(input_tokens=100, output_tokens=25),
+            ),
+            StreamEvent(
+                type="tool_use_emitted",
+                tool_uses=[ToolUseBlock(id="tu1", name="search", input={"q": "x"})],
+            ),
+            StreamEvent(
+                type="tool_result_received",
+                tool_results=[ToolResultBlock(tool_use_id="tu1", content="found")],
+            ),
+            StreamEvent(
+                type="usage",
+                usage=TokenUsage(input_tokens=40, output_tokens=10),
+            ),
+            StreamEvent(type="text", text="Done"),
+            StreamEvent(type="end"),
+        ])
+        agent = _make_agent(mock_sr2)
+
+        events = await _collect(agent.stream_message("Question"))
+
+        done = events[-1]
+        assert isinstance(done, AgentDone)
+        assert done.input_tokens == 140
+        assert done.output_tokens == 35
+
+    @pytest.mark.asyncio
+    async def test_done_zero_usage_when_endpoint_silent(self):
+        """No usage events -> AgentDone token fields are 0 (unknown, not fake)."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(type="text", text="Answer"),
+            StreamEvent(type="end"),
+        ])
+        agent = _make_agent(mock_sr2)
+
+        events = await _collect(agent.stream_message("Question"))
+
+        done = events[-1]
+        assert isinstance(done, AgentDone)
+        assert done.input_tokens == 0
+        assert done.output_tokens == 0
+
+    @pytest.mark.asyncio
+    async def test_done_context_tokens_is_local_estimate(self):
+        """context_tokens is the local estimate of prior history, available
+        regardless of whether the endpoint reports usage."""
+        mock_sr2 = _mock_sr2_with_rounds(
+            [
+                StreamEvent(type="text", text="Answer"),
+                StreamEvent(type="end"),
+            ],
+            [
+                StreamEvent(type="text", text="Follow-up answer"),
+                StreamEvent(type="end"),
+            ],
+        )
+        agent = _make_agent(mock_sr2)
+
+        # First turn: no prior history -> estimate is 0.
+        events = await _collect(agent.stream_message("Question"))
+        done = events[-1]
+        assert isinstance(done, AgentDone)
+        assert done.context_tokens == 0
+
+        # Second turn: prior history includes the user + assistant messages
+        # from the first turn -> estimate is positive.
+        events = await _collect(agent.stream_message("Follow-up"))
+        done = events[-1]
+        assert isinstance(done, AgentDone)
+        assert done.context_tokens > 0
+
+    @pytest.mark.asyncio
+    async def test_handle_user_message_populates_total_tokens(self):
+        """TurnResult.total_tokens reflects real usage reported by the LLM."""
+        mock_sr2 = _mock_sr2_with_rounds([
+            StreamEvent(type="text", text="Answer"),
+            StreamEvent(
+                type="usage",
+                usage=TokenUsage(input_tokens=10, output_tokens=5),
+            ),
+            StreamEvent(type="end"),
+        ])
+        agent = _make_agent(mock_sr2)
+
+        result = await agent.handle_user_message("Question")
+
+        assert isinstance(result, TurnResult)
+        assert result.total_tokens == 15

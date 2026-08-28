@@ -28,11 +28,21 @@ class ChannelSession:
                  conversation history for this channel.
         pending_message: Discord message ID being edited for streaming
                          (None when not in an active turn).
+        tokens_in: Real input tokens reported by the LLM, cumulative
+                   since the last /reset (0 when the endpoint never
+                   reports usage).
+        tokens_out: Real output tokens reported by the LLM, cumulative
+                    since the last /reset.
+        context_tokens: Local estimate (chars // 4) of the conversation
+                        history size — always available.
     """
     channel_id: int
     session_id: str
     history: list[dict[str, Any]] = field(default_factory=list)
     pending_message_id: int | None = None
+    tokens_in: int = 0
+    tokens_out: int = 0
+    context_tokens: int = 0
 
     @staticmethod
     def session_id_for(channel_id: int) -> str:
@@ -69,6 +79,9 @@ class SessionMap:
         session = self.get_or_create(channel_id)
         session.history = []
         session.pending_message_id = None
+        session.tokens_in = 0
+        session.tokens_out = 0
+        session.context_tokens = 0
 
     def active(self) -> list[int]:
         """Return list of channel IDs with active sessions."""

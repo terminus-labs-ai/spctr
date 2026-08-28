@@ -116,6 +116,13 @@ class CommandContext:
         channel_id: Discord channel ID.
         session_id: Spectre session ID for this channel.
         message_count: Number of messages in the channel's history.
+        tokens_in: Real input tokens reported by the LLM, cumulative
+            since the last /reset (0 when the endpoint never reports
+            usage).
+        tokens_out: Real output tokens reported by the LLM, cumulative
+            since the last /reset.
+        context_tokens: Local estimate (chars // 4) of the conversation
+            history size — always available.
     """
     channel_id: int
     session_id: str
@@ -123,6 +130,9 @@ class CommandContext:
     active_model: str | None = None
     model_label: str | None = None
     area: str | None = None
+    tokens_in: int = 0
+    tokens_out: int = 0
+    context_tokens: int = 0
 
 
 # Handler signature: (rest: str, ctx: CommandContext) -> str | None
@@ -190,6 +200,12 @@ def _handle_status(rest: str, ctx: CommandContext) -> str | None:
         lines.append(f"**Endpoint:** {ctx.model_label}")
     if ctx.area is not None:
         lines.append(f"**Area:** `{ctx.area}`" if ctx.area else "**Area:** none")
+    # Real usage when the endpoint reports it; the local context estimate
+    # is always shown so /status carries a token signal either way.
+    if ctx.tokens_in > 0 or ctx.tokens_out > 0:
+        lines.append(f"**Tokens:** {ctx.tokens_in:,} in / {ctx.tokens_out:,} out")
+    if ctx.context_tokens > 0:
+        lines.append(f"**Context:** ~{ctx.context_tokens:,} tokens")
     return "\n".join(lines)
 
 

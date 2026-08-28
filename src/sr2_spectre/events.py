@@ -58,10 +58,37 @@ class AgentToolResult(AgentEvent):
 
 
 @dataclass
+class AgentUsage(AgentEvent):
+    """Token usage reported by the LLM for one streamed LLM call.
+
+    Emitted when the endpoint reports real usage (stream_options
+    include_usage). Absent when the backend does not report usage —
+    consumers should treat missing events as "unknown", not zero.
+    """
+    type: str = field(default="usage", init=False)
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+@dataclass
 class AgentDone(AgentEvent):
-    """Emitted once, as the final event in every stream_message() call."""
+    """Emitted once, as the final event in every stream_message() call.
+
+    Attributes:
+        tool_calls_executed: Number of tool calls executed this turn.
+        input_tokens: Real input tokens reported by the LLM this turn
+            (0 when the endpoint does not report usage).
+        output_tokens: Real output tokens reported by the LLM this turn
+            (0 when the endpoint does not report usage).
+        context_tokens: Local estimate (chars // 4) of the conversation
+            history size at the start of this turn — always available,
+            regardless of backend.
+    """
     type: str = field(default="done", init=False)
     tool_calls_executed: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    context_tokens: int = 0
 
 
 __all__ = [
@@ -70,5 +97,6 @@ __all__ = [
     "AgentThinkingDelta",
     "AgentToolStart",
     "AgentToolResult",
+    "AgentUsage",
     "AgentDone",
 ]
