@@ -248,7 +248,10 @@ class TestTerminalWorkspaceFloor:
 
         with patch("asyncio.create_subprocess_shell", new=AsyncMock()) as mock_shell:
             proc = MagicMock()
-            proc.communicate = AsyncMock(return_value=(b"/tmp/ws\n", b""))
+            proc.wait = AsyncMock()
+            # Reader pump loop: yield the output once, then EOF (b'').
+            proc.stdout = MagicMock(read=AsyncMock(side_effect=[b"/tmp/ws\n", b""]))
+            proc.stderr = MagicMock(read=AsyncMock(return_value=b""))
             proc.returncode = 0
             mock_shell.return_value = proc
 
