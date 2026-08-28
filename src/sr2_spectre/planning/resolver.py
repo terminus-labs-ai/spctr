@@ -28,6 +28,7 @@ from sr2.pipeline.models import ResolvedContent
 from sr2.pipeline.token_counting import CHARS_PER_TOKEN
 from sr2.pipeline.utils import PHASE_MAP, build_subscriptions
 
+from sr2_spectre.area import derive_area
 from sr2_spectre.planning.budget import LayerBudget
 from sr2_spectre.planning.frontmatter import (
     parse_file,
@@ -186,9 +187,8 @@ class PlanResolver:
         2. The run context's ``area`` key present and empty — explicitly no
            project; resolution stops here (returns None), no fallback.
         3. ``SR2_PROJECT`` env var.
-        4. Walk up from ``os.getcwd()`` looking for ``.git`` — use the
-           containing directory's name.
-        5. Fallback: use ``os.getcwd()`` basename.
+        4. Launch-directory derivation via :func:`sr2_spectre.area.derive_area`
+           (``SR2_AREA``, nearest ``CLAUDE.md``, nearest ``.git``, cwd basename).
 
         Returns the project name string, or None when the run context
         supplies an explicitly empty area (case 2 above).
@@ -208,31 +208,9 @@ class PlanResolver:
         if env_project:
             return env_project
 
-        # 4. Walk up from cwd looking for .git
-        try:
-            cwd = Path.cwd().resolve()
-        except OSError:
-            cwd = Path("/tmp")
-
-        current = cwd
-        while True:
-            git_dir = current / ".git"
-            if git_dir.is_dir() or git_dir.is_file():
-                return current.name
-            parent = current.parent
-            if parent == current:
-                # Reached filesystem root without finding .git
-                break
-            current = parent
-
-        # 5. Fallback: use cwd basename
-        logger.warning(
-            "PlanResolver: could not find .git walking up from %s — "
-            "using cwd name '%s' as project fallback.",
-            cwd,
-            cwd.name,
-        )
-        return cwd.name
+        # 4. Launch-directory derivation (SR2_AREA, nearest CLAUDE.md,
+        #    nearest .git, cwd basename fallback) — shared with the REPL.
+        return derive_area()
 
     def _resolve_knowledge_root(self) -> Path | None:
         """Resolve the knowledge_root path.

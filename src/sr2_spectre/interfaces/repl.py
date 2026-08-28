@@ -35,6 +35,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.text import Text
 
+from sr2_spectre.area import derive_area
 from sr2_spectre.core import RunContext, RunMode
 from sr2_spectre.events import (
     AgentDone,
@@ -234,10 +235,15 @@ class REPLInterface:
     async def start(self, agent: "Agent") -> None:
         """Initialize REPL state and set interactive run context."""
         self._running = True
+        # The area is fixed for the process: derive it once at launch from
+        # SR2_AREA / the launch directory so {area}-templated resolvers
+        # (vault CLAUDE.md, NOW.md) resolve for REPL sessions too.
+        area = derive_area()
         agent.set_run_context(RunContext(
             interface="repl",
             mode=RunMode.INTERACTIVE,
             source=os.getcwd(),
+            area=area,
         ))
 
     async def stop(self) -> None:

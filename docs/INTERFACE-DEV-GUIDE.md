@@ -58,9 +58,13 @@ states, and consumers are required to tell all three apart:
 | `""` | key present, empty | explicitly **no** area — inject nothing, do **not** fall through |
 | `"fractured-roots"` | key present, non-empty | use it |
 
-Most interfaces want the default. `tui`, `single_shot` and `repl` all leave
-`area` at `None`, so the `plan` resolver keeps deriving its project from
-`SR2_PROJECT` and the `cwd` `.git` walk exactly as before.
+Most interfaces want the default. `tui` and `single_shot` leave `area` at
+`None`, so the `plan` resolver keeps deriving its project from `SR2_PROJECT`
+and the launch-directory walk exactly as before. The `repl` is the default
+interface and stamps the launch-directory area at startup
+(`sr2_spectre.area.derive_area`: `SR2_AREA`, nearest `CLAUDE.md`, nearest
+`.git`, cwd basename) so `{area}`-templated resources (vault `CLAUDE.md`,
+`NOW.md`) resolve for REPL sessions too. The area is fixed for the process.
 
 Only set it if your interface genuinely knows which area a message belongs to.
 If you do, **never stamp `None` to mean "no area"** — that reads as "this
