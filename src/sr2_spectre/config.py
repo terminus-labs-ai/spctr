@@ -15,16 +15,19 @@ Public API (loaders):
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sr2.config.models import PipelineConfig
 
 from sr2_spectre.config_merge import merge_configs
+
+logger = logging.getLogger(__name__)
 from sr2_spectre.interfaces.discord.config import DiscordConfig
 from sr2_spectre.path_resolution import ConfigPathError, resolve_path
 
@@ -120,6 +123,55 @@ class AgentConfig(BaseModel):
     )
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     tool_result_max_bytes: int = Field(default=65536)
+    tool_loop_warnings: dict[int, str] = Field(
+        default_factory=dict,
+        description=(
+            "Escalating tool-loop warnings keyed by rounds remaining before "
+            "pipeline.max_tool_iterations. When the agent observes that a "
+            "configured number of rounds remain in the current turn, the "
+            "mapped message is injected verbatim as a system-reminder block "
+            "onto the tool-result feedback fed to the next iteration, giving "
+            "the model runway to wrap up before the hard limit. Each key "
+            "fires at most once per turn. Empty or absent map = feature off "
+            "(back-compat default)."
+        ),
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_tool_loop_warning_keys(cls, data: Any) -> Any:
+        """Coerce tool_loop_warnings keys to int; drop unusable keys.
+
+        YAML gives integer keys naturally, but a hand-typed string key
+        (``"5"``) should behave identically. A key that does not parse to an
+        int >= 1 can never match a rounds-remaining value, so it is dropped
+        with a warning rather than rejected — a misconfigured warning must
+        not prevent the agent from starting.
+        """
+        if not isinstance(data, dict):
+            return data
+        warnings = data.get("tool_loop_warnings")
+        if not warnings or not isinstance(warnings, dict):
+            return data
+        coerced: dict[int, str] = {}
+        for key, value in warnings.items():
+            try:
+                int_key = int(key)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Ignoring tool_loop_warnings key %r — must be an integer "
+                    "rounds-remaining value", key,
+                )
+                continue
+            if int_key < 1:
+                logger.warning(
+                    "Ignoring tool_loop_warnings key %r — rounds-remaining "
+                    "is always >= 1 when a key could match", key,
+                )
+                continue
+            coerced[int_key] = value
+        data["tool_loop_warnings"] = coerced
+        return data
 
 
 class SpectreConfig(BaseModel):

@@ -38,6 +38,10 @@ from sr2_spectre.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
+# Marker so injected loop warnings read as a system reminder (not model
+# output) in the tool-result feedback the model sees on the next iteration.
+_LOOP_WARNING_MARKER = "[system-reminder: tool-loop limit approaching]"
+
 
 class Session:
     """Per-frame conversation state.
@@ -79,6 +83,16 @@ class Session:
         # the lock, so an in-flight reply never has the SR2 swapped underneath
         # it (its tool executor publishes onto sr2.bus while it runs).
         self._sr2_stale = False
+
+        # Per-turn tool-loop warning state (obsidian-6qb3). Reset at the top
+        # of every stream_message() turn, under _lock:
+        #   _turn_tool_rounds — tool rounds completed so far this turn
+        #                       (each round consumes one of
+        #                       pipeline.max_tool_iterations)
+        #   _loop_warnings_fired — configured thresholds already injected
+        #                       this turn (each fires at most once)
+        self._turn_tool_rounds = 0
+        self._loop_warnings_fired: set[int] = set()
 
         # Run context — set by the Interface at start(); None until then.
         self._run_context: RunContext | None = None
@@ -219,10 +233,53 @@ class Session:
             content = _truncate(f"ERROR: {exc}", block.name)
             return ToolResultBlock(tool_use_id=block.id, content=content, is_error=True)
 
+    def _loop_warning_for(self) -> str | None:
+        """Return the loop-warning text to attach to the current tool round.
+
+        Called after a tool round completes, so at most one
+        ``agent.tool_loop_warnings`` threshold fires per completed round.
+        Returns None when the map is absent/empty (feature off), when the
+        rounds-remaining value matches no configured key, or when that key
+        already fired this turn.
+        """
+        warnings = self.config.agent.tool_loop_warnings
+        if not warnings:
+            return None
+        remaining = self.config.pipeline.max_tool_iterations - self._turn_tool_rounds
+        message = warnings.get(remaining)
+        if message is None or remaining in self._loop_warnings_fired:
+            return None
+        self._loop_warnings_fired.add(remaining)
+        logger.info(
+            "Frame '%s': tool-loop warning fired — %d round(s) remaining",
+            self.frame_id,
+            remaining,
+        )
+        return f"{_LOOP_WARNING_MARKER} {message}"
+
+    @staticmethod
+    def _attach_loop_warning(block: ToolResultBlock, warning: str) -> None:
+        """Prepend the warning text to a tool-result block's content.
+
+        Content may be a str or a list of TextBlocks; either form is
+        handled. Blocks are mutated in place because SR2 reuses the same
+        ToolResultBlock objects it yields on ``tool_result_received`` in the
+        next iteration's CompletionRequest — the mutation is what carries
+        the warning into the model's context.
+        """
+        prefix = warning + "\n"
+        if isinstance(block.content, str):
+            block.content = prefix + block.content
+        else:
+            block.content = [TextBlock(text=warning), *block.content]
+
     async def stream_message(self, text: str) -> AsyncIterator[AgentEvent]:
         """Stream agent events for a user message, serialized by _lock."""
         async with self._lock:
             self._refresh_sr2_if_stale()
+            # Reset per-turn loop-warning state (obsidian-6qb3).
+            self._turn_tool_rounds = 0
+            self._loop_warnings_fired = set()
             self.history.append(Message(role="user", content=[TextBlock(text=text)]))
 
             prior = self.history[:-1]
@@ -250,6 +307,7 @@ class Session:
                                 tool_id=tu.id, name=tu.name, input=tu.input
                             )
                     elif ev.type == "tool_result_received" and ev.tool_results:
+                        self._turn_tool_rounds += 1
                         for tr in ev.tool_results:
                             yield AgentToolResult(
                                 tool_id=tr.tool_use_id,
@@ -257,6 +315,18 @@ class Session:
                                 content=tr.content,
                                 is_error=getattr(tr, "is_error", False),
                             )
+                        # Obsidian-6qb3: after a tool round completes, attach
+                        # a configured loop warning (if any) to this round's
+                        # tool-result blocks. SR2 reuses these exact objects
+                        # in the next iteration's request, so the model sees
+                        # the warning on its next round. The user-facing
+                        # AgentToolResult above already carried the original
+                        # content (yielded before mutation) and spectre's
+                        # history is untouched.
+                        warning = self._loop_warning_for()
+                        if warning:
+                            for tr in ev.tool_results:
+                                self._attach_loop_warning(tr, warning)
             except ToolLoopLimitError:
                 notice = "Tool iteration limit reached; stopping."
                 text_acc.append(notice)

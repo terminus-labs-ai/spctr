@@ -7,6 +7,18 @@
 agent:
   name: my-agent
 
+  # Escalating tool-loop warnings (optional — omit or leave empty to disable).
+  # Keys are rounds-remaining before pipeline.max_tool_iterations (fixed
+  # thresholds, not proportional). When a round completes and the remaining
+  # count equals a key, that message is injected verbatim as a system
+  # reminder onto the tool-result feedback fed to the next iteration, so the
+  # model can wrap up BEFORE the hard limit (see max_tool_iterations below).
+  # Each key fires at most once per turn.
+  # tool_loop_warnings:
+  #   5: "you have 5 rounds remaining, prepare to wrap up"
+  #   2: "wrap up and return now, you only have 2 rounds remaining"
+  #   1: "you will fail if you try one more round"
+
   # Built-in tools to register. Each tool is a Python class loaded by class_path.
   # Remove tools you don't want, or add custom ones.
   tools:
