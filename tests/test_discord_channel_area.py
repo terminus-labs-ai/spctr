@@ -358,6 +358,88 @@ class TestStampedArea:
 
 
 # ---------------------------------------------------------------------------
+# Stamping order — the stamp runs after should_respond and after the
+# message's own _apply_agent_config. (spc-81: spc-48's design decision was
+# only held by reading the source; a premature stamp passed all 53 area tests.)
+# ---------------------------------------------------------------------------
+
+class TestStampOrdering:
+    async def test_no_mention_failing_should_respond_never_stamps(self) -> None:
+        """mention_only on, no mention: the message is dropped before
+        _stamp_area runs, so the agent's run context is left untouched."""
+        adapter = _make_mock_adapter({PARENT_ID: (PARENT_ID, FRACTURED)})
+        interface, agent = await _started(
+            adapter, DiscordConfig(mention_only=True)
+        )
+
+        # start() set the base context (area=None) once; a premature stamp
+        # before should_respond would add a second call with the area.
+        calls_before = list(agent.set_run_context.call_args_list)
+
+        await interface._process_message(_message())
+
+        assert agent.set_run_context.call_args_list == calls_before
+        assert calls_before[-1].args[0].area is None
+
+    async def test_stamp_reads_this_messages_reloaded_config(self) -> None:
+        """_stamp_area must use the channel_areas map in force after this
+        message's _apply_agent_config — the fresh load, not a stale map.
+        The reloaded config also reaches the agent (apply_config) in the
+        same message pass."""
+        from sr2_spectre.config import (
+            AgentConfig,
+            ModelConfig,
+            SpectreConfig,
+        )
+        from sr2_spectre.config_source import SpectreConfigSource
+        from sr2_spectre.interfaces.discord.config_source import DiscordConfigView
+
+        def _make_spectre_config(channel_areas: dict[str, str]) -> SpectreConfig:
+            return SpectreConfig(
+                agent=AgentConfig(name="test", tools=[], mcp_servers=[]),
+                models={
+                    "default": ModelConfig(model="test-model", params={})
+                },
+                pipeline={
+                    "layers": [
+                        {
+                            "name": "system",
+                            "target": "system",
+                            "resolvers": [
+                                {"type": "static", "config": {"text": "hi"}}
+                            ],
+                        }
+                    ]
+                },
+                discord=DiscordConfig(
+                    token="t", channel_areas=channel_areas
+                ),
+            )
+
+        view = DiscordConfigView(
+            SpectreConfigSource(
+                loader=lambda: _make_spectre_config({str(PARENT_ID): "fresh"}),
+                initial=_make_spectre_config({}),
+            )
+        )
+        adapter = _make_mock_adapter({PARENT_ID: (PARENT_ID, FRACTURED)})
+        interface, agent = await _started(adapter, config_source=view)
+
+        # The mock adapter skips dispatch_message, so trigger the reload
+        # the adapter performs when this message arrives.
+        view.reload()
+
+        await interface._process_message(_message())
+
+        # The stamp used the fresh map (the one this message's
+        # _apply_agent_config loaded), not the stale initial config.
+        assert agent.contexts_at_run[0].area == "fresh"
+        # Same load was pushed to the agent in the same pass.
+        applied = agent.apply_config.call_args.args[0]
+        assert applied.discord.channel_areas == {str(PARENT_ID): "fresh"}
+
+
+# ---------------------------------------------------------------------------
 # AC 23 — observability
 # ---------------------------------------------------------------------------
 
