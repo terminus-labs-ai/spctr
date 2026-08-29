@@ -58,9 +58,17 @@ states, and consumers are required to tell all three apart:
 | `""` | key present, empty | explicitly **no** area — inject nothing, do **not** fall through |
 | `"fractured-roots"` | key present, non-empty | use it |
 
-Most interfaces want the default. `tui`, `single_shot` and `repl` all leave
-`area` at `None`, so the `plan` resolver keeps deriving its project from
+Most interfaces want the default. `tui` and `single_shot` leave `area` at
+`None`, so the `plan` resolver keeps deriving its project from
 `SR2_PROJECT` and the `cwd` `.git` walk exactly as before.
+
+The REPL is the exception: it stamps `area` once in `start()` from the
+**basename of the exact directory the process starts in** (cwd-basename
+semantics). There is no `CLAUDE.md` lookup, no `.git` walk, and no ancestor
+discovery — a REPL started in `/data/obsidian/projects/harbinger` is the
+`harbinger` area even though `/data/obsidian` contains `CLAUDE.md` and a git
+root, and one started in `~/git/sr2-spectre/src` is `src`. A non-empty
+`SR2_AREA` environment variable is the only override.
 
 Only set it if your interface genuinely knows which area a message belongs to.
 If you do, **never stamp `None` to mean "no area"** — that reads as "this
