@@ -83,13 +83,13 @@ class TestResolveArea:
     @pytest.mark.parametrize(
         "channel_id,channel_name,channel_areas,expected",
         [
-            (PARENT_ID, "Fractured-Roots", {}, FRACTURED),
-            (PARENT_ID, FRACTURED, {"555": "grindsourced"}, "grindsourced"),
-            (PARENT_ID, FRACTURED, {"111": "grindsourced"}, FRACTURED),
-            (PARENT_ID, FRACTURED, {"555": ""}, None),
-            (None, None, {}, None),
-            (None, None, {"555": "grindsourced"}, None),
-            (PARENT_ID, "---", {}, None),
+            (PARENT_ID, "Fractured-Roots", {}, (FRACTURED, "derived")),
+            (PARENT_ID, FRACTURED, {"555": "grindsourced"}, ("grindsourced", "override")),
+            (PARENT_ID, FRACTURED, {"111": "grindsourced"}, (FRACTURED, "derived")),
+            (PARENT_ID, FRACTURED, {"555": ""}, (None, "override")),
+            (None, None, {}, (None, "derived")),
+            (None, None, {"555": "grindsourced"}, (None, "derived")),
+            (PARENT_ID, "---", {}, (None, "derived")),
         ],
         ids=[
             "derived-name",
@@ -106,9 +106,15 @@ class TestResolveArea:
         channel_id: int | None,
         channel_name: str | None,
         channel_areas: dict[str, str],
-        expected: str | None,
+        expected: tuple[str | None, str | None],
     ) -> None:
-        """No area is None — never "" (the interface owns that distinction)."""
+        """No area is None — never "" (the interface owns that distinction).
+
+        Provenance names the rule that produced the area so the interface
+        can log it without re-deriving the lookup. An empty override still
+        reports "override": the map was consulted and won, it just mapped
+        to no area.
+        """
         from sr2_spectre.interfaces.discord.handler import resolve_area
 
         assert resolve_area(channel_id, channel_name, channel_areas) == expected
