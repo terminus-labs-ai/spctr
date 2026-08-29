@@ -267,7 +267,13 @@ class DiscordInterface:
     )
 
     if resolved is None:
-      logger.info("area=none (channel=%s)", area_channel_id)
+      if is_override:
+        logger.info(
+          "area=none (channel_areas override, channel=%s)",
+          area_channel_id,
+        )
+      else:
+        logger.info("area=none (channel=%s)", area_channel_id)
     elif is_override:
       logger.info(
         "area=%s (channel_areas override, channel=%s)",

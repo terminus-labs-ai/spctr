@@ -412,3 +412,19 @@ class TestAreaLogging:
         lines = _area_lines(caplog)
         assert len(lines) == 1
         assert "none" in lines[0].lower()
+
+    async def test_line_reports_an_empty_channel_areas_override_as_derivation(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        adapter = _make_mock_adapter({PARENT_ID: (PARENT_ID, FRACTURED)})
+        interface, _agent = await _started(
+            adapter, DiscordConfig(channel_areas={str(PARENT_ID): ""})
+        )
+
+        with caplog.at_level(logging.INFO):
+            await interface._process_message(_message())
+
+        lines = _area_lines(caplog)
+        assert len(lines) == 1
+        assert "none" in lines[0].lower()
+        assert "channel_areas" in lines[0]
