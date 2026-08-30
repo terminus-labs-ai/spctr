@@ -29,7 +29,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sr2_spectre.core import RunMode
+from sr2_spectre.core import RunContext, RunMode
 from sr2_spectre.events import AgentDone, AgentTextDelta
 from sr2_spectre.interfaces.discord.config import DiscordConfig
 from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
@@ -191,10 +191,17 @@ def _make_recording_agent() -> MagicMock:
     agent = MagicMock()
     agent.history = []
     agent.session_id = "discord-test"
+    agent.run_context = None
     state: dict[str, Any] = {"ctx": None}
     seen: list[Any] = []
 
-    agent.set_run_context = MagicMock(side_effect=lambda ctx: state.update(ctx=ctx))
+    def _set_ctx(ctx: Any) -> None:
+        # Model the real Agent: run_context reflects the last set_run_context,
+        # so _restore_history can read it back across the session rebuild.
+        state["ctx"] = ctx
+        agent.run_context = ctx
+
+    agent.set_run_context = MagicMock(side_effect=_set_ctx)
 
     async def _stream(_text: str) -> Any:
         seen.append(state["ctx"])
@@ -412,3 +419,125 @@ class TestAreaLogging:
         lines = _area_lines(caplog)
         assert len(lines) == 1
         assert "none" in lines[0].lower()
+
+
+# ---------------------------------------------------------------------------
+# Regression: the run context must survive the per-channel session rebuild.
+#
+# _stamp_area sets the run context on the agent's *current* session, but
+# _process_through_agent then calls _restore_history, which does
+# ``agent.session_id = <channel session>`` and rebuilds a fresh Session with
+# run_context=None (runtime.new_session). Before the fix the area was stamped
+# and then discarded microseconds later, so the turn ran with no area and both
+# PlanResolver and the area-doc markdown_file resolver saw nothing — the exact
+# failure slice 3 surfaced live in #fractured-roots. The mocked-agent tests
+# above never exercised the real session swap, so they missed it. These use a
+# real Agent (SR2 stubbed) so the rebuild actually happens.
+# ---------------------------------------------------------------------------
+
+
+def _real_config():
+    from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
+
+    return SpectreConfig(
+        agent=AgentConfig(name="test"),
+        models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
+        pipeline={
+            "layers": [
+                {
+                    "name": "system",
+                    "target": "system",
+                    "resolvers": [{"type": "static", "config": {"text": "hi"}}],
+                },
+                {
+                    "name": "conversation",
+                    "target": "messages",
+                    "resolvers": [{"type": "session"}, {"type": "input"}],
+                },
+            ],
+        },
+    )
+
+
+def _channel_session(session_id: str = "discord-parent-555") -> MagicMock:
+    cs = MagicMock()
+    cs.session_id = session_id
+    cs.history = []
+    return cs
+
+
+class TestRunContextSurvivesSessionRebuild:
+    def test_restore_history_preserves_the_stamped_area(self) -> None:
+        from sr2_spectre.agent import Agent
+
+        with patch("sr2_spectre.session.SR2") as MockSR2:
+            MockSR2.return_value = MagicMock()
+            agent = Agent(config=_real_config())
+            agent.set_run_context(
+                RunContext(
+                    interface="discord",
+                    mode=RunMode.INTERACTIVE,
+                    source=None,
+                    area=FRACTURED,
+                )
+            )
+            interface = DiscordInterface(config=DiscordConfig())
+            interface._agent = agent
+
+            interface._restore_history(_channel_session())
+
+            # agent.run_context reads the post-swap session — the one that
+            # actually serves the turn.
+            assert agent.run_context is not None
+            assert agent.run_context.area == FRACTURED
+            # And the provider resolvers on the rebuilt session receive reflects
+            # it (MockSR2.call_args is the most recent = post-swap construction).
+            provider = MockSR2.call_args.kwargs["run_context_provider"]
+            assert provider() is not None
+            assert provider()["area"] == FRACTURED
+
+    def test_restore_history_preserves_explicit_no_area(self) -> None:
+        """An explicit empty-string area (spec's 'no area') must also survive the
+        rebuild rather than degrading to None, which would let PlanResolver fall
+        through to SR2_PROJECT/cwd — the silent-substitution bug this feature
+        removes (FR 10)."""
+        from sr2_spectre.agent import Agent
+
+        with patch("sr2_spectre.session.SR2") as MockSR2:
+            MockSR2.return_value = MagicMock()
+            agent = Agent(config=_real_config())
+            agent.set_run_context(
+                RunContext(
+                    interface="discord",
+                    mode=RunMode.INTERACTIVE,
+                    source=None,
+                    area="",
+                )
+            )
+            interface = DiscordInterface(config=DiscordConfig())
+            interface._agent = agent
+
+            interface._restore_history(_channel_session())
+
+            assert agent.run_context is not None
+            assert agent.run_context.area == ""
+            provider = MockSR2.call_args.kwargs["run_context_provider"]
+            assert provider()["area"] == ""
+
+    def test_restore_history_without_a_stamped_context_stays_none(self) -> None:
+        """No stamp (e.g. an interface that never set one) must not fabricate a
+        context: the rebuilt session keeps run_context None and the provider
+        emits no area key."""
+        from sr2_spectre.agent import Agent
+
+        with patch("sr2_spectre.session.SR2") as MockSR2:
+            MockSR2.return_value = MagicMock()
+            agent = Agent(config=_real_config())
+            interface = DiscordInterface(config=DiscordConfig())
+            interface._agent = agent
+
+            interface._restore_history(_channel_session())
+
+            assert agent.run_context is None
+            provider = MockSR2.call_args.kwargs["run_context_provider"]
+            assert provider() is None

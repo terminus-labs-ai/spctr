@@ -1013,7 +1013,17 @@ class DiscordInterface:
     # assign to it. Setting session_id rebuilds a fresh Session (empty
     # history) under the shared Runtime, which both resets history and
     # points the agent at this channel's frame.
+    #
+    # That rebuild constructs a Session with run_context=None
+    # (runtime.new_session), which would drop the area _stamp_area set for
+    # this message before the turn runs — leaving every area-aware resolver
+    # (PlanResolver, the area-doc markdown_file) with no area (spc-48). The
+    # stamp happens on the pre-swap session, so capture it here and re-apply
+    # it to the rebuilt session that actually serves the turn.
+    preserved_run_context = self._agent.run_context
     self._agent.session_id = session.session_id
+    if preserved_run_context is not None:
+      self._agent.set_run_context(preserved_run_context)
 
     for entry in session.history:
       role = entry.get("role", "user")
