@@ -141,22 +141,63 @@ class DiscordBotAdapter:
         is where the config is re-read: the filters below, and the handler
         downstream, run against the config this message just loaded.
         """
-        config = self._config_source.reload()
+        self._config_source.reload()
 
         # Skip bot's own messages
         if self._bot is not None and message.author == self._bot.user:
             return
 
-        # Skip DMs if channels are configured (server-only mode)
-        if config.channels and not hasattr(message, "channel"):
-            return
-
-        # Channel filter
-        if config.channels and message.channel.id not in config.channels:
+        if not self.access_allowed(message):
             return
 
         if self._on_message_handler is not None:
             await self._on_message_handler(message)
+
+    def access_allowed(self, event: Any) -> bool:
+        """Return whether an inbound Discord event passes all access filters."""
+        user_id = getattr(getattr(event, "author", None), "id", None)
+        if user_id is None:
+            user_id = getattr(getattr(event, "user", None), "id", None)
+        guild_id = getattr(getattr(event, "guild", None), "id", None)
+        if guild_id is None:
+            guild_id = getattr(event, "guild_id", None)
+        channel = getattr(event, "channel", None)
+        channel_id = getattr(channel, "id", None)
+        if channel_id is None:
+            channel_id = getattr(event, "channel_id", None)
+        parent_id = getattr(getattr(channel, "parent", None), "id", None)
+
+        config = self.config
+        if config.users and (user_id is None or user_id not in config.users):
+            self._log_access_denied("users", user_id, guild_id, channel_id, parent_id)
+            return False
+        if config.guilds and guild_id is not None and guild_id not in config.guilds:
+            self._log_access_denied("guilds", user_id, guild_id, channel_id, parent_id)
+            return False
+        if config.channels and (
+            (channel_id is None or channel_id not in config.channels)
+            and (parent_id is None or parent_id not in config.channels)
+        ):
+            self._log_access_denied("channels", user_id, guild_id, channel_id, parent_id)
+            return False
+        return True
+
+    @staticmethod
+    def _log_access_denied(
+        failed_filter: str,
+        user_id: int | None,
+        guild_id: int | None,
+        channel_id: int | None,
+        parent_id: int | None,
+    ) -> None:
+        logger.info(
+            "Discord access denied: filter=%s user=%s guild=%s channel=%s parent=%s",
+            failed_filter,
+            user_id,
+            guild_id,
+            channel_id,
+            parent_id,
+        )
 
     def set_message_handler(self, handler: Any) -> None:
         """Set the message handler callback for incoming messages.
@@ -204,6 +245,7 @@ class DiscordBotAdapter:
             if self._slash_handler is None:
                 logger.warning("Slash command /%s fired with no handler set", name)
                 return
+            self._config_source.reload()
             await self._slash_handler(name, text, interaction)
 
         @tree.command(name="ask", description="Send a message to the agent")

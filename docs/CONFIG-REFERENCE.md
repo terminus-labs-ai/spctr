@@ -282,6 +282,8 @@ The Discord interface has its own top-level config section, `discord`:
 discord:
   token: "your-bot-token"
   channels: []
+  guilds: []
+  users: []
   mention_only: false
   max_message_length: 2000
   edit_stream_interval: 1.0
@@ -293,13 +295,21 @@ discord:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `token` | str | `""` | Discord bot token (**restart required** — the gateway session is already open with it) |
-| `channels` | list[int] | `[]` | Channel IDs to monitor (empty = all) |
+| `channels` | list[int] | `[]` | Channel IDs to monitor (empty = all); a listed parent admits its threads |
+| `guilds` | list[int] | `[]` | Guild IDs to monitor (empty = all; direct messages are exempt) |
+| `users` | list[int] | `[]` | User IDs to monitor (empty = all) |
 | `mention_only` | bool | `false` | Only respond when mentioned |
 | `max_message_length` | int | `2000` | Max chars per message (Discord limit) |
 | `edit_stream_interval` | float | `1.0` | Seconds between stream edits (0 = disabled) |
 | `tool_embed_enabled` | bool | `true` | Show tool execution as embeds |
 | `auto_thread` | bool | `false` | Start a thread for each new conversation |
 | `channel_areas` | dict[str, str] | `{}` | Channel ID (as a **string**) to area name. Overrides the name derived from the channel. `""` means "this channel has no area". Keyed on the **parent** channel for threads |
+
+`users`, `guilds`, and `channels` are conjunctive access filters for both
+inbound messages and native slash commands. An empty filter is unrestricted.
+When channel filtering is enabled, either a channel's own ID or its parent
+channel ID must be listed. A configured guild filter does not block direct
+messages, but configured user and channel filters still apply there.
 
 ### Area resolution
 
@@ -361,8 +371,9 @@ and the `channel_areas` override are the mitigations.
 
 ### Config reload
 
-The Discord bot re-reads the **whole** config on every inbound message — not
-just this section. `token` is the only field here that needs a restart. See
+The Discord bot re-reads the **whole** config on every inbound message or
+native slash interaction — not just this section. `token` is the only field
+here that needs a restart. See
 [Live reload](#live-reload) for what applies immediately and what does not.
 
 ---
@@ -370,7 +381,8 @@ just this section. `token` is the only field here that needs a restart. See
 ## Live reload
 
 A long-running interface re-reads the **whole resolved config on every inbound
-message**, so most edits apply to the next message with no process restart.
+message or native slash interaction**, so most edits apply to the next event
+with no process restart.
 This is on for the Discord interface. Short-lived interfaces (`single_shot`,
 `tui`) resolve their config once at startup and never reload.
 

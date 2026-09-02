@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sr2_spectre.events import AgentDone, AgentTextDelta, AgentToolResult, AgentToolStart
+from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
 from sr2_spectre.interfaces.discord.config import DiscordConfig
 from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
 from sr2_spectre.interfaces.discord.interface import DiscordInterface
@@ -78,6 +79,7 @@ def _make_mock_adapter(is_thread: bool = False) -> MagicMock:
     mock_adapter.set_slash_handler = MagicMock()
     mock_adapter.interaction_send = AsyncMock()
     mock_adapter.interaction_defer = AsyncMock()
+    mock_adapter.access_allowed = MagicMock(return_value=True)
     mock_adapter.is_thread_channel = MagicMock(return_value=is_thread)
     # Area resolution (spc-48): these tests do not exercise areas, so the
     # area-bearing channel is "none". Inert until the interface asks.
@@ -957,13 +959,78 @@ async def test_slash_respects_channel_allowlist() -> None:
     """Slash commands enforce the same channel allowlist as the message path."""
     config = DiscordConfig(channels=[111])
     interface, mock_adapter = await _started_interface(config, _make_mock_agent())
+    mock_adapter.access_allowed.return_value = False
 
     with patch.object(interface, "_process_through_agent", new=AsyncMock()) as proc:
         await interface._handle_slash("ask", "hi", _make_mock_interaction(999))
 
     proc.assert_not_awaited()
     sent = mock_adapter.interaction_send.call_args[0][1]
-    assert "aren't enabled" in sent
+    assert "user, server, or channel" in sent
+
+
+@pytest.mark.asyncio
+async def test_denied_slash_skips_agent_config_area_and_execution() -> None:
+    """The shared gate must run before all slash-command work."""
+    interface, mock_adapter = await _started_interface(DiscordConfig(), _make_mock_agent())
+    mock_adapter.access_allowed.return_value = False
+
+    with patch.object(interface, "_apply_agent_config") as apply, patch.object(
+        interface, "_stamp_area"
+    ) as stamp, patch.object(
+        interface, "_process_through_agent", new=AsyncMock()
+    ) as process:
+        await interface._handle_slash("ask", "hi", _make_mock_interaction())
+
+    apply.assert_not_called()
+    stamp.assert_not_called()
+    process.assert_not_awaited()
+    mock_adapter.interaction_send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_allowed_slash_applies_config_and_executes() -> None:
+    interface, mock_adapter = await _started_interface(DiscordConfig(), _make_mock_agent())
+
+    with patch.object(interface, "_apply_agent_config") as apply, patch.object(
+        interface, "_process_through_agent", new=AsyncMock()
+    ) as process:
+        await interface._handle_slash("ask", "hi", _make_mock_interaction(73))
+
+    apply.assert_called_once()
+    process.assert_awaited_once_with("hi", 73)
+
+
+@pytest.mark.asyncio
+async def test_native_slash_uses_real_shared_parent_channel_gate() -> None:
+    """A listed parent admits a thread, while another parent remains denied."""
+    config = DiscordConfig(channels=[111])
+    interface = DiscordInterface(config)
+    interface._agent = _make_mock_agent()
+    adapter = DiscordBotAdapter(config)
+    adapter.interaction_send = AsyncMock()
+    interface._adapter = adapter
+    allowed_thread = MagicMock()
+    allowed_thread.user.id = 1
+    allowed_thread.guild_id = 2
+    allowed_thread.channel_id = 999
+    allowed_thread.channel.id = 999
+    allowed_thread.channel.parent.id = 111
+    denied_thread = MagicMock()
+    denied_thread.user.id = 1
+    denied_thread.guild_id = 2
+    denied_thread.channel_id = 998
+    denied_thread.channel.id = 998
+    denied_thread.channel.parent.id = 222
+
+    with patch.object(interface, "_stamp_area"), patch.object(
+        interface, "_process_through_agent", new=AsyncMock()
+    ) as process:
+        await interface._handle_slash("ask", "allowed", allowed_thread)
+        await interface._handle_slash("ask", "denied", denied_thread)
+
+    process.assert_awaited_once_with("allowed", 999)
+    assert adapter.interaction_send.await_count == 2
 
 
 

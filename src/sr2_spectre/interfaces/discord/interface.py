@@ -551,6 +551,13 @@ class DiscordInterface:
     if self._adapter is None or self._agent is None:
       return
 
+    if not self._adapter.access_allowed(interaction):
+      await self._adapter.interaction_send(
+        interaction,
+        "⚠ Commands aren't enabled for this user, server, or channel.",
+      )
+      return
+
     # The adapter reloaded config when the interaction arrived; push the
     # non-Discord half into the agent, mirroring the message path.
     self._apply_agent_config()
@@ -562,15 +569,6 @@ class DiscordInterface:
     if channel_id is None:
       await self._adapter.interaction_send(
         interaction, "⚠ Could not resolve this channel."
-      )
-      return
-
-    # Re-apply the channel allowlist the message path enforces in the
-    # adapter's dispatch_message — slash commands skip that filter.
-    channels = self.config.channels
-    if channels and channel_id not in channels:
-      await self._adapter.interaction_send(
-        interaction, "⚠ Commands aren't enabled in this channel."
       )
       return
 

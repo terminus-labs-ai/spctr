@@ -279,6 +279,53 @@ async def test_slash_callback_delegates_to_the_slash_handler() -> None:
         await adapter.stop()
 
 
+async def test_slash_callback_reloads_config_before_invoking_handler() -> None:
+    """Native interactions must see the config loaded for that interaction."""
+    adapter = DiscordBotAdapter(
+        DiscordConfigSource(
+            lambda: DiscordConfig(token="t", users=[42]),
+            DiscordConfig(token="t", users=[]),
+        )
+    )
+    seen: list[list[int]] = []
+
+    async def _handler(_name: str, _text: str, _interaction: object) -> None:
+        seen.append(adapter.config.users)
+
+    adapter.set_slash_handler(_handler)
+    try:
+        await adapter.start()
+        reset = next(c for c in adapter._tree.get_commands() if c.name == "reset")
+        await reset.callback(object())
+        assert seen == [[42]]
+    finally:
+        await adapter.stop()
+
+
+async def test_slash_reload_changes_access_for_the_current_interaction() -> None:
+    """A changed allowlist applies before the native slash handler runs."""
+    adapter = DiscordBotAdapter(
+        DiscordConfigSource(
+            lambda: DiscordConfig(token="t", users=[9]),
+            DiscordConfig(token="t", users=[7]),
+        )
+    )
+    allowed: list[bool] = []
+
+    async def _handler(_name: str, _text: str, interaction: object) -> None:
+        allowed.append(adapter.access_allowed(interaction))
+
+    adapter.set_slash_handler(_handler)
+    interaction = SimpleNamespace(user=SimpleNamespace(id=7), guild_id=1, channel_id=2)
+    try:
+        await adapter.start()
+        reset = next(c for c in adapter._tree.get_commands() if c.name == "reset")
+        await reset.callback(interaction)
+        assert allowed == [False]
+    finally:
+        await adapter.stop()
+
+
 async def test_slash_command_with_no_handler_is_a_noop() -> None:
     """A command firing before the handler is wired must not raise."""
     adapter = _adapter()

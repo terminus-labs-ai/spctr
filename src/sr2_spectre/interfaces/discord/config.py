@@ -35,6 +35,9 @@ class DiscordConfig(BaseModel):
                empty for tests that mock the bot client).
         channels: List of channel IDs to monitor. Empty list means all
                   text channels the bot has access to.
+        guilds: List of guild IDs to monitor. Empty list means all guilds;
+                direct messages are exempt from this filter.
+        users: List of user IDs to monitor. Empty list means all users.
         mention_only: If True, only respond when the bot is mentioned
                       (via @BotName or <@BotID>). If False, respond to
                       every message in configured channels.
@@ -57,6 +60,8 @@ class DiscordConfig(BaseModel):
     """
     token: str = ""
     channels: list[int] = Field(default_factory=list)
+    guilds: list[int] = Field(default_factory=list)
+    users: list[int] = Field(default_factory=list)
     mention_only: bool = False
     max_message_length: int = 2000
     edit_stream_interval: float = 1.0
