@@ -56,8 +56,12 @@ def load_skill_from_path(
     version: str = "0.1.0",
     description: str = "",
     tags: list[str] | tuple[str, ...] | None = None,
+    env: dict[str, str] | None = None,
 ) -> Skill:
     """Load a skill's content from a file on disk.
+
+    Paths support ``~`` expansion and ``${VAR}`` interpolation. Plain relative
+    paths remain relative to the process working directory.
 
     Args:
         name: Skill identifier.
@@ -65,14 +69,21 @@ def load_skill_from_path(
         version: Skill version.
         description: Override description (if empty, derived from filename).
         tags: Optional tags.
+        env: Environment variables for ``${VAR}`` interpolation. Defaults to
+            ``os.environ`` through the shared path resolver.
 
     Returns:
         A Skill with content populated from the file.
 
     Raises:
         FileNotFoundError: If the path does not exist.
+        ConfigPathError: If the path references an unset environment variable.
     """
-    p = Path(path).expanduser().resolve()
+    from sr2_spectre.path_resolution import resolve_path
+
+    expanded = Path(path).expanduser()
+    cwd_sentinel = Path.cwd() / "__skill_path__"
+    p = resolve_path(str(expanded), cwd_sentinel, env)
     if not p.is_file():
         raise FileNotFoundError(f"Skill content file not found: {p}")
 

@@ -23,6 +23,7 @@ from sr2.pipeline.token_counting import CharacterTokenCounter
 from sr2_spectre.config import SpectreConfig
 from sr2_spectre.live_llm import LiveLLM
 from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
+from sr2_spectre.path_resolution import ConfigPathError
 from sr2_spectre.session import Session
 from sr2_spectre.skills.builtin import DEFAULT_SKILLS
 from sr2_spectre.skills.core import SkillRegistry, discover_skills, load_skill_from_path
@@ -599,6 +600,13 @@ class Runtime:
                     "Skill file not found: '%s' at %s — skipping",
                     skill_cfg.name,
                     skill_cfg.path,
+                )
+            except ConfigPathError as exc:
+                logger.warning(
+                    "Skill path unresolvable: '%s' at %s — skipping (%s)",
+                    skill_cfg.name,
+                    skill_cfg.path,
+                    exc,
                 )
 
         # 4. Auto-inject load_skill tool

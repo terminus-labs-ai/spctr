@@ -511,6 +511,97 @@ Discovered content.
 
 
 # ---------------------------------------------------------------------------
+# Per-file skills[] path resolution
+# ---------------------------------------------------------------------------
+
+
+class TestPerFileSkillsEnvVar:
+    """Runtime applies per-file path rules at startup and on reload."""
+
+    def _runtime(self, cfg: SpectreConfig):
+        from sr2_spectre.runtime import Runtime
+
+        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+            return Runtime(config=cfg)
+
+    @staticmethod
+    def _config_with_skill(name: str, path: str) -> SpectreConfig:
+        from sr2_spectre.config import SkillConfig
+
+        cfg = _base_config()
+        cfg.agent.skills = [SkillConfig(name=name, path=path)]
+        return cfg
+
+    def test_runtime_interpolates_per_file_skill_path(
+        self, tmp_path: Path, monkeypatch
+    ):
+        skill_file = tmp_path / ".agents" / "skills" / "shader" / "SKILL.md"
+        skill_file.parent.mkdir(parents=True)
+        skill_file.write_text("# Shader skill\n")
+        monkeypatch.setenv("SR2_WORKSPACE", str(tmp_path))
+        cfg = self._config_with_skill(
+            "shader", "${SR2_WORKSPACE}/.agents/skills/shader/SKILL.md"
+        )
+
+        runtime = self._runtime(cfg)
+
+        assert runtime.skill_registry.get_content("shader") == "# Shader skill\n"
+
+    def test_runtime_skips_unresolved_path_with_one_warning(self, caplog, monkeypatch):
+        monkeypatch.delenv("SR2_MISSING_SKILL_ROOT", raising=False)
+        cfg = self._config_with_skill(
+            "unresolvable", "${SR2_MISSING_SKILL_ROOT}/skills/x.md"
+        )
+
+        with caplog.at_level(logging.WARNING):
+            runtime = self._runtime(cfg)
+
+        assert "unresolvable" not in runtime.skill_registry
+        warnings = [
+            record
+            for record in caplog.records
+            if "Skill path unresolvable" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        assert "unresolvable" in warnings[0].getMessage()
+        assert "${SR2_MISSING_SKILL_ROOT}/skills/x.md" in warnings[0].getMessage()
+
+    def test_runtime_expands_tilde(self, tmp_path: Path, monkeypatch):
+        skill_file = tmp_path / "tilde.md"
+        skill_file.write_text("tilde content")
+        monkeypatch.setenv("HOME", str(tmp_path))
+        cfg = self._config_with_skill("tilde", "~/tilde.md")
+
+        runtime = self._runtime(cfg)
+
+        assert runtime.skill_registry.get_content("tilde") == "tilde content"
+
+    def test_runtime_resolves_relative_path_from_cwd(self, tmp_path: Path, monkeypatch):
+        skill_file = tmp_path / "relative.md"
+        skill_file.write_text("runtime relative content")
+        monkeypatch.chdir(tmp_path)
+        cfg = self._config_with_skill("relative", "relative.md")
+
+        runtime = self._runtime(cfg)
+
+        assert runtime.skill_registry.get_content("relative") == (
+            "runtime relative content"
+        )
+
+    def test_reload_uses_same_interpolation_rules(self, tmp_path: Path, monkeypatch):
+        skill_file = tmp_path / "reloaded.md"
+        skill_file.write_text("reloaded content")
+        monkeypatch.setenv("SR2_SKILL_ROOT", str(tmp_path))
+        runtime = self._runtime(_base_config())
+        reloaded = self._config_with_skill("reloaded", "${SR2_SKILL_ROOT}/reloaded.md")
+
+        applied = runtime.apply_config(reloaded)
+
+        assert "agent.skills" in applied
+        assert runtime.skill_registry.get_content("reloaded") == "reloaded content"
+
+
+# ---------------------------------------------------------------------------
 # Bundled <name>/SKILL.md layout (obsidian-8si8)
 # ---------------------------------------------------------------------------
 

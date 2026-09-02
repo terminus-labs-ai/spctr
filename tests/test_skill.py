@@ -216,6 +216,72 @@ class TestLoadSkillFromPath:
         )
         assert skill.content == "path object content"
 
+    def test_absolute_string_accepted(self, tmp_path: Path):
+        content_file = tmp_path / "absolute-string.md"
+        content_file.write_text("absolute string content")
+
+        skill = load_skill_from_path(
+            name="absolute-string",
+            path=str(content_file),
+        )
+
+        assert skill.content == "absolute string content"
+
+    def test_relative_path_resolves_from_cwd(self, tmp_path: Path, monkeypatch):
+        content_file = tmp_path / "relative.md"
+        content_file.write_text("relative content")
+        monkeypatch.chdir(tmp_path)
+
+        skill = load_skill_from_path(name="relative", path="relative.md")
+
+        assert skill.content == "relative content"
+
+    def test_env_var_interpolation(self, tmp_path: Path):
+        content_file = tmp_path / "skills" / "env-skill.md"
+        content_file.parent.mkdir()
+        content_file.write_text("env interpolated content")
+
+        skill = load_skill_from_path(
+            name="env-skill",
+            path="${SR2_TEST_WORKSPACE}/skills/env-skill.md",
+            env={"SR2_TEST_WORKSPACE": str(tmp_path)},
+        )
+
+        assert skill.content == "env interpolated content"
+
+    def test_env_var_interpolation_uses_os_environ_by_default(
+        self, tmp_path: Path, monkeypatch
+    ):
+        content_file = tmp_path / "os-env-skill.md"
+        content_file.write_text("os env content")
+        monkeypatch.setenv("SR2_TEST_WORKSPACE", str(tmp_path))
+
+        skill = load_skill_from_path(
+            name="os-env-skill",
+            path="${SR2_TEST_WORKSPACE}/os-env-skill.md",
+        )
+
+        assert skill.content == "os env content"
+
+    def test_unset_env_var_raises_config_path_error(self):
+        from sr2_spectre.path_resolution import ConfigPathError
+
+        with pytest.raises(ConfigPathError, match="SR2_UNSET_VAR"):
+            load_skill_from_path(
+                name="bad",
+                path="${SR2_UNSET_VAR}/missing.md",
+                env={},
+            )
+
+    def test_tilde_expansion(self, tmp_path: Path, monkeypatch):
+        content_file = tmp_path / "tilde-skill.md"
+        content_file.write_text("tilde content")
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        skill = load_skill_from_path(name="tilde", path="~/tilde-skill.md")
+
+        assert skill.content == "tilde content"
+
 
 # ---------------------------------------------------------------------------
 # Built-in SR2 conventions skill

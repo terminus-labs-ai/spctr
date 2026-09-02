@@ -110,9 +110,14 @@ Loadable skill files — knowledge packages loaded at runtime.
 
 - **`name`** (str, required): Skill identifier.
 - **`path`** (str, required): File path. Supports `~` and `${VAR}` expansion.
+  Plain relative paths resolve from Spectre's process working directory.
 - **`description`** (str, optional): Override the auto-derived description.
 - **`version`** (str, default: `"0.1.0"`): Skill version.
 - **`tags`** (list[str], optional): Tags for skill filtering.
+
+An unset variable in `agent.skills[].path` produces a warning that identifies
+the skill and path. Spectre skips only that skill; startup and live reload
+continue with the remaining registry entries.
 
 ### `agent.tool_result_max_bytes` (int, default: `65536`)
 
@@ -263,6 +268,10 @@ Paths in config files support:
 - `~` expansion (e.g., `~/.sr2/plans`)
 - `${VAR}` environment variable interpolation (e.g., `${SR2_HOME}/config.yaml`)
 - Relative paths resolved against the declaring file's directory
+
+`agent.skills[].path` is the exception to the last rule: it preserves its
+longstanding process-CWD-relative behavior while supporting the same `~` and
+`${VAR}` expansion. An unresolved variable warns and skips only that skill.
 
 ---
 
