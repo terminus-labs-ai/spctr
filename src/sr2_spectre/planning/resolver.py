@@ -234,21 +234,16 @@ class PlanResolver:
         )
         return cwd.name
 
-    def _resolve_knowledge_root(self) -> Path | None:
+    def _resolve_knowledge_root(self, project: str) -> Path:
         """Resolve the knowledge_root path.
 
         If knowledge_root was explicitly configured in YAML, return the
         pre-resolved path (unchanged). If using the default and project is
-        ``__auto__``, re-derive the path from the resolved project name.
-        Returns None when the resolved project is None (explicitly no
-        project/area) — there is no default directory to point at.
+        ``__auto__``, derive the path from the resolved project name.
         """
         if not self._is_auto or self._knowledge_root_explicit:
             return self._knowledge_root
 
-        project = self._resolve_project()
-        if project is None:
-            return None
         return Path.home().expanduser() / ".sr2" / "knowledge" / project
 
     # ------------------------------------------------------------------
@@ -405,9 +400,9 @@ class PlanResolver:
         if project is None:
             return ""
 
-        knowledge_root = self._resolve_knowledge_root()
+        knowledge_root = self._resolve_knowledge_root(project)
 
-        if knowledge_root is None or not knowledge_root.is_dir():
+        if not knowledge_root.is_dir():
             return ""
 
         pattern = str(knowledge_root / "*.md")
