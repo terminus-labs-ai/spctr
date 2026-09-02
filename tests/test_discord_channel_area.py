@@ -362,6 +362,37 @@ class TestStampedArea:
 
 
 # ---------------------------------------------------------------------------
+# Stamping order
+# ---------------------------------------------------------------------------
+
+class TestStampOrdering:
+    async def test_response_guard_runs_before_area_stamp(self) -> None:
+        """A non-mention must not add an area context in mention-only mode."""
+        adapter = _make_mock_adapter({PARENT_ID: (PARENT_ID, FRACTURED)})
+        interface, agent = await _started(adapter, DiscordConfig(mention_only=True))
+
+        base_calls = list(agent.set_run_context.call_args_list)
+        await interface._process_message(_message())
+
+        assert agent.set_run_context.call_args_list == base_calls
+        assert base_calls[-1].args[0].area is None
+
+    async def test_area_stamp_uses_config_reloaded_by_apply_agent_config(self) -> None:
+        """The current message's config reload precedes its area stamp."""
+        holder = {"cfg": DiscordConfig()}
+        source = DiscordConfigSource(lambda: holder["cfg"], holder["cfg"])
+        adapter = _make_mock_adapter({PARENT_ID: (PARENT_ID, FRACTURED)})
+        interface, agent = await _started(adapter, config_source=source)
+        holder["cfg"] = DiscordConfig(channel_areas={str(PARENT_ID): "fresh"})
+
+        with patch.object(interface, "_apply_agent_config", side_effect=source.reload) as apply:
+            await interface._process_message(_message())
+
+        assert apply.call_count == 1
+        assert agent.contexts_at_run[0].area == "fresh"
+
+
+# ---------------------------------------------------------------------------
 # AC 23 — observability
 # ---------------------------------------------------------------------------
 
