@@ -459,6 +459,17 @@ async def test_enter_submits(tmp_path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_enter_submits_multiline_buffer(tmp_path, monkeypatch) -> None:
+    """Plain Enter submits even when the buffer already holds a newline.
+
+    The embedded literal LF mirrors the newline Shift+Enter inserts. A trailing
+    CR must accept the multiline buffer rather than insert another newline.
+    """
+    monkeypatch.setattr("sr2_spectre.interfaces.repl._history_file", lambda: tmp_path / "h")
+    assert await _feed_keys("line1\nline2\r") == "line1\nline2"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("name", "sequence"),
     [
