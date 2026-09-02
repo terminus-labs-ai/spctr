@@ -331,6 +331,21 @@ resolver (see [Resolver types](#resolver-types)). A channel with no area
 injects no project knowledge rather than falling back to whatever `cwd`
 happens to be.
 
+### REPL area resolution
+
+The REPL has no channel, so it stamps `area` once in `start()` from the
+**basename of the exact directory the process starts in** (cwd-basename
+semantics). Filesystem markers and repository roots do not affect it: there
+is no `CLAUDE.md` lookup, no `.git` walk, and no ancestor discovery.
+
+- `/data/obsidian/projects/harbinger` → `harbinger` (even though
+  `/data/obsidian` contains `CLAUDE.md` and a git root)
+- `~/git/sr2-spectre/src` → `src`
+- a directory with no markers at all → its own basename, no fallback warning
+
+A non-empty `SR2_AREA` environment variable is the only override; an empty
+or whitespace-only value falls back to the basename.
+
 Each message logs one INFO line naming the area and how it was derived:
 
 ```

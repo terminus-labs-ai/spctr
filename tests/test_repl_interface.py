@@ -97,6 +97,89 @@ async def test_start_sets_run_context(make_mock_agent) -> None:
     assert mock_ctx.mode == RunMode.INTERACTIVE
 
 
+# ---------------------------------------------------------------------------
+# Area derivation — cwd-basename semantics
+#
+# The REPL's area is the basename of the exact directory the process starts
+# in. No CLAUDE.md lookup, no .git walk, no ancestor discovery. A non-empty
+# SR2_AREA is the only override.
+# ---------------------------------------------------------------------------
+
+async def _start_area(monkeypatch, cwd: Path) -> RunContext:
+    """Start the REPL from ``cwd`` with SR2_AREA unset; return the RunContext."""
+    monkeypatch.delenv("SR2_AREA", raising=False)
+    monkeypatch.chdir(cwd)
+    agent = MagicMock()
+    await REPLInterface().start(agent)
+    ctx = agent.set_run_context.call_args[0][0]
+    assert isinstance(ctx, RunContext)
+    return ctx
+
+
+@pytest.mark.asyncio
+async def test_area_is_cwd_basename_despite_ancestor_markers(tmp_path, monkeypatch) -> None:
+    """AC1: ancestor CLAUDE.md and .git must not affect the derived area."""
+    vault = tmp_path / "obsidian"
+    vault.mkdir()
+    (vault / "CLAUDE.md").write_text("vault doc")
+    (vault / ".git").mkdir()
+    harbinger = vault / "projects" / "harbinger"
+    harbinger.mkdir(parents=True)
+
+    ctx = await _start_area(monkeypatch, harbinger)
+    assert ctx.area == "harbinger"
+
+
+@pytest.mark.asyncio
+async def test_area_is_cwd_basename_without_any_markers(tmp_path, monkeypatch) -> None:
+    """AC2: no CLAUDE.md, NOW.md, or .git required anywhere."""
+    launch = tmp_path / "pindamonhagaba"
+    launch.mkdir()
+
+    ctx = await _start_area(monkeypatch, launch)
+    assert ctx.area == "pindamonhagaba"
+
+
+@pytest.mark.asyncio
+async def test_area_is_exact_cwd_not_git_root_name(tmp_path, monkeypatch) -> None:
+    """AC3: a subdirectory of a repo resolves to the subdirectory, not the repo."""
+    repo = tmp_path / "sr2-spectre"
+    (repo / ".git").mkdir(parents=True)
+    src = repo / "src"
+    src.mkdir()
+
+    ctx = await _start_area(monkeypatch, src)
+    assert ctx.area == "src"
+
+
+@pytest.mark.asyncio
+async def test_sr2_area_overrides_cwd_basename(tmp_path, monkeypatch) -> None:
+    """AC4: a non-empty SR2_AREA is the only override."""
+    launch = tmp_path / "somewhere"
+    launch.mkdir()
+    monkeypatch.setenv("SR2_AREA", "fractured-roots")
+    monkeypatch.chdir(launch)
+
+    agent = MagicMock()
+    await REPLInterface().start(agent)
+    ctx = agent.set_run_context.call_args[0][0]
+    assert ctx.area == "fractured-roots"
+
+
+@pytest.mark.asyncio
+async def test_sr2_area_empty_falls_back_to_basename(tmp_path, monkeypatch) -> None:
+    """An empty or whitespace-only SR2_AREA is not an override."""
+    launch = tmp_path / "somewhere"
+    launch.mkdir()
+    for value in ("", "   "):
+        monkeypatch.setenv("SR2_AREA", value)
+        monkeypatch.chdir(launch)
+        agent = MagicMock()
+        await REPLInterface().start(agent)
+        ctx = agent.set_run_context.call_args[0][0]
+        assert ctx.area == "somewhere"
+
+
 @pytest.mark.asyncio
 async def test_stop_sets_running_false() -> None:
     interface = REPLInterface()

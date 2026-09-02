@@ -5,9 +5,11 @@ Spec: ``specs/channel-area-injection.md`` (bead spc-48).
   AC 7  — the provider dict omits ``area`` entirely when ``RunContext.area``
           is ``None``, and includes it (including as ``""``) when it is set.
   AC 12 — TUI and single-shot runs produce no ``area`` key and resolve as
-          before. Extended to the REPL (``interfaces/repl.py``), which landed
-          after the spec and is now the default interface: same intent, an
-          interface that does not resolve areas emits no ``area`` key.
+          before. The REPL (``interfaces/repl.py``), which landed after the
+          spec and is now the default interface, DOES resolve areas: it
+          stamps the basename of the launch directory (cwd-basename
+          semantics, no ancestor walk), overridable by a non-empty
+          ``SR2_AREA``.
 
 The three states the rest of the pipeline reads (FR 10):
   key absent      -> this interface does not resolve areas
@@ -155,15 +157,27 @@ class TestNonDiscordInterfaces:
         assert "area" not in provider()
         assert agent.run_context.source == os.getcwd()
 
-    async def test_repl_sets_no_area(self) -> None:
-        """The REPL is the default interface and resolves no areas."""
+    async def test_repl_stamps_area_from_cwd_basename(self, tmp_path, monkeypatch) -> None:
+        """The REPL stamps the launch directory's basename as the area.
+
+        cwd-basename semantics: no CLAUDE.md or .git discovery, no ancestor
+        walk. The area is whatever the process was started in.
+        """
         from sr2_spectre.interfaces.repl import REPLInterface
+
+        launch_dir = tmp_path / "projects" / "harbinger"
+        launch_dir.mkdir(parents=True)
+        # Ancestor markers must NOT influence the derivation.
+        (tmp_path / "CLAUDE.md").write_text("vault doc")
+        (tmp_path / ".git").mkdir()
+        monkeypatch.delenv("SR2_AREA", raising=False)
+        monkeypatch.chdir(launch_dir)
 
         agent, provider = _agent_and_provider()
         await REPLInterface().start(agent)
 
-        assert agent.run_context.area is None
-        assert "area" not in provider()
+        assert agent.run_context.area == "harbinger"
+        assert provider()["area"] == "harbinger"
         assert agent.run_context.source == os.getcwd()
 
     async def test_single_shot_sets_no_area(self) -> None:
