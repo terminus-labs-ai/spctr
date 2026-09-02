@@ -253,9 +253,9 @@ class DiscordInterface:
       return
 
     area_channel_id, area_channel_name = self._adapter.area_channel(channel_obj)
-    channel_areas = self.config.channel_areas
-    is_override = area_channel_id is not None and str(area_channel_id) in channel_areas
-    resolved = resolve_area(area_channel_id, area_channel_name, channel_areas)
+    resolved, provenance = resolve_area(
+      area_channel_id, area_channel_name, self.config.channel_areas
+    )
 
     self._agent.set_run_context(
       RunContext(
@@ -266,9 +266,14 @@ class DiscordInterface:
       )
     )
 
-    if resolved is None:
+    if provenance == "override" and resolved is None:
+      logger.info(
+        "area=none (channel_areas override, channel=%s)",
+        area_channel_id,
+      )
+    elif resolved is None:
       logger.info("area=none (channel=%s)", area_channel_id)
-    elif is_override:
+    elif provenance == "override":
       logger.info(
         "area=%s (channel_areas override, channel=%s)",
         resolved,

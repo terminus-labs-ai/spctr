@@ -83,13 +83,13 @@ class TestResolveArea:
     @pytest.mark.parametrize(
         "channel_id,channel_name,channel_areas,expected",
         [
-            (PARENT_ID, "Fractured-Roots", {}, FRACTURED),
-            (PARENT_ID, FRACTURED, {"555": "grindsourced"}, "grindsourced"),
-            (PARENT_ID, FRACTURED, {"111": "grindsourced"}, FRACTURED),
-            (PARENT_ID, FRACTURED, {"555": ""}, None),
-            (None, None, {}, None),
-            (None, None, {"555": "grindsourced"}, None),
-            (PARENT_ID, "---", {}, None),
+            (PARENT_ID, "Fractured-Roots", {}, (FRACTURED, "derived")),
+            (PARENT_ID, FRACTURED, {"555": "grindsourced"}, ("grindsourced", "override")),
+            (PARENT_ID, FRACTURED, {"111": "grindsourced"}, (FRACTURED, "derived")),
+            (PARENT_ID, FRACTURED, {"555": ""}, (None, "override")),
+            (None, None, {}, (None, None)),
+            (None, None, {"555": "grindsourced"}, (None, None)),
+            (PARENT_ID, "---", {}, (None, None)),
         ],
         ids=[
             "derived-name",
@@ -106,9 +106,13 @@ class TestResolveArea:
         channel_id: int | None,
         channel_name: str | None,
         channel_areas: dict[str, str],
-        expected: str | None,
+        expected: tuple[str | None, str | None],
     ) -> None:
-        """No area is None — never "" (the interface owns that distinction)."""
+        """No area is None — never "" (the interface owns that distinction).
+
+        Provenance names a winning override or usable derived name. It is
+        None when neither source produces an area.
+        """
         from sr2_spectre.interfaces.discord.handler import resolve_area
 
         assert resolve_area(channel_id, channel_name, channel_areas) == expected
@@ -411,4 +415,21 @@ class TestAreaLogging:
 
         lines = _area_lines(caplog)
         assert len(lines) == 1
-        assert "none" in lines[0].lower()
+        assert lines[0] == "area=none (channel=None)"
+
+    async def test_line_reports_an_empty_channel_areas_override(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        adapter = _make_mock_adapter({PARENT_ID: (PARENT_ID, FRACTURED)})
+        interface, _agent = await _started(
+            adapter, DiscordConfig(channel_areas={str(PARENT_ID): ""})
+        )
+
+        with caplog.at_level(logging.INFO):
+            await interface._process_message(_message())
+
+        lines = _area_lines(caplog)
+        assert len(lines) == 1
+        assert "area=none" in lines[0]
+        assert "channel_areas override" in lines[0]
+        assert str(PARENT_ID) in lines[0]

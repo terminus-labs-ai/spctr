@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Literal
 
 logger = logging.getLogger("sr2_spectre.discord.handler")
 
@@ -84,20 +84,30 @@ def derive_area_name(channel_name: str | None) -> str | None:
     return stripped or None
 
 
+#: Where a resolved area came from: the ``channel_areas`` override map, the
+#: channel name, or neither.
+AreaProvenance = Literal["override", "derived"] | None
+
+
 def resolve_area(
     channel_id: int | None,
     channel_name: str | None,
     channel_areas: dict[str, str],
-) -> str | None:
-    """Override map first, then the derived name. Returns None for no area;
-    "" is never returned — an empty override maps to None.
+) -> tuple[str | None, AreaProvenance]:
+    """Resolve an area and its provenance.
+
+    Overrides win when the channel ID is present in ``channel_areas``. An
+    empty override maps to ``None`` but still reports ``"override"``. A
+    usable channel name reports ``"derived"``. No matching override and no
+    usable name reports ``(None, None)``.
     """
     if channel_id is not None:
         key = str(channel_id)
         if key in channel_areas:
-            return channel_areas[key] or None
+            return channel_areas[key] or None, "override"
 
-    return derive_area_name(channel_name)
+    derived = derive_area_name(channel_name)
+    return (derived, "derived") if derived is not None else (None, None)
 
 
 # ---------------------------------------------------------------------------

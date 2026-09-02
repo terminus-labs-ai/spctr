@@ -351,6 +351,7 @@ Each message logs one INFO line naming the area and how it was derived:
 ```
 area=fractured-roots (derived from channel name, channel=123456789)
 area=fractured-roots (channel_areas override, channel=123456789)
+area=none (channel_areas override, channel=123456789)
 area=none (channel=123456789)
 ```
 
