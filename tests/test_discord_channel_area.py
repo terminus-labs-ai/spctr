@@ -29,7 +29,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sr2_spectre.core import RunMode
+from sr2_spectre.core import RunContext, RunMode
 from sr2_spectre.events import AgentDone, AgentTextDelta
 from sr2_spectre.interfaces.discord.config import DiscordConfig
 from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
@@ -195,10 +195,15 @@ def _make_recording_agent() -> MagicMock:
     agent = MagicMock()
     agent.history = []
     agent.session_id = "discord-test"
+    agent.run_context = None
     state: dict[str, Any] = {"ctx": None}
     seen: list[Any] = []
 
-    agent.set_run_context = MagicMock(side_effect=lambda ctx: state.update(ctx=ctx))
+    def _set_run_context(ctx: Any) -> None:
+        state["ctx"] = ctx
+        agent.run_context = ctx
+
+    agent.set_run_context = MagicMock(side_effect=_set_run_context)
 
     async def _stream(_text: str) -> Any:
         seen.append(state["ctx"])
@@ -464,3 +469,102 @@ class TestAreaLogging:
         assert "area=none" in lines[0]
         assert "channel_areas override" in lines[0]
         assert str(PARENT_ID) in lines[0]
+
+
+# ---------------------------------------------------------------------------
+# Run context after a session rebuild
+# ---------------------------------------------------------------------------
+
+def _real_agent_config():
+    from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
+
+    return SpectreConfig(
+        agent=AgentConfig(name="test"),
+        models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
+        pipeline={
+            "layers": [
+                {
+                    "name": "system",
+                    "target": "system",
+                    "resolvers": [{"type": "static", "config": {"text": "hi"}}],
+                },
+                {
+                    "name": "conversation",
+                    "target": "messages",
+                    "resolvers": [{"type": "session"}, {"type": "input"}],
+                },
+            ]
+        },
+    )
+
+
+def _channel_session(session_id: str = "discord-parent-555") -> MagicMock:
+    session = MagicMock()
+    session.session_id = session_id
+    session.history = []
+    return session
+
+
+class TestRunContextSurvivesSessionRebuild:
+    def test_named_area_survives_session_rebuild(self) -> None:
+        from sr2_spectre.agent import Agent
+
+        with patch("sr2_spectre.session.SR2") as mock_sr2:
+            mock_sr2.return_value = MagicMock()
+            agent = Agent(config=_real_agent_config())
+            agent.set_run_context(
+                RunContext(
+                    interface="discord",
+                    mode=RunMode.INTERACTIVE,
+                    source=None,
+                    area=FRACTURED,
+                )
+            )
+            interface = DiscordInterface(config=DiscordConfig())
+            interface._agent = agent
+
+            interface._restore_history(_channel_session())
+
+            assert agent.run_context is not None
+            assert agent.run_context.area == FRACTURED
+            provider = mock_sr2.call_args.kwargs["run_context_provider"]
+            assert provider()["area"] == FRACTURED
+
+    def test_explicit_no_area_survives_session_rebuild(self) -> None:
+        from sr2_spectre.agent import Agent
+
+        with patch("sr2_spectre.session.SR2") as mock_sr2:
+            mock_sr2.return_value = MagicMock()
+            agent = Agent(config=_real_agent_config())
+            agent.set_run_context(
+                RunContext(
+                    interface="discord",
+                    mode=RunMode.INTERACTIVE,
+                    source=None,
+                    area="",
+                )
+            )
+            interface = DiscordInterface(config=DiscordConfig())
+            interface._agent = agent
+
+            interface._restore_history(_channel_session())
+
+            assert agent.run_context is not None
+            assert agent.run_context.area == ""
+            provider = mock_sr2.call_args.kwargs["run_context_provider"]
+            assert provider()["area"] == ""
+
+    def test_absent_context_remains_absent_after_session_rebuild(self) -> None:
+        from sr2_spectre.agent import Agent
+
+        with patch("sr2_spectre.session.SR2") as mock_sr2:
+            mock_sr2.return_value = MagicMock()
+            agent = Agent(config=_real_agent_config())
+            interface = DiscordInterface(config=DiscordConfig())
+            interface._agent = agent
+
+            interface._restore_history(_channel_session())
+
+            assert agent.run_context is None
+            provider = mock_sr2.call_args.kwargs["run_context_provider"]
+            assert provider() is None

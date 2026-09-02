@@ -1018,7 +1018,10 @@ class DiscordInterface:
     # assign to it. Setting session_id rebuilds a fresh Session (empty
     # history) under the shared Runtime, which both resets history and
     # points the agent at this channel's frame.
+    preserved_run_context = self._agent.run_context
     self._agent.session_id = session.session_id
+    if preserved_run_context is not None:
+      self._agent.set_run_context(preserved_run_context)
 
     for entry in session.history:
       role = entry.get("role", "user")
