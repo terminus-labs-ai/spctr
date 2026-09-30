@@ -24,6 +24,7 @@ from sr2_spectre.config import SpectreConfig
 from sr2_spectre.live_llm import LiveLLM
 from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
 from sr2_spectre.path_resolution import ConfigPathError
+from sr2_spectre.run_log import SessionLogManager
 from sr2_spectre.session import Session
 from sr2_spectre.skills.builtin import DEFAULT_SKILLS
 from sr2_spectre.skills.core import SkillRegistry, discover_skills, load_skill_from_path
@@ -132,6 +133,7 @@ class Runtime:
         # Live sessions, weakly held so a closed frame is not kept alive just
         # to be told about config reloads.
         self._sessions: "weakref.WeakSet[Session]" = weakref.WeakSet()
+        self._session_logs = SessionLogManager()
 
         self._active_frame_provider: Callable[[str], str | None] | None = None
         self._plan_resolver: Any = None
@@ -303,6 +305,8 @@ class Runtime:
 
         Also connects the persistent provenance store if configured.
         """
+        await self._session_logs.start()
+
         # Connect persistent provenance store (before MCP so tool bridges
         # can reference it if needed).
         if self._provenance_store_path is not None:
@@ -358,6 +362,7 @@ class Runtime:
             active_frame_provider=self._active_frame_provider,
             provenance_store=self._provenance_store,
             memory_store=self._memory_store,
+            log_manager=self._session_logs,
         )
         self._sessions.add(session)
         return session
@@ -367,6 +372,7 @@ class Runtime:
 
         Safe to call even if initialize() was never called.
         """
+        await self._session_logs.aclose()
         if self._provenance_store is not None:
             await self._provenance_store.close()
             self._provenance_store = None
