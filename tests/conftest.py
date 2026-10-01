@@ -24,6 +24,17 @@ from sr2_spectre.events import (
 from sr2_spectre.interfaces.tui import SpectreTUI, TUIInterface
 
 
+@pytest.fixture(autouse=True)
+def _isolate_sr2_home(tmp_path_factory, monkeypatch) -> None:
+    """Point SR2_HOME at a per-test temp dir.
+
+    Runtime writes session logs under $SR2_HOME/logs/sessions and sweeps
+    that directory; without this, tests touch the real ~/.sr2 the bots use.
+    Tests that need a specific SR2_HOME still set or delete it themselves.
+    """
+    monkeypatch.setenv("SR2_HOME", str(tmp_path_factory.mktemp("sr2_home")))
+
+
 def _make_mock_agent(
     session_id: str = "test-session",
     history: list | None = None,
