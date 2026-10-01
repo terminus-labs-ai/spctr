@@ -86,6 +86,10 @@ class DiscordInterface:
     self._adapter: DiscordBotAdapter | None = None
     self._session_map = SessionMap()
     self._running = False
+    # The shared Agent holds one live Session, and restoring a channel
+    # replaces it. Serialize restore -> stream so concurrent turns cannot
+    # swap the Session under each other (obsidian-hw0f).
+    self._agent_turn_lock = asyncio.Lock()
     self._pending_stream_edit: asyncio.Future[None] | None = None
     # Per-channel tool activity lines — prepended to the thinking message
     # during streaming, then replaced by the final response on completion.
@@ -675,16 +679,17 @@ class DiscordInterface:
     self._tool_lines[channel_id] = []
     self._stream_text[channel_id] = ""
 
-    # Restore channel history into the agent
-    self._restore_history(session)
+    async with self._agent_turn_lock:
+      # Restore channel history into the agent
+      self._restore_history(session)
 
-    # Show typing indicator while calling the agent (per-message, visible to Discord users).
-    # The typing context manager auto-clears when the first message edit/send happens.
-    async with self._adapter.channel_typing(channel_id):
-      # Drive the agent and render stream events to Discord
-      response_parts, stream_error = await self._drive_agent_stream(
-        content, channel_id, thinking_id
-      )
+      # Show typing indicator while calling the agent (per-message, visible to Discord users).
+      # The typing context manager auto-clears when the first message edit/send happens.
+      async with self._adapter.channel_typing(channel_id):
+        # Drive the agent and render stream events to Discord
+        response_parts, stream_error = await self._drive_agent_stream(
+          content, channel_id, thinking_id
+        )
 
     if stream_error is not None:
       session.pending_message_id = None
