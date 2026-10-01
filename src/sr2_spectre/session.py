@@ -215,6 +215,11 @@ class Session:
         log.append("session.start", {"agent": self.config.agent.name})
         print(f"Session log: {log.path}", file=sys.stderr)
 
+    def close(self) -> None:
+        """Close this Session's log now; idempotent. Other Sessions are untouched."""
+        if self._log is not None:
+            self._log.close()
+
     def _log_event(self, event: str, data: dict[str, Any]) -> None:
         if self._log is not None:
             self._log.append(event, data)

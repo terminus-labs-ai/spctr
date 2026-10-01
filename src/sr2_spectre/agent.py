@@ -181,7 +181,9 @@ class Agent:
 
         Re-applying the context makes the replacement open its own session log.
         """
-        ctx = self._session.run_context
+        old = self._session
+        ctx = old.run_context
+        old.close()
         self._session = self._runtime.new_session(frame_id=frame_id)
         if ctx is not None:
             self._session.set_run_context(ctx)
