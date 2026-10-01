@@ -92,7 +92,7 @@ class Agent:
     def session_id(self, value: str) -> None:
         """Allow setting session_id (used by new_session())."""
         # For backward compat, we recreate the session under the Runtime
-        self._session = self._runtime.new_session(frame_id=value)
+        self._replace_session(value)
 
     @property
     def history(self) -> list:
@@ -174,4 +174,14 @@ class Agent:
         LLM, MCP, tool registry) with fresh history.
         """
         frame_id = session_id or f"{self._config.agent.name}-default"
+        self._replace_session(frame_id)
+
+    def _replace_session(self, frame_id: str) -> None:
+        """Swap in a fresh Session, carrying over any run context in force.
+
+        Re-applying the context makes the replacement open its own session log.
+        """
+        ctx = self._session.run_context
         self._session = self._runtime.new_session(frame_id=frame_id)
+        if ctx is not None:
+            self._session.set_run_context(ctx)
