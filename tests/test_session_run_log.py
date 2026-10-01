@@ -426,6 +426,38 @@ class TestLiveToolEvents:
         for e in events:
             assert all(len(s.encode("utf-8")) <= KIB16 for s in _strings(e["data"]))
 
+    async def test_result_bytes_is_original_size_above_context_cap(self, home):
+        # obsidian-r32p / FR6: the log records the tool's original result size,
+        # not the size left after the context cap (tool_result_max_bytes).
+        original = "q" * 100_000
+        assert len(original.encode("utf-8")) > AgentConfig().tool_result_max_bytes
+
+        runtime = _runtime(ScriptedLLM([_tool_call("tu_big", "big")]))
+        _register(runtime, "big", lambda **_: original)
+        session = runtime.new_session("f")
+        session.set_run_context(_ctx())
+        await session.handle_user_message("fetch big")
+
+        (done,) = _for_tool(_events(_only_log(home)), "tool.complete", "tu_big")
+        assert done["data"]["is_error"] is False
+        assert done["data"]["result_bytes"] == 100_000
+
+    async def test_result_bytes_is_original_utf8_size_for_multibyte_output(self, home):
+        # obsidian-r32p / FR6, FR10: the size is the original output in UTF-8
+        # bytes. "€" is 3 bytes, so 70,000 characters are 210,000 bytes.
+        original = "€" * 70_000
+        assert len(original.encode("utf-8")) == 210_000
+
+        runtime = _runtime(ScriptedLLM([_tool_call("tu_mb", "euros")]))
+        _register(runtime, "euros", lambda **_: original)
+        session = runtime.new_session("f")
+        session.set_run_context(_ctx())
+        await session.handle_user_message("fetch euros")
+
+        (done,) = _for_tool(_events(_only_log(home)), "tool.complete", "tu_mb")
+        assert done["data"]["result_bytes"] == 210_000
+        assert ("truncated", True) in list(_walk(done["data"]))
+
     async def test_failing_tool_records_error_status(self, home):
         async def broken(**_):
             raise ValueError("boom-detail")
