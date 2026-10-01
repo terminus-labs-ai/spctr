@@ -451,6 +451,46 @@ class TestManagerLifecycle:
 
 
 # ---------------------------------------------------------------------------
+# SR2_SESSION_LOG_DIR override (obsidian-fa6t)
+# ---------------------------------------------------------------------------
+
+class TestDirectoryOverride:
+    def test_unset_or_empty_keeps_the_sr2_home_default(self, home, monkeypatch):
+        monkeypatch.delenv("SR2_SESSION_LOG_DIR", raising=False)
+        assert SessionLogManager().directory == _sessions_dir(home)
+        monkeypatch.setenv("SR2_SESSION_LOG_DIR", "")
+        assert SessionLogManager().directory == _sessions_dir(home)
+
+    def test_path_moves_logs_out_of_sr2_home(self, home, tmp_path, monkeypatch):
+        target = tmp_path / "elsewhere" / "sessions"
+        monkeypatch.setenv("SR2_SESSION_LOG_DIR", str(target))
+        log = SessionLogManager().open_session("s", "edi")
+        try:
+            assert log.path.parent == target
+            assert not (home / "logs").exists()
+        finally:
+            log.close()
+
+    @pytest.mark.parametrize("value", ["off", "OFF", " off "])
+    async def test_off_disables_without_touching_disk_or_warning(
+        self, home, monkeypatch, caplog, value
+    ):
+        monkeypatch.setenv("SR2_SESSION_LOG_DIR", value)
+        mgr = SessionLogManager()
+        assert mgr.enabled is False
+        with caplog.at_level(logging.WARNING):
+            await mgr.start()
+            await mgr.aclose()
+        assert not _warned(caplog)
+        assert not (home / "logs").exists()
+        with pytest.raises(OSError):
+            mgr.open_session("s", "edi")
+
+    def test_enabled_by_default(self, home):
+        assert SessionLogManager().enabled is True
+
+
+# ---------------------------------------------------------------------------
 # Append failures (FR15)
 # ---------------------------------------------------------------------------
 

@@ -448,3 +448,25 @@ class TestReconstruction:
         assert broken_done["data"]["is_error"] is True
         assert "sk-live-123" not in _read_all(home)
         assert _has_text(_first(events, "turn.start"), "count the TODOs")
+
+
+# ---------------------------------------------------------------------------
+# SR2_SESSION_LOG_DIR=off (obsidian-fa6t)
+# ---------------------------------------------------------------------------
+
+class TestDisabled:
+    async def test_off_runs_turns_with_no_log_and_no_warning(
+        self, home, monkeypatch, caplog, capsys
+    ):
+        monkeypatch.setenv("SR2_SESSION_LOG_DIR", "off")
+        runtime = _runtime(FakeProvider(Call(_text("hello"))))
+        await runtime.initialize()
+        try:
+            with caplog.at_level("WARNING"):
+                session = _session(runtime)
+                await session.handle_user_message("hi there")
+        finally:
+            await runtime.aclose()
+        assert not (home / "logs").exists()
+        assert not [r for r in caplog.records if "Session log" in r.getMessage()]
+        assert "Session log:" not in capsys.readouterr().err
