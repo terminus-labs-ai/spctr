@@ -226,29 +226,33 @@ class Session:
             {"tool_use_id": block.id, "name": block.name, "arguments": block.input},
         )
         started = time.monotonic()
-        result = await self._run_tool(block)
+        result, original_bytes = await self._run_tool(block)
         self._log_event(
             "tool.complete",
             {
                 "tool_use_id": block.id,
                 "name": block.name,
                 "is_error": bool(result.is_error),
-                "result_bytes": len(str(result.content).encode("utf-8")),
+                "result_bytes": original_bytes,
                 "result": str(result.content),
                 "duration_ms": round((time.monotonic() - started) * 1000, 3),
             },
         )
         return result
 
-    async def _run_tool(self, block: ToolUseBlock) -> ToolResultBlock:
+    async def _run_tool(self, block: ToolUseBlock) -> tuple[ToolResultBlock, int]:
         """Execute a tool via the shared registry.
 
         Truncates oversized results before they enter context.
         Dispatches post-execute bus events declared in ``ToolOutput`` wrappers.
+        Returns the result and the original (pre-truncation) UTF-8 size in bytes.
         """
         max_bytes = self.config.agent.tool_result_max_bytes
+        original_bytes = 0
 
         def _truncate(content: str, name: str) -> str:
+            nonlocal original_bytes
+            original_bytes = len(content.encode("utf-8"))
             if len(content) <= max_bytes:
                 return content
             truncated = content[:max_bytes]
@@ -285,11 +289,14 @@ class Session:
                     )
                 )
 
-            return result
+            return result, original_bytes
         except Exception as exc:
             logger.warning("Tool %r failed: %s", block.name, exc)
             content = _truncate(f"ERROR: {exc}", block.name)
-            return ToolResultBlock(tool_use_id=block.id, content=content, is_error=True)
+            return (
+                ToolResultBlock(tool_use_id=block.id, content=content, is_error=True),
+                original_bytes,
+            )
 
     async def stream_message(self, text: str) -> AsyncIterator[AgentEvent]:
         """Stream agent events for a user message, logging turn boundaries."""
