@@ -71,10 +71,13 @@ class Agent:
     ) -> None:
         self._config = config
         self._runtime = Runtime(config)
+        self._tracer = tracer
 
         # session_id is the frame_id for single-frame operation
         frame_id = session_id or f"{config.agent.name}-default"
-        self._session = self._runtime.new_session(frame_id=frame_id, tracer=tracer)
+        self._session = self._runtime.new_session(
+            frame_id=frame_id, tracer=self._tracer
+        )
 
     # ---- Backward-compat property accessors ----
 
@@ -177,13 +180,15 @@ class Agent:
         self._replace_session(frame_id)
 
     def _replace_session(self, frame_id: str) -> None:
-        """Swap in a fresh Session, carrying over any run context in force.
+        """Swap in a fresh Session, carrying over the tracer and any run context.
 
         Re-applying the context makes the replacement open its own session log.
         """
         old = self._session
         ctx = old.run_context
         old.close()
-        self._session = self._runtime.new_session(frame_id=frame_id)
+        self._session = self._runtime.new_session(
+            frame_id=frame_id, tracer=self._tracer
+        )
         if ctx is not None:
             self._session.set_run_context(ctx)
