@@ -217,11 +217,10 @@ async def test_discord_sets_interactive_context() -> None:
 # ---------------------------------------------------------------------------
 
 def test_new_session_preserves_run_context() -> None:
-    """Calling new_session() should preserve the run context on the new session.
+    """Calling new_session() carries the run context to the replacement Session.
 
-    This is a behavioral check: if the Agent creates a new Session via
-    new_session(), the new Session starts with run_context=None (fresh session).
-    The Interface should re-set context if needed.
+    The new Session has fresh history but inherits the run context already in
+    force, so interfaces that reset (REPL/TUI /reset) need not re-set it.
     """
     from sr2_spectre.agent import Agent
 
@@ -233,6 +232,6 @@ def test_new_session_preserves_run_context() -> None:
     agent.set_run_context(ctx)
     assert agent.run_context is not None
 
-    # new_session creates a new Session — it starts with run_context=None
+    # new_session creates a new Session that inherits the run context
     agent.new_session("fresh")
-    assert agent.run_context is None
+    assert agent.run_context == ctx
