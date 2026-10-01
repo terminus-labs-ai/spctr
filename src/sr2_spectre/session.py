@@ -270,14 +270,15 @@ class Session:
 
         def _truncate(content: str, name: str) -> str:
             nonlocal original_bytes
-            original_bytes = len(content.encode("utf-8"))
-            if len(content) <= max_bytes:
+            encoded = content.encode("utf-8")
+            original_bytes = len(encoded)
+            if original_bytes <= max_bytes:
                 return content
-            truncated = content[:max_bytes]
+            truncated = encoded[:max_bytes].decode("utf-8", errors="ignore")
             return (
                 f"{truncated}\n\n"
                 f"[TRUNCATED: output exceeded {max_bytes} bytes "
-                f"(original size: {len(content)} bytes, tool: {name})]"
+                f"(original size: {original_bytes} bytes, tool: {name})]"
             )
 
         try:
