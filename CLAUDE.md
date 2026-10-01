@@ -221,3 +221,9 @@ The Runtime selects the memory store backend at construction via
 The selected store is shared across all sessions and closed in `Runtime.aclose()`
 (Postgres `close()` is synchronous; in-memory has none). Persistent store lives
 in `sr2.memory.pg_store`. Smoke runbook: `docs/smoke/obsidian-cor.md`.
+
+## Session log seam
+
+Logging lives in `run_log.py` (`SessionLog`, `SessionTracer`), `live_llm.LoggedLLM`
+(per-Session decorator over the shared `LiveLLM`), and `Session`. Never add
+logging to interfaces. Schema and events: `docs/INTERFACE-DEV-GUIDE.md`.

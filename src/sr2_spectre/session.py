@@ -36,7 +36,8 @@ from sr2_spectre.events import (
     AgentToolResult,
     AgentToolStart,
 )
-from sr2_spectre.run_log import SessionLog, SessionLogManager
+from sr2_spectre.live_llm import LoggedLLM
+from sr2_spectre.run_log import SessionLog, SessionLogManager, SessionTracer
 from sr2_spectre.tools.output import ToolOutput
 from sr2_spectre.tools.registry import ToolRegistry
 
@@ -130,13 +131,21 @@ class Session:
         ``self.history`` and re-seeds SR2 from it at the top of every turn, so
         a fresh SR2 loses no conversation state.
         """
+        llm = self._llm
+        tracer = self._tracer
+        if self._log_manager is not None:
+            # Both read self._log at call time: the log opens lazily, after
+            # this SR2 is built, and a reload-driven rebuild must keep logging.
+            tracer = SessionTracer(lambda: self._log, self._tracer)
+            if hasattr(llm, "retarget"):
+                llm = LoggedLLM(llm, lambda: self._log, lambda: self.config.active_model)
         return SR2(
             pipeline_config=self.config.pipeline,
-            llm={"default": self._llm},
+            llm={"default": llm},
             token_counter=CharacterTokenCounter(),
             session_id=self.frame_id,
             tool_source=self._registry,
-            tracer=self._tracer,
+            tracer=tracer,
             tool_executor=self._execute_tool,
             active_frame_provider=self._active_frame_provider,
             run_context_provider=self._run_context_provider,
@@ -333,6 +342,11 @@ class Session:
                     elif ev.type == "thinking" and ev.text:
                         thinking_acc.append(ev.text)
                         yield AgentThinkingDelta(text=ev.text)
+                    elif ev.type == "retry":
+                        self._log_event(
+                            "sr2.retry",
+                            {**(ev.meta or {}), "iteration": ev.iteration},
+                        )
                     elif ev.type == "tool_use_emitted" and ev.tool_uses:
                         for tu in ev.tool_uses:
                             total_tool_calls += 1

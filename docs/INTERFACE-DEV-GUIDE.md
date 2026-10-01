@@ -274,6 +274,34 @@ the full hot-versus-restart breakdown, and
 shows how one read per message can serve both the interface's own settings and
 the agent's.
 
+## Session log (automatic, no interface code)
+
+Every Session writes a live JSONL log to `$SR2_HOME/logs/sessions/<UTC>-<session-id>-<suffix>.jsonl`
+(dir `0700`, files `0600`). The path is printed to stderr as `Session log: <path>` when your
+interface calls `set_run_context()`, so do not add logging of your own. Follow a run with
+`tail -f <path>`; each line is one flushed JSON object (`schema_version`, `sequence`, `timestamp`,
+`elapsed_ms`, `session_id`, `interface`, `event`, `data`).
+
+| Event | Meaning |
+|---|---|
+| `session.start`, `turn.start/complete/cancel/error` | Session and turn boundaries, with duration |
+| `tool.start`, `tool.complete` | Actual tool execution: arguments, result size and preview, `is_error`, duration |
+| `model.start` | One model call: `profile`, resolved `model`, `system_blocks`/`messages`/`tools` counts, `request_tokens_estimate` (chars/4). Never the prompt body |
+| `model.progress` | One streamed text or reasoning chunk (`kind`, `preview`) with `output_tokens_estimate` so far |
+| `model.end` / `model.error` / `model.cancel` | Terminal record of that call: provider `usage`, `finish_reason`, `duration_ms`, or the error |
+| `sr2.retry` | SR2 retried an empty response (`reason`, `attempt`); sits between the two model calls |
+| `pipeline.firing`, `pipeline.error` | A resolver, transformer, or tool provider fired (layer, trigger events, token delta, duration). Compaction appears here as the `compaction` transformer. No content is logged |
+| `pipeline.compile` | Counts for the compiled request |
+
+Every model call is one `model.start` through one terminal `model.*` event, so ordering by `sequence`
+places retries, pipeline firings, and tools relative to each call. Text fields are capped at 16 KiB
+(`truncated: true`, `bytes`), and keys named `api_key`, `authorization`, `token`, `password`,
+`secret`, `cookie` are redacted.
+
+Retention: a sweep at Runtime startup and every 24 hours deletes logs whose last write is over 24
+hours old. A live writer holds an exclusive `flock`, so a log open in any Spectre process is never
+deleted. Logging failures warn and never abort a turn.
+
 ## Best Practices
 
 1. **Set `RunContext` in `start()`** — The agent uses this for logging and mode-specific behavior. Leave `area` unset unless your interface resolves areas; if it does, re-stamp per message and use `""` — never `None` — for "no area".

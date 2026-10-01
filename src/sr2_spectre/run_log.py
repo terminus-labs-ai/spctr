@@ -23,7 +23,7 @@ import secrets
 import threading
 import time
 import weakref
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -231,3 +231,75 @@ class SessionLogManager:
                 await task
         for log in list(self._logs):
             log.close()
+
+
+def summarize_request(request: Any) -> dict[str, Any]:
+    """Structural counts and a token estimate for a request; never its content."""
+    try:
+        system = request.system or []
+        tools = request.tools or []
+        chars = sum(len(b.text) for b in system)
+        for msg in request.messages:
+            for block in msg.content:
+                if hasattr(block, "text"):
+                    chars += len(block.text)
+                else:
+                    chars += len(json.dumps(block.model_dump(), default=str))
+        chars += sum(len(t.model_dump_json()) for t in tools)
+        return {
+            "system_blocks": len(system),
+            "messages": len(request.messages),
+            "tools": len(tools),
+            "request_tokens_estimate": chars // 4,
+        }
+    except Exception as exc:
+        logger.warning("Session log request summary failed: %s", exc)
+        return {}
+
+
+class SessionTracer:
+    """SR2 tracer that logs firings to a session log, then forwards to *inner*.
+
+    Content before/after is deliberately omitted so static resolver text and
+    compiled prompts never reach the log. The caller's own tracer (``--trace``)
+    still receives every hook unchanged.
+    """
+
+    def __init__(
+        self, log_provider: Callable[[], SessionLog | None], inner: Any = None
+    ) -> None:
+        self._log_provider = log_provider
+        self._inner = inner
+
+    def _append(self, event: str, data: dict[str, Any]) -> None:
+        log = self._log_provider()
+        if log is not None:
+            log.append(event, data)
+
+    def on_firing(self, record: Any) -> None:
+        failed = record.status == "failed"
+        self._append(
+            "pipeline.error" if failed else "pipeline.firing",
+            {
+                "turn_seq": record.turn_seq,
+                "iteration_seq": record.iteration_seq,
+                "firing_seq": record.firing_seq,
+                "kind": record.kind,
+                "component": record.component_name,
+                "layer": record.layer,
+                "trigger_events": list(record.trigger_events),
+                "tokens_before": record.tokens_before,
+                "tokens_after": record.tokens_after,
+                "tokens_delta": record.tokens_delta,
+                "duration_ms": record.duration_ms,
+                "status": record.status,
+                "error": record.error,
+            },
+        )
+        if self._inner is not None:
+            self._inner.on_firing(record)
+
+    def on_compile(self, request: Any) -> None:
+        self._append("pipeline.compile", summarize_request(request))
+        if self._inner is not None:
+            self._inner.on_compile(request)

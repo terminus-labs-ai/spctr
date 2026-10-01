@@ -18,8 +18,10 @@ observes a half-applied endpoint change.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
 from sr2.integrations.litellm import LiteLLMCallable
@@ -28,6 +30,7 @@ if TYPE_CHECKING:
     from sr2.protocols.llm import CompletionRequest, CompletionResponse, StreamEvent
 
 from sr2_spectre.config import ModelConfig
+from sr2_spectre.run_log import SessionLog, summarize_request
 
 logger = logging.getLogger(__name__)
 
@@ -93,3 +96,104 @@ class LiveLLM:
         inner = self._inner
         async for event in inner.stream(request):
             yield event
+
+
+class LoggedLLM:
+    """Per-Session ``LLMCallable`` that logs model calls, then delegates.
+
+    Wraps the shared ``LiveLLM`` so hot retargeting is preserved: every request
+    delegates to ``inner`` afresh, and ``LiveLLM.stream`` binds its current
+    target once. Requests and responses pass through unchanged.
+    """
+
+    def __init__(
+        self,
+        inner: "LiveLLM",
+        log_provider: Callable[[], SessionLog | None],
+        profile_provider: Callable[[], str],
+    ) -> None:
+        self._inner = inner
+        self._log_provider = log_provider
+        self._profile_provider = profile_provider
+
+    def _start(self, log: SessionLog, request: Any) -> float:
+        log.append(
+            "model.start",
+            {
+                "profile": self._profile_provider(),
+                "model": self._inner.model,
+                **summarize_request(request),
+            },
+        )
+        return time.monotonic()
+
+    async def complete(self, request: "CompletionRequest") -> "CompletionResponse":
+        log = self._log_provider()
+        if log is None:
+            return await self._inner.complete(request)
+        started = self._start(log, request)
+        try:
+            response = await self._inner.complete(request)
+        except BaseException as exc:
+            log.append("model.error", _error_data(exc, started))
+            raise
+        log.append(
+            "model.end",
+            {
+                "finish_reason": response.stop_reason,
+                "usage": response.usage.model_dump(),
+                "duration_ms": _elapsed_ms(started),
+            },
+        )
+        return response
+
+    async def stream(self, request: "CompletionRequest") -> AsyncIterator["StreamEvent"]:
+        log = self._log_provider()
+        if log is None:
+            async for event in self._inner.stream(request):
+                yield event
+            return
+        started = self._start(log, request)
+        out_chars = 0
+        usage: dict[str, Any] | None = None
+        finish: Any = None
+        terminal, data = "model.cancel", {}
+        try:
+            async for event in self._inner.stream(request):
+                if event.type in ("text", "thinking") and event.text:
+                    out_chars += len(event.text)
+                    log.append(
+                        "model.progress",
+                        {
+                            "kind": event.type,
+                            "preview": event.text,
+                            "output_tokens_estimate": out_chars // 4,
+                        },
+                    )
+                elif event.type == "usage" and event.usage is not None:
+                    usage = event.usage.model_dump()
+                elif event.type == "end":
+                    finish = (event.meta or {}).get("finish_reason")
+                yield event
+            terminal = "model.end"
+            data = {"finish_reason": finish, "usage": usage}
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            terminal, data = "model.error", _error_data(exc, started)
+            raise
+        finally:
+            data.setdefault("duration_ms", _elapsed_ms(started))
+            log.append(terminal, data)
+
+
+def _elapsed_ms(started: float) -> float:
+    return round((time.monotonic() - started) * 1000, 3)
+
+
+def _error_data(exc: BaseException, started: float) -> dict[str, Any]:
+    return {
+        "error": str(exc),
+        "error_type": type(exc).__name__,
+        "duration_ms": _elapsed_ms(started),
+    }
