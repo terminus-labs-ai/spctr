@@ -458,6 +458,27 @@ class TestLiveToolEvents:
         assert done["data"]["result_bytes"] == 210_000
         assert ("truncated", True) in list(_walk(done["data"]))
 
+    async def test_result_bytes_is_original_utf8_size_for_multibyte_error(self, home):
+        # obsidian-ejjc AC6: byte-based context truncation must not shrink the
+        # logged size on the error path either; it stays the full UTF-8 size.
+        message = "€" * 70_000
+        message_bytes = len(message.encode("utf-8"))
+        assert message_bytes > AgentConfig().tool_result_max_bytes
+
+        async def broken(**_):
+            raise ValueError(message)
+
+        runtime = _runtime(ScriptedLLM([_tool_call("tu_mbe", "broken")]))
+        _register(runtime, "broken", broken)
+        session = runtime.new_session("f")
+        session.set_run_context(_ctx())
+        await session.handle_user_message("try")
+
+        (done,) = _for_tool(_events(_only_log(home)), "tool.complete", "tu_mbe")
+        assert done["data"]["is_error"] is True
+        # Full error text in bytes (the message plus a short error prefix).
+        assert message_bytes <= done["data"]["result_bytes"] <= message_bytes + 64
+
     async def test_failing_tool_records_error_status(self, home):
         async def broken(**_):
             raise ValueError("boom-detail")
