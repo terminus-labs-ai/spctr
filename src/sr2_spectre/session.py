@@ -347,6 +347,11 @@ class Session:
                             "sr2.retry",
                             {**(ev.meta or {}), "iteration": ev.iteration},
                         )
+                    elif ev.type == "error" and ev.errors:
+                        self._log_event(
+                            "pipeline.error",
+                            {"errors": list(ev.errors), "iteration": ev.iteration},
+                        )
                     elif ev.type == "tool_use_emitted" and ev.tool_uses:
                         for tu in ev.tool_uses:
                             total_tool_calls += 1
