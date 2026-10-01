@@ -280,6 +280,7 @@ longstanding process-CWD-relative behavior while supporting the same `~` and
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `SR2_HOME` | `~/.sr2` | Base directory for SR2/Spectre configs and data |
+| `SR2_SESSION_LOG_DIR` | `$SR2_HOME/logs/sessions` | Session log directory; `off` disables session logs |
 
 ---
 

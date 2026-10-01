@@ -362,7 +362,7 @@ class Runtime:
             active_frame_provider=self._active_frame_provider,
             provenance_store=self._provenance_store,
             memory_store=self._memory_store,
-            log_manager=self._session_logs,
+            log_manager=self._session_logs if self._session_logs.enabled else None,
         )
         self._sessions.add(session)
         return session

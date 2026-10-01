@@ -1,7 +1,8 @@
 """Live session log — one flushed JSONL file per Session.
 
 ``SessionLogManager`` (owned by Runtime) creates session logs below
-``$SR2_HOME/logs/sessions/`` and sweeps stale ones. ``SessionLog`` appends
+``$SR2_HOME/logs/sessions/`` and sweeps stale ones. ``$SR2_SESSION_LOG_DIR``
+moves them elsewhere, or turns them off when set to ``off``. ``SessionLog`` appends
 one JSON envelope per event and flushes each line so ``tail -f`` sees it
 immediately. A writer holds an exclusive ``flock`` for its lifetime, which is
 how a sweep in any process knows the file is still live.
@@ -40,6 +41,7 @@ _SECRET_KEYS = frozenset(
 )
 _REDACTED = "[REDACTED]"
 _PROCESS_START = time.monotonic()
+_DIR_ENV = "SR2_SESSION_LOG_DIR"
 
 
 def _bound_text(text: str) -> Any:
@@ -141,9 +143,19 @@ class SessionLogManager:
 
     @property
     def directory(self) -> Path:
+        raw = os.environ.get(_DIR_ENV, "").strip()
+        if raw and raw.lower() != "off":
+            return Path(raw).expanduser()
         return resolve_sr2_home() / "logs" / "sessions"
 
+    @property
+    def enabled(self) -> bool:
+        """False when ``$SR2_SESSION_LOG_DIR`` is ``off``."""
+        return os.environ.get(_DIR_ENV, "").strip().lower() != "off"
+
     def _ensure_directory(self) -> Path:
+        if not self.enabled:
+            raise OSError(f"session logs disabled by {_DIR_ENV}=off")
         directory = self.directory
         directory.mkdir(parents=True, exist_ok=True)
         directory.chmod(0o700)
@@ -208,7 +220,7 @@ class SessionLogManager:
 
     async def start(self) -> None:
         """Sweep once now, then every ``cleanup_interval`` seconds."""
-        if self._task is not None:
+        if self._task is not None or not self.enabled:
             return
         try:
             self._ensure_directory()

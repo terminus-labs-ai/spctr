@@ -277,7 +277,8 @@ the agent's.
 ## Session log (automatic, no interface code)
 
 Every Session writes a live JSONL log to `$SR2_HOME/logs/sessions/<UTC>-<session-id>-<suffix>.jsonl`
-(dir `0700`, files `0600`). The path is printed to stderr as `Session log: <path>` when your
+(dir `0700`, files `0600`). `SR2_SESSION_LOG_DIR` moves the directory, or disables logging when set
+to `off`. The path is printed to stderr as `Session log: <path>` when your
 interface calls `set_run_context()`, so do not add logging of your own. Follow a run with
 `tail -f <path>`; each line is one flushed JSON object (`schema_version`, `sequence`, `timestamp`,
 `elapsed_ms`, `session_id`, `interface`, `event`, `data`).
