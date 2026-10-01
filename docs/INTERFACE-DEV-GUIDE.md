@@ -282,6 +282,11 @@ interface calls `set_run_context()`, so do not add logging of your own. Follow a
 `tail -f <path>`; each line is one flushed JSON object (`schema_version`, `sequence`, `timestamp`,
 `elapsed_ms`, `session_id`, `interface`, `event`, `data`).
 
+A new Session means a new file. Discord rebuilds its Session for every inbound message, so a
+channel conversation is split across one file per message; join them on the session ID
+`discord-<channel_id>` (`ls $SR2_HOME/logs/sessions/*-discord-<channel_id>-*.jsonl`, sorted by the
+UTC prefix).
+
 | Event | Meaning |
 |---|---|
 | `session.start`, `turn.start/complete/cancel/error` | Session and turn boundaries, with duration |
