@@ -96,6 +96,10 @@ class Session:
         self._log_manager = log_manager
         self._log: SessionLog | None = None
         self._log_attempted = False
+        # Turns between turn.start and stream_message exit (queued ones count);
+        # a close() requested meanwhile is deferred until the last one ends.
+        self._turns_in_flight = 0
+        self._close_requested = False
 
         # Run context — set by the Interface at start(); None until then.
         self._run_context: RunContext | None = None
@@ -216,7 +220,16 @@ class Session:
         print(f"Session log: {log.path}", file=sys.stderr)
 
     def close(self) -> None:
-        """Close this Session's log now; idempotent. Other Sessions are untouched."""
+        """Close this Session's log; idempotent. Other Sessions are untouched.
+
+        Closes immediately when no turn is in flight; otherwise defers until
+        the last in-flight turn ends so its remaining events are not dropped.
+        """
+        self._close_requested = True
+        if self._turns_in_flight == 0:
+            self._close_log_now()
+
+    def _close_log_now(self) -> None:
         if self._log is not None:
             self._log.close()
 
@@ -306,30 +319,36 @@ class Session:
     async def stream_message(self, text: str) -> AsyncIterator[AgentEvent]:
         """Stream agent events for a user message, logging turn boundaries."""
         self._log_event("turn.start", {"input": text})
-        started = time.monotonic()
-        tool_calls = 0
+        self._turns_in_flight += 1
         try:
-            async for ev in self._stream_turn(text):
-                if isinstance(ev, AgentDone):
-                    tool_calls = ev.tool_calls_executed
-                yield ev
-        except asyncio.CancelledError:
-            self._log_event("turn.cancel", {"duration_ms": _ms_since(started)})
-            raise
-        except Exception as exc:
+            started = time.monotonic()
+            tool_calls = 0
+            try:
+                async for ev in self._stream_turn(text):
+                    if isinstance(ev, AgentDone):
+                        tool_calls = ev.tool_calls_executed
+                    yield ev
+            except asyncio.CancelledError:
+                self._log_event("turn.cancel", {"duration_ms": _ms_since(started)})
+                raise
+            except Exception as exc:
+                self._log_event(
+                    "turn.error",
+                    {
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                        "duration_ms": _ms_since(started),
+                    },
+                )
+                raise
             self._log_event(
-                "turn.error",
-                {
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                    "duration_ms": _ms_since(started),
-                },
+                "turn.complete",
+                {"duration_ms": _ms_since(started), "tool_calls": tool_calls},
             )
-            raise
-        self._log_event(
-            "turn.complete",
-            {"duration_ms": _ms_since(started), "tool_calls": tool_calls},
-        )
+        finally:
+            self._turns_in_flight -= 1
+            if self._close_requested and self._turns_in_flight == 0:
+                self._close_log_now()
 
     async def _stream_turn(self, text: str) -> AsyncIterator[AgentEvent]:
         """Stream agent events for a user message, serialized by _lock."""
