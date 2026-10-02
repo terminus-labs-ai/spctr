@@ -5,6 +5,8 @@ import asyncio
 import os
 from pathlib import Path
 
+from sr2_spectre.tools.builtins.path_lock import path_lock
+
 
 class FileWriteTool:
     """Write content to a file, creating parent directories as needed.
@@ -86,8 +88,9 @@ class FileWriteTool:
 
 
 def _write_file(path: str, content: str) -> int:
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     encoded = content.encode("utf-8")
-    with open(path, "wb") as f:
-        f.write(encoded)
+    with path_lock(path):
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(encoded)
     return len(encoded)

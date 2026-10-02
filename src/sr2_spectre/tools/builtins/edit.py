@@ -5,6 +5,8 @@ import asyncio
 import os
 from pathlib import Path
 
+from sr2_spectre.tools.builtins.path_lock import path_lock
+
 
 class EditTool:
     """Replace an exact substring in a file.
@@ -118,27 +120,28 @@ def _edit_file(
     new_string: str,
     replace_all: bool,
 ) -> str:
-    with open(path, encoding="utf-8") as f:
-        content = f.read()
+    with path_lock(path):
+        with open(path, encoding="utf-8") as f:
+            content = f.read()
 
-    count = content.count(old_string)
-    if count == 0:
-        raise ValueError(f"old_string not found in {path}: {old_string!r}")
-    if count > 1 and not replace_all:
-        raise ValueError(
-            f"Ambiguous edit: old_string matches {count} times in {path}. "
-            "Set replace_all=True or provide a more specific old_string."
-        )
+        count = content.count(old_string)
+        if count == 0:
+            raise ValueError(f"old_string not found in {path}: {old_string!r}")
+        if count > 1 and not replace_all:
+            raise ValueError(
+                f"Ambiguous edit: old_string matches {count} times in {path}. "
+                "Set replace_all=True or provide a more specific old_string."
+            )
 
-    if replace_all:
-        new_content = content.replace(old_string, new_string)
-        n_replaced = count
-    else:
-        new_content = content.replace(old_string, new_string, 1)
-        n_replaced = 1
+        if replace_all:
+            new_content = content.replace(old_string, new_string)
+            n_replaced = count
+        else:
+            new_content = content.replace(old_string, new_string, 1)
+            n_replaced = 1
 
-    encoded = new_content.encode("utf-8")
-    with open(path, "wb") as f:
-        f.write(encoded)
+        encoded = new_content.encode("utf-8")
+        with open(path, "wb") as f:
+            f.write(encoded)
 
     return f"Made {n_replaced} replacement(s) in {path}"
