@@ -67,6 +67,7 @@ class TestRuntimeForwardsApiKey:
             model="test-model",
             base_url="http://test:8000",
             api_key="dummy",
+            max_tokens=32768,
         )
 
 
@@ -84,6 +85,7 @@ class TestBackwardCompatibility:
         assert MockLLM.call_args.kwargs == {
             "model": "test-model",
             "base_url": "http://test:8000",
+            "max_tokens": 32768,
         }
 
 

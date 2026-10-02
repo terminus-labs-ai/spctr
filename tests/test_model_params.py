@@ -97,10 +97,11 @@ class TestRuntimeForwardsParams:
             base_url="http://test:8000",
             temperature=0.2,
             top_p=0.9,
+            max_tokens=32768,
         )
 
     def test_runtime_empty_params_no_extra_kwargs(self):
-        """When params is empty (default), Runtime passes only model+base_url."""
+        """When params is empty (default), Runtime passes model+base_url plus the default max_tokens."""
         from sr2_spectre.runtime import Runtime
 
         cfg = _make_config()  # params defaults to {}
@@ -112,6 +113,7 @@ class TestRuntimeForwardsParams:
         MockLLM.assert_called_once_with(
             model="test-model",
             base_url="http://test:8000",
+            max_tokens=32768,
         )
 
     def test_runtime_forwards_all_param_types(self):
@@ -151,7 +153,7 @@ class TestBackwardCompatibility:
         assert cfg.models["default"].params == {}
 
     def test_runtime_no_params_preserves_behavior(self):
-        """Runtime with no params passes exactly model+base_url to LiteLLMCallable."""
+        """Runtime with no params passes model+base_url plus the default max_tokens."""
         from sr2_spectre.runtime import Runtime
 
         cfg = SpectreConfig(
@@ -164,7 +166,9 @@ class TestBackwardCompatibility:
             MockLLM.return_value = MagicMock()
             runtime = Runtime(config=cfg)
 
-        assert MockLLM.call_args.kwargs == {"model": "gpt-4o", "base_url": "http://x"}
+        assert MockLLM.call_args.kwargs == {
+            "model": "gpt-4o", "base_url": "http://x", "max_tokens": 32768,
+        }
 
 
 # ---------------------------------------------------------------------------
