@@ -36,7 +36,7 @@ from sr2_spectre.events import (
     AgentToolResult,
     AgentToolStart,
 )
-from sr2_spectre.live_llm import LoggedLLM
+from sr2_spectre.live_llm import LoggedLLM, RetryingLLM
 from sr2_spectre.run_log import SessionLog, SessionLogManager, SessionTracer
 from sr2_spectre.tools.output import ToolOutput
 from sr2_spectre.tools.registry import ToolRegistry
@@ -143,6 +143,9 @@ class Session:
             tracer = SessionTracer(lambda: self._log, self._tracer)
             if hasattr(llm, "retarget"):
                 llm = LoggedLLM(llm, lambda: self._log, lambda: self.config.active_model)
+        if hasattr(self._llm, "retarget"):
+            live = self._llm
+            llm = RetryingLLM(llm, lambda: live.model_config)
         return SR2(
             pipeline_config=self.config.pipeline,
             llm={"default": llm},

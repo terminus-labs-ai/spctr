@@ -177,6 +177,22 @@ call start for the first event, then from the previous event) aborts it with
 `ModelCallGuardError` (`kind: stall`). Not applied to non-streamed calls. Must be
 positive; `null` disables the guard. Neither field is forwarded to the provider.
 
+### `stream_retries` (int, default: `2`)
+
+How many times a streamed model call is retried when it dies on a transport error
+(litellm `MidStreamFallbackError` or `APIConnectionError`), before or after the first
+event. The retry re-sends the same request, so a relay can fail over to another node.
+Events from a failed attempt are discarded and never reach the conversation. Guard aborts
+(`ModelCallGuardError`), cancellation and all other errors are not retried. When every
+attempt fails, the last error propagates and the turn fails. Must be `>= 0`; `0` disables
+retry. Not forwarded to the provider. With session logging on, each attempt is its own
+`model.start` / `model.error` or `model.end`.
+
+### `stream_retry_backoff_seconds` (float, default: `2.0`)
+
+Wait before retry *k* is `stream_retry_backoff_seconds * 2**(k-1)` seconds (2 s, 4 s with the
+defaults). Must be `>= 0`; `0` retries without waiting. Not forwarded to the provider.
+
 ---
 
 ## Pipeline section
@@ -421,6 +437,7 @@ not just the agent file.
 | `models.default.api_key` | Subsequent calls use the new key |
 | `models.default.params` | New sampling params take effect |
 | `models.default.call_timeout_seconds`, `models.default.stall_timeout_seconds` | New guard limits apply to the next call; a call in flight keeps its own |
+| `models.default.stream_retries`, `models.default.stream_retry_backoff_seconds` | New retry settings apply to the next streamed call |
 | `pipeline.*` | Each conversation rebuilds its SR2 on its next turn |
 | `agent.tools` | Tools added, removed, or reconfigured |
 | `agent.skills`, `agent.skills_dirs` | Skill registry rebuilt |

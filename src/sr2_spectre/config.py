@@ -67,6 +67,10 @@ class ModelConfig(BaseModel):
     call_timeout_seconds: float | None = Field(default=900.0, gt=0)
     # Max silence between stream events (from call start for the first); None disables it.
     stall_timeout_seconds: float | None = Field(default=600.0, gt=0)
+    # Retries of a streamed call that dies on a transport error; each re-sends the request.
+    stream_retries: int = Field(default=2, ge=0)
+    # Wait before retry k is this * 2**(k-1) seconds.
+    stream_retry_backoff_seconds: float = Field(default=2.0, ge=0)
 
 
 class McpServerConfig(BaseModel):

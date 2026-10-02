@@ -24,6 +24,7 @@ import time
 from collections.abc import AsyncIterator, Callable
 from typing import TYPE_CHECKING, Any
 
+from litellm.exceptions import APIConnectionError, MidStreamFallbackError
 from sr2.integrations.litellm import LiteLLMCallable
 
 if TYPE_CHECKING:
@@ -243,6 +244,55 @@ class LoggedLLM:
         finally:
             data.setdefault("duration_ms", _elapsed_ms(started))
             log.append(terminal, data)
+
+
+RETRYABLE_STREAM_ERRORS: tuple[type[BaseException], ...] = (
+    MidStreamFallbackError,
+    APIConnectionError,
+)
+
+
+class RetryingLLM:
+    """Per-Session ``LLMCallable`` that retries a streamed call that dies.
+
+    Each attempt is buffered and yielded only after it finishes, so events from
+    a failed attempt never reach SR2. Only transport errors are retried; guard
+    aborts, cancellation and every other error propagate after one attempt.
+    Retry settings are read at the start of each ``stream()`` call.
+    """
+
+    def __init__(
+        self, inner: Any, config_provider: Callable[[], ModelConfig]
+    ) -> None:
+        self._inner = inner
+        self._config_provider = config_provider
+
+    async def complete(self, request: "CompletionRequest") -> "CompletionResponse":
+        return await self._inner.complete(request)
+
+    async def stream(self, request: "CompletionRequest") -> AsyncIterator["StreamEvent"]:
+        cfg = self._config_provider()
+        retries, backoff = cfg.stream_retries, cfg.stream_retry_backoff_seconds
+        attempt = 0
+        while True:
+            buffered: list[Any] = []
+            try:
+                async for event in self._inner.stream(request):
+                    buffered.append(event)
+            except RETRYABLE_STREAM_ERRORS as exc:
+                if attempt >= retries:
+                    raise
+                delay = backoff * 2**attempt
+                attempt += 1
+                logger.warning(
+                    "Model stream failed — retry %d/%d in %gs error=%s model=%s",
+                    attempt, retries, delay, type(exc).__name__, cfg.model,
+                )
+                await asyncio.sleep(delay)
+                continue
+            for event in buffered:
+                yield event
+            return
 
 
 def _elapsed_ms(started: float) -> float:
