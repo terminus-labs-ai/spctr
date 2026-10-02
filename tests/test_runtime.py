@@ -81,6 +81,7 @@ class TestRuntimeInit:
         MockLLM.assert_called_once_with(
             model="test-model",
             base_url="http://test:8000",
+            max_tokens=32768,
         )
 
     def test_runtime_has_tool_registry(self):
