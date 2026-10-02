@@ -34,6 +34,32 @@ from sr2_spectre.run_log import SessionLog, summarize_request
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_MAX_OUTPUT_TOKENS: int = 32768
+
+
+class ModelCallGuardError(RuntimeError):
+    """A model call was aborted for running too long or going silent."""
+
+    def __init__(
+        self, kind: str, limit_seconds: float, elapsed_seconds: float, model: str
+    ) -> None:
+        super().__init__(
+            f"model call aborted: {kind} limit of {limit_seconds:g}s exceeded "
+            f"(elapsed {elapsed_seconds:.1f}s, model={model})"
+        )
+        self.kind = kind
+        self.limit_seconds = float(limit_seconds)
+        self.elapsed_seconds = float(elapsed_seconds)
+
+
+def _guard_abort(kind: str, limit: float, started: float, model: str) -> ModelCallGuardError:
+    elapsed = time.monotonic() - started
+    logger.warning(
+        "Model call aborted — kind=%s limit=%gs elapsed=%.1fs model=%s",
+        kind, limit, elapsed, model,
+    )
+    return ModelCallGuardError(kind, limit, elapsed, model)
+
 
 def build_llm(model_cfg: ModelConfig) -> LiteLLMCallable:
     """Build a LiteLLMCallable from a model config block.
@@ -49,6 +75,8 @@ def build_llm(model_cfg: ModelConfig) -> LiteLLMCallable:
         kwargs["api_key"] = model_cfg.api_key
     if model_cfg.params:
         kwargs.update(model_cfg.params)
+    if "max_tokens" not in model_cfg.params and "max_completion_tokens" not in model_cfg.params:
+        kwargs["max_tokens"] = DEFAULT_MAX_OUTPUT_TOKENS
     return LiteLLMCallable(**kwargs)
 
 
@@ -88,14 +116,44 @@ class LiveLLM:
         return True
 
     async def complete(self, request: "CompletionRequest") -> "CompletionResponse":
-        return await self._inner.complete(request)
+        inner, limit, model = self._inner, self._model_cfg.call_timeout_seconds, self.model
+        started = time.monotonic()
+        try:
+            return await asyncio.wait_for(inner.complete(request), limit)
+        except TimeoutError:
+            if limit is None:
+                raise
+            raise _guard_abort("duration", limit, started, model) from None
 
     async def stream(self, request: "CompletionRequest") -> AsyncIterator["StreamEvent"]:
         # Bound once, up front: a retarget part-way through must not splice two
-        # endpoints into a single response.
-        inner = self._inner
-        async for event in inner.stream(request):
-            yield event
+        # endpoints into a single response. Guard limits bind at the same point.
+        inner, model = self._inner, self.model
+        call_limit = self._model_cfg.call_timeout_seconds
+        stall_limit = self._model_cfg.stall_timeout_seconds
+        started = time.monotonic()
+        it = inner.stream(request).__aiter__()
+        try:
+            while True:
+                remaining = None if call_limit is None else call_limit - (time.monotonic() - started)
+                timeout = min((t for t in (remaining, stall_limit) if t is not None), default=None)
+                try:
+                    if timeout is not None and timeout <= 0:
+                        raise TimeoutError
+                    event = await asyncio.wait_for(anext(it), timeout)
+                except StopAsyncIteration:
+                    return
+                except TimeoutError:
+                    if call_limit is not None and time.monotonic() - started >= call_limit:
+                        raise _guard_abort("duration", call_limit, started, model) from None
+                    if stall_limit is None:
+                        raise
+                    raise _guard_abort("stall", stall_limit, started, model) from None
+                yield event
+        finally:
+            aclose = getattr(it, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
 
 class LoggedLLM:

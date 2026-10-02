@@ -161,8 +161,21 @@ Sampling parameters forwarded to the LLM provider. Common options:
 |-----------|------|---------|-------------|
 | `temperature` | float | provider default | Randomness (0.0–1.0) |
 | `top_p` | float | provider default | Nucleus sampling threshold |
-| `max_tokens` | int | provider default | Max response tokens |
+| `max_tokens` | int | `32768` | Max response tokens. Injected when neither `max_tokens` nor `max_completion_tokens` is set; an explicit value (including `null`) is forwarded unchanged |
 | `stream` | bool | `true` | Enable streaming |
+
+### `call_timeout_seconds` (float or null, default: `900.0`)
+
+Wall-clock cap on one model call, streamed or not. A call past it is aborted with
+`ModelCallGuardError` (`kind: duration`), a WARNING is logged, and the session log
+records `model.error`. Must be positive; `null` disables the guard.
+
+### `stall_timeout_seconds` (float or null, default: `600.0`)
+
+Maximum silence on a streamed call: no stream event for this long (measured from
+call start for the first event, then from the previous event) aborts it with
+`ModelCallGuardError` (`kind: stall`). Not applied to non-streamed calls. Must be
+positive; `null` disables the guard. Neither field is forwarded to the provider.
 
 ---
 
@@ -407,6 +420,7 @@ not just the agent file.
 | `models.default.base_url` | Subsequent calls hit the new endpoint |
 | `models.default.api_key` | Subsequent calls use the new key |
 | `models.default.params` | New sampling params take effect |
+| `models.default.call_timeout_seconds`, `models.default.stall_timeout_seconds` | New guard limits apply to the next call; a call in flight keeps its own |
 | `pipeline.*` | Each conversation rebuilds its SR2 on its next turn |
 | `agent.tools` | Tools added, removed, or reconfigured |
 | `agent.skills`, `agent.skills_dirs` | Skill registry rebuilt |

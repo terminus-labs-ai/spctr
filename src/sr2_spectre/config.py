@@ -63,6 +63,10 @@ class ModelConfig(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+    # Wall-clock cap on one model call; None disables it.
+    call_timeout_seconds: float | None = Field(default=900.0, gt=0)
+    # Max silence between stream events (from call start for the first); None disables it.
+    stall_timeout_seconds: float | None = Field(default=600.0, gt=0)
 
 
 class McpServerConfig(BaseModel):
