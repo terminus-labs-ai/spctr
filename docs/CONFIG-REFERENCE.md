@@ -250,6 +250,7 @@ Ordered list of context compilation layers. Each layer:
 | `session` | Session history from current turn | none |
 | `input` | Current user message | none |
 | `plan` | Plan file resolution | `plans_root` (str), `project` (str) |
+| `topic_area` | Managed topic documents by area identity | `topics_root` (absolute str), `filename` (AGENTS.md/NOW.md), `max_tokens` (int/null) |
 | `memory` | Memory store lookup | `scope` (str), `limit` (int), `prefix` (str) |
 | `knowledge` | Knowledge file resolution | `knowledge_root` (str) |
 
@@ -262,6 +263,50 @@ follows from the resolved name, `~/.sr2/knowledge/<project>/`.
 
 The `project:` field keeps its name; it is the one point where an incoming
 area is translated to this resolver's notion of a project.
+
+#### Topic area documents
+
+The `topic_area` resolver reads the current RunContext area on every turn and
+selects one managed topic by identity, independent of directory names or depth.
+
+```yaml
+- name: area
+  target: system
+  category: plan_knowledge
+  resolvers:
+    - name: area-doc
+      type: topic_area
+      config:
+        topics_root: /data/obsidian/topics
+        filename: AGENTS.md
+        max_tokens: 4000
+    - name: area-now
+      type: topic_area
+      config:
+        topics_root: /data/obsidian/topics
+        filename: NOW.md
+        max_tokens: 4000
+```
+
+`topics_root` must be an absolute directory path without glob syntax; it may
+be absent when configured. `filename` is required and accepts only
+`AGENTS.md` or `NOW.md`. `max_tokens` is an optional positive integer;
+omitting it or setting it to `null` disables the limit. Each selected file is
+checked using SR2's characters-per-token approximation; exceeding the limit
+raises `MarkdownTokenBudgetError`.
+
+An eligible topic has README.md YAML frontmatter `kind: topic` and
+`id: topic:<area>`, plus sibling NOW.md frontmatter `kind: continuity`,
+`for: topic:<area>` and `mode: source`. Frontmatter must be a mapping.
+For example, area `henrique` can select `family/henrique (pai)` by its
+`topic:henrique` identity. Family navigation views and same-named decoys are
+ineligible. Hidden directories are excluded, and metadata and selected
+documents must resolve inside `topics_root`.
+
+Selection, metadata and content are reread on every turn. Missing or duplicate
+eligible topics and missing or escaping documents skip with a WARNING.
+No provider or no nonempty area skips at DEBUG. There is no basename/path/glob
+fallback, and no `path` or `on_missing` setting.
 
 ---
 
@@ -375,8 +420,8 @@ never `None`. That distinction is load-bearing — see the [interface
 development guide](INTERFACE-DEV-GUIDE.md#runcontextarea-three-states).
 
 The interface does not check whether the derived area exists anywhere;
-existence is each consumer's concern. Today the only consumer is the `plan`
-resolver (see [Resolver types](#resolver-types)). A channel with no area
+existence is each consumer's concern. The `plan` and `topic_area`
+resolvers consume it (see [Resolver types](#resolver-types)). A channel with no area
 injects no project knowledge rather than falling back to whatever `cwd`
 happens to be.
 
@@ -387,7 +432,7 @@ The REPL has no channel, so it stamps `area` once in `start()` from the
 semantics). Filesystem markers and repository roots do not affect it: there
 is no `CLAUDE.md` lookup, no `.git` walk, and no ancestor discovery.
 
-- `/data/obsidian/projects/harbinger` → `harbinger` (even though
+- `/data/obsidian/topics/harbinger` → `harbinger` (even though
   `/data/obsidian` contains `CLAUDE.md` and a git root)
 - `~/git/sr2-spectre/src` → `src`
 - a directory with no markers at all → its own basename, no fallback warning

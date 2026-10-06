@@ -236,7 +236,7 @@ class REPLInterface:
         self._running = True
         # The REPL's area is the basename of the exact directory the process
         # was launched from — no CLAUDE.md or .git discovery, no ancestor
-        # walk. A REPL started in /data/obsidian/projects/harbinger is the
+        # walk. A REPL started in /data/obsidian/topics/harbinger is the
         # "harbinger" area even though /data/obsidian holds CLAUDE.md and a
         # git root. A non-empty SR2_AREA is the only override.
         env_area = os.environ.get("SR2_AREA", "").strip()
