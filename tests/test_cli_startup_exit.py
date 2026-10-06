@@ -6,10 +6,13 @@ systemd (Restart=always) saw a healthy unit for ~8 hours. The contract: a
 fatal exception out of the async run must terminate the process with a nonzero
 exit status, while normal shutdown keeps its current behavior.
 
-In-process expression of that contract: main() ends the run either by raising
-SystemExit(nonzero) or by calling a hard exit (os._exit). Both are intercepted
-here — os._exit is patched to raise SystemExit with its code so the test
-runner survives — and the assertion is on the exit status, not the mechanism.
+In-process expression of that contract: a fatal startup error must terminate
+via an explicit hard exit (os._exit) — the mechanism that bypasses the thread
+joins at interpreter shutdown, which is what hung for 8 hours. A plain
+SystemExit is NOT sufficient: it still runs interpreter shutdown and hangs on
+a stray non-daemon thread. os._exit is patched here to record its code and
+raise SystemExit so the test runner survives; the test asserts BOTH the hard
+exit fired with a nonzero code and the resulting exit status.
 
 Subprocess-level proof against the real process (bounded timeout, no hang with
 stray threads) is journey E's tests/test_cli_startup_exit_e2e.py, not this
@@ -17,6 +20,7 @@ file. No real bots are started and no ports are bound here.
 """
 from __future__ import annotations
 
+import logging
 import os
 
 import pytest
@@ -28,32 +32,40 @@ def _minimal_args() -> list[str]:
     return ["config.yaml", "hello", "--interface", "single_shot"]
 
 
-def _install_fatal_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make cli.main's async run raise a fatal startup error, and convert any
-    direct os._exit hard exit into SystemExit so the in-process contract (the
-    exit status) is observable whichever mechanism the fix uses."""
+def _install_fatal_run(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Make cli.main's async run raise a fatal startup error.
+
+    Returns the list of codes passed to os._exit: the patched hard exit
+    records its call and then raises SystemExit with the same code so the
+    test runner survives. A fix that never hard-exits leaves the list empty.
+    """
+    hard_exits: list[int] = []
 
     async def _fatal_run_async(argv: object = None) -> None:
         raise RuntimeError("fatal startup failure")
 
     def _fake_hard_exit(code: int = 0) -> None:  # mirrors os._exit's contract
+        hard_exits.append(code)
         raise SystemExit(code)
 
     monkeypatch.setattr(cli, "run_async", _fatal_run_async)
     monkeypatch.setattr(os, "_exit", _fake_hard_exit)
+    return hard_exits
 
 
 def test_main_exits_nonzero_when_run_async_raises_fatal_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A fatal startup exception raised out of the async run must surface as a
-    nonzero exit status (SystemExit), not as a raw exception escaping main().
+    """A fatal startup exception raised out of the async run must terminate
+    via a hard exit (os._exit) with a nonzero code.
 
     Pre-fix, main() let the exception propagate to the interpreter's default
-    shutdown path — the path that hung. Only an explicit exit terminates the
-    process regardless of a stray non-daemon thread.
+    shutdown path — the path that hung. A plain SystemExit is not enough: it
+    still runs interpreter shutdown, which blocks on a stray non-daemon
+    thread. Only os._exit bypasses those joins, so the cage requires the
+    hard exit to have actually fired, not merely an exit status.
     """
-    _install_fatal_run(monkeypatch)
+    hard_exits = _install_fatal_run(monkeypatch)
 
     with pytest.raises(SystemExit) as excinfo:
         cli.main(_minimal_args())
@@ -62,22 +74,40 @@ def test_main_exits_nonzero_when_run_async_raises_fatal_error(
         "a fatal startup exception must exit nonzero so systemd "
         f"Restart=always fires; got exit code {excinfo.value.code!r}"
     )
+    assert len(hard_exits) == 1 and hard_exits[0] not in (0, None), (
+        "the fix must hard-exit via os._exit (which bypasses the thread "
+        "joins at interpreter shutdown); a plain SystemExit still hangs on "
+        f"a stray non-daemon thread; hard-exit calls: {hard_exits!r}"
+    )
 
 
 def test_main_nonzero_exit_keeps_the_failure_visible(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    """Converting the fatal error to an exit status must not swallow it: the
-    failure message stays visible on stderr."""
+    """Converting the fatal error to an exit must not swallow it: the failure
+    message stays visible.
+
+    Either channel satisfies this: an ERROR-level logging record whose text
+    contains the failure message (production's console StreamHandler puts it
+    on stderr) or a direct stderr write. Not both — a fix that logs and also
+    prints duplicates the failure.
+    """
     _install_fatal_run(monkeypatch)
 
-    with pytest.raises(SystemExit):
-        cli.main(_minimal_args())
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(SystemExit):
+            cli.main(_minimal_args())
 
+    logged = any(
+        rec.levelno >= logging.ERROR and "fatal startup failure" in rec.getMessage()
+        for rec in caplog.records
+    )
     err = capsys.readouterr().err
-    assert "fatal startup failure" in err, (
-        "the fatal error must remain visible on stderr alongside the exit"
+    assert logged or "fatal startup failure" in err, (
+        "the fatal error must remain visible (an ERROR log record or stderr) "
+        "alongside the exit"
     )
 
 
