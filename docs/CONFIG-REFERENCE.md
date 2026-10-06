@@ -272,7 +272,7 @@ selects one managed topic by identity, independent of directory names or depth.
 ```yaml
 - name: area
   target: system
-  category: plan_knowledge
+  degradation_category: plan_knowledge
   resolvers:
     - name: area-doc
       type: topic_area
