@@ -72,6 +72,20 @@ class MCPClient:
 
         except MCPConnectionError:
             raise
+        except asyncio.CancelledError as exc:
+            # A transport's internal anyio cancel scope can leak a
+            # CancelledError out of the connect/initialize sequence mid-
+            # handshake (e.g. endpoint still coming up during a boot race).
+            # Same distinction as _suppress_spurious_cancel: if THIS task is
+            # genuinely being cancelled, propagate; otherwise convert to
+            # MCPConnectionError so Runtime.initialize()'s warning path runs,
+            # and close the half-open contexts so no non-daemon transport
+            # threads are stranded (obsidian-c573).
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > 0:
+                raise  # genuine external cancellation — must propagate
+            await self.close()
+            raise MCPConnectionError(str(exc)) from exc
         except Exception as exc:
             raise MCPConnectionError(str(exc)) from exc
 

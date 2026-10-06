@@ -439,7 +439,20 @@ def main(argv: list[str] | None = None) -> None:
         exit_code = _run_config_show(args[2:])
         sys.exit(exit_code)
 
-    asyncio.run(run_async(argv))
+    try:
+        asyncio.run(run_async(argv))
+    except SystemExit:
+        raise
+    except BaseException as exc:  # noqa: BLE001 — fatal startup failure (obsidian-c573)
+        # A fatal error escaping the async run must terminate with a nonzero
+        # status even if a leftover non-daemon thread (e.g. a half-opened MCP
+        # transport) would block interpreter shutdown — that hang kept the
+        # unit "active" for 8h while systemd Restart=always never fired.
+        # os._exit skips the thread joins; flush logging first so the failure
+        # record reaches the log file/stderr.
+        logger.exception("Fatal error: %s", exc)
+        logging.shutdown()
+        os._exit(1)
 
 
 if __name__ == "__main__":
