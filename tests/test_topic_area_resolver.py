@@ -114,11 +114,12 @@ async def test_hidden_directories_are_excluded(tmp_path, folder):
     assert await _text(_build(tmp_path)) == ""
 
 
-async def test_duplicate_eligible_identities_skip_with_warning(tmp_path, caplog):
+@pytest.mark.parametrize("filename", ["AGENTS.md", "README.md"])
+async def test_duplicate_eligible_identities_skip_with_warning(tmp_path, caplog, filename):
     _topic(tmp_path / "first")
     _topic(tmp_path / "nested/second")
     with caplog.at_level(logging.DEBUG):
-        assert await _text(_build(tmp_path)) == ""
+        assert await _text(_build(tmp_path, filename)) == ""
     assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
