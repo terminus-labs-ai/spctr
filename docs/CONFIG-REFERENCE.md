@@ -250,7 +250,7 @@ Ordered list of context compilation layers. Each layer:
 | `session` | Session history from current turn | none |
 | `input` | Current user message | none |
 | `plan` | Plan file resolution | `plans_root` (str), `project` (str) |
-| `topic_area` | Managed topic documents by area identity | `topics_root` (absolute str), `filename` (AGENTS.md/NOW.md), `max_tokens` (int/null) |
+| `topic_area` | Managed topic documents by area identity | `topics_root` (absolute str), `filename` (AGENTS.md/NOW.md/README.md), `max_tokens` (int/null) |
 | `memory` | Memory store lookup | `scope` (str), `limit` (int), `prefix` (str) |
 | `knowledge` | Knowledge file resolution | `knowledge_root` (str) |
 
@@ -290,10 +290,10 @@ selects one managed topic by identity, independent of directory names or depth.
 
 `topics_root` must be an absolute directory path without glob syntax; it may
 be absent when configured. `filename` is required and accepts only
-`AGENTS.md` or `NOW.md`. `max_tokens` is an optional positive integer;
-omitting it or setting it to `null` disables the limit. Each selected file is
-checked using SR2's characters-per-token approximation; exceeding the limit
-raises `MarkdownTokenBudgetError`.
+`AGENTS.md`, `NOW.md` or `README.md`. `max_tokens` is an optional positive
+integer; omitting it or setting it to `null` disables the limit. Each selected
+file is checked using SR2's characters-per-token approximation; exceeding the
+limit raises `MarkdownTokenBudgetError`.
 
 An eligible topic has README.md YAML frontmatter `kind: topic` and
 `id: topic:<area>`, plus sibling NOW.md frontmatter `kind: continuity`,

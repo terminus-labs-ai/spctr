@@ -23,7 +23,7 @@ _DEFAULT_SUBSCRIPTION = EventSubscription(event_name="turn_start", phase=EventPh
 
 
 class TopicAreaResolver:
-    """Select AGENTS.md or source NOW.md from one eligible topic."""
+    """Select AGENTS.md, README.md or source NOW.md from one eligible topic."""
 
     name: str = "topic_area"
 
@@ -41,8 +41,8 @@ class TopicAreaResolver:
         ):
             raise ValueError("topic_area requires an absolute, non-glob topics_root.")
         filename = config.config.get("filename")
-        if filename not in ("AGENTS.md", "NOW.md"):
-            raise ValueError("topic_area filename must be AGENTS.md or NOW.md.")
+        if filename not in ("AGENTS.md", "NOW.md", "README.md"):
+            raise ValueError("topic_area filename must be AGENTS.md, NOW.md or README.md.")
         max_tokens = config.config.get("max_tokens")
         if max_tokens is not None and (type(max_tokens) is not int or max_tokens <= 0):
             raise ValueError("topic_area max_tokens must be a positive integer or None.")
