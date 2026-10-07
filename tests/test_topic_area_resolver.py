@@ -20,6 +20,15 @@ def _topic(path, area="sr2-spectre"):
     return path
 
 
+def _doc_text(filename, area, body):
+    """Full document text for one filename, keeping identity frontmatter intact."""
+    if filename == "README.md":
+        return f"---\nkind: topic\nid: topic:{area}\n---\n{body}"
+    if filename == "NOW.md":
+        return f"---\nkind: continuity\nfor: topic:{area}\nmode: source\n---\n{body}"
+    return body
+
+
 def _build(root, filename="AGENTS.md", provider=lambda: {"area": "sr2-spectre"}, **options):
     from sr2_spectre.pipeline.topic_area_resolver import TopicAreaResolver
 
@@ -35,7 +44,7 @@ async def _text(resolver):
     return "".join(block.text for block in result.content)
 
 
-@pytest.mark.parametrize("filename", ["AGENTS.md", "NOW.md"])
+@pytest.mark.parametrize("filename", ["AGENTS.md", "NOW.md", "README.md"])
 @pytest.mark.parametrize("folder,area", [
     ("sr2/sr2-spectre", "sr2-spectre"),
     ("family/henrique (pai)", "henrique"),
@@ -48,6 +57,7 @@ async def test_selects_identity_at_any_depth(tmp_path, filename, folder, area):
     assert await _text(resolver) == (topic / filename).read_text()
 
 
+@pytest.mark.parametrize("filename", ["AGENTS.md", "README.md"])
 @pytest.mark.parametrize("document,metadata", [
     ("README.md", "kind: family\nid: topic:sr2-spectre"),
     ("README.md", "kind: topic\nid: topic:other"),
@@ -63,11 +73,11 @@ async def test_selects_identity_at_any_depth(tmp_path, filename, folder, area):
     ("NOW.md", "null"),
     ("NOW.md", "kind: [unterminated"),
 ])
-async def test_ineligible_metadata_never_injects(tmp_path, caplog, document, metadata):
+async def test_ineligible_metadata_never_injects(tmp_path, caplog, filename, document, metadata):
     topic = _topic(tmp_path / "sr2-spectre")
     (topic / document).write_text(f"---\n{metadata}\n---\nExcluded content")
     with caplog.at_level(logging.DEBUG):
-        assert await _text(_build(tmp_path)) == ""
+        assert await _text(_build(tmp_path, filename)) == ""
     assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
@@ -78,7 +88,7 @@ async def test_metadata_without_frontmatter_is_ineligible(tmp_path, document):
     assert await _text(_build(tmp_path)) == ""
 
 
-@pytest.mark.parametrize("filename", ["AGENTS.md", "NOW.md"])
+@pytest.mark.parametrize("filename", ["AGENTS.md", "NOW.md", "README.md"])
 async def test_nested_decoy_and_family_view_do_not_override_identity(tmp_path, filename):
     source = _topic(tmp_path / "sr2" / "actual")
     decoy = _topic(tmp_path / "characters" / "sr2-spectre", "vexa")
@@ -88,6 +98,8 @@ async def test_nested_decoy_and_family_view_do_not_override_identity(tmp_path, f
         (topic / "AGENTS.md").write_text(marker + "\n")
         now = topic / "NOW.md"
         now.write_text(now.read_text().replace("Source NOW", marker))
+        readme = topic / "README.md"
+        readme.write_text(readme.read_text() + marker + "\n")
     now = view / "NOW.md"
     now.write_text(now.read_text().replace("mode: source", "mode: view"))
     text = await _text(_build(tmp_path, filename))
@@ -110,12 +122,15 @@ async def test_duplicate_eligible_identities_skip_with_warning(tmp_path, caplog)
     assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
-@pytest.mark.parametrize("missing", ["README.md", "NOW.md", "AGENTS.md"])
-async def test_missing_documents_skip_with_warning(tmp_path, caplog, missing):
+@pytest.mark.parametrize("filename,missing", [
+    ("AGENTS.md", "README.md"), ("AGENTS.md", "NOW.md"), ("AGENTS.md", "AGENTS.md"),
+    ("README.md", "README.md"), ("README.md", "NOW.md"),
+])
+async def test_missing_documents_skip_with_warning(tmp_path, caplog, filename, missing):
     topic = _topic(tmp_path / "topic")
     (topic / missing).unlink()
     with caplog.at_level(logging.DEBUG):
-        assert await _text(_build(tmp_path)) == ""
+        assert await _text(_build(tmp_path, filename)) == ""
     assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
@@ -166,7 +181,7 @@ async def test_escaping_symlinks_never_inject(tmp_path, caplog, escaping):
     assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
-@pytest.mark.parametrize("filename", ["AGENTS.md", "NOW.md"])
+@pytest.mark.parametrize("filename", ["AGENTS.md", "NOW.md", "README.md"])
 async def test_area_content_and_topic_moves_are_live(tmp_path, filename):
     topic = _topic(tmp_path / "first")
     other = _topic(tmp_path / "second", "henrique")
@@ -233,27 +248,37 @@ async def test_selected_path_containment_is_revalidated_each_turn(tmp_path, capl
     assert await _text(resolver) == "Restored local content"
 
 
-async def test_budget_uses_sr2_approximation_and_rechecks_edits(tmp_path):
+@pytest.mark.parametrize("filename", ["AGENTS.md", "README.md"])
+async def test_budget_uses_sr2_approximation_and_rechecks_edits(tmp_path, filename):
     topic = _topic(tmp_path / "topic")
-    agents = topic / "AGENTS.md"
-    agents.write_text("x" * (2 * CHARS_PER_TOKEN + CHARS_PER_TOKEN - 1))
-    resolver = _build(tmp_path, max_tokens=2)
-    assert await _text(resolver) == agents.read_text()
-    agents.write_text("x" * (3 * CHARS_PER_TOKEN))
+    target = topic / filename
+    envelope = len(_doc_text(filename, "sr2-spectre", ""))
+    base_tokens = -(-envelope // CHARS_PER_TOKEN)
+    max_tokens = base_tokens + 2
+    body = "x" * (max_tokens * CHARS_PER_TOKEN + CHARS_PER_TOKEN - 1 - envelope)
+    target.write_text(_doc_text(filename, "sr2-spectre", body))
+    resolver = _build(tmp_path, filename, max_tokens=max_tokens)
+    assert await _text(resolver) == target.read_text()
+    target.write_text(
+        _doc_text(filename, "sr2-spectre", "x" * ((max_tokens + 1) * CHARS_PER_TOKEN - envelope))
+    )
     with pytest.raises(MarkdownTokenBudgetError):
         await resolver.resolve([])
 
 
+@pytest.mark.parametrize("filename", ["AGENTS.md", "README.md"])
 @pytest.mark.parametrize("options", [{}, {"max_tokens": None}])
-async def test_omitted_or_null_budget_is_unlimited(tmp_path, options):
+async def test_omitted_or_null_budget_is_unlimited(tmp_path, options, filename):
     topic = _topic(tmp_path / "topic")
-    (topic / "AGENTS.md").write_text("x" * (5000 * CHARS_PER_TOKEN))
-    assert await _text(_build(tmp_path, **options)) == (topic / "AGENTS.md").read_text()
+    (topic / filename).write_text(
+        _doc_text(filename, "sr2-spectre", "x" * (5000 * CHARS_PER_TOKEN))
+    )
+    assert await _text(_build(tmp_path, filename, **options)) == (topic / filename).read_text()
 
 
 @pytest.mark.parametrize("override", [
     {"topics_root": None}, {"topics_root": ""}, {"topics_root": "relative"},
-    {"topics_root": "/tmp/topics/*"}, {"filename": "README.md"},
+    {"topics_root": "/tmp/topics/*"},
     {"filename": "../AGENTS.md"}, {"filename": None},
     {"max_tokens": 0}, {"max_tokens": -1}, {"max_tokens": 1.5},
     {"max_tokens": "4"}, {"max_tokens": True},
@@ -264,6 +289,30 @@ def test_invalid_configuration_is_rejected(tmp_path, override):
     config = {"topics_root": str(tmp_path), "filename": "AGENTS.md", **override}
     with pytest.raises((ValueError, TypeError)):
         TopicAreaResolver(ResolverConfig(type="topic_area", config=config))
+
+
+def test_readme_filename_configuration_is_accepted(tmp_path):
+    from sr2_spectre.pipeline.topic_area_resolver import TopicAreaResolver
+
+    config = ResolverConfig(
+        type="topic_area", config={"topics_root": str(tmp_path), "filename": "README.md"}
+    )
+    resolver = TopicAreaResolver.build(config, Dependencies(run_context_provider=None))
+    assert resolver.name == "topic_area"
+
+
+@pytest.mark.parametrize("filename", [
+    "readme.md", "Readme.md", "AGENTS.MD", "now.md", "NOTES.md", "README.markdown",
+    " README.md", "README.md ", "directory/README.md", "../README.md", "", "md",
+])
+def test_arbitrary_filenames_are_not_accepted(tmp_path, filename):
+    from sr2_spectre.pipeline.topic_area_resolver import TopicAreaResolver
+
+    config = ResolverConfig(
+        type="topic_area", config={"topics_root": str(tmp_path), "filename": filename}
+    )
+    with pytest.raises((ValueError, TypeError)):
+        TopicAreaResolver(config)
 
 
 def test_missing_required_configuration_is_rejected(tmp_path):
