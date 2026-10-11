@@ -462,6 +462,35 @@ here that needs a restart. See
 
 ---
 
+## Zulip Interface
+
+The Zulip interface has its own top-level config section, `zulip`. The
+bot's key lives only in the zuliprc file pointed at by `zuliprc` — never
+inline in this config, and never echoed into an error or log line:
+
+```yaml
+zulip:
+  zuliprc: ~/.sr2/secrets/zulip/miranda.zuliprc
+  api_url: null
+  allowed_user_ids: [8]
+  channels:
+    42: ""
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `zuliprc` | str | required | Path to the bot zuliprc (`[zulip]`: `email`, `key`, `site`) |
+| `api_url` | str or null | `null` | Optional API origin override (loopback/testing); the zuliprc `site` stays canonical |
+| `allowed_user_ids` | list[int] | `[]` | Human user IDs that may trigger a turn (empty = nobody; bot messages never trigger) |
+| `channels` | dict[int, str] | `{}` | Channel ID to area identity; `""` means explicitly no area. Keys are **integer** IDs — a quoted `"42"` is rejected |
+
+A missing, unreadable, malformed or incomplete zuliprc fails startup with
+`ZulipCredentialError` naming the path and the reason, never the file's
+contents. Until area routing ships (spc-120), a nonempty `channels` area
+also fails startup explicitly instead of routing without its area.
+
+---
+
 ## Live reload
 
 A long-running interface re-reads the **whole resolved config on every inbound
