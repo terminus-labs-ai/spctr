@@ -10,7 +10,8 @@ import asyncio
 import logging
 import os
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -31,6 +32,11 @@ from sr2_spectre.skills.core import SkillRegistry, discover_skills, load_skill_f
 from sr2_spectre.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+#: Passed to ``_rebuild_skills`` in place of a config when the spc-110
+#: per-message rescan rebuilds from its own verified skill set. Identity is
+#: the contract; the object carries nothing.
+_RESCAN_VERIFIED_SENTINEL: Any = object()
 
 
 def _tool_accepts_workspace_root(class_path: str) -> bool:
@@ -94,6 +100,15 @@ class Runtime:
         # Bootstrap SkillRegistry: builtin DEFAULT_SKILLS + config-declared files.
         self.skill_registry = SkillRegistry()
         self._bootstrap_skills(config)
+
+        # Filesystem signature of skills_dirs as of the bootstrap scan above.
+        # Seeded here so the first per-message apply_config on an unchanged
+        # filesystem does not rebuild (spc-110).
+        self._skills_fs_signature: "tuple | None" = None
+        # Set to the verified skill list for the duration of a rescan-driven
+        # ``_rebuild_skills`` call (spc-110); None otherwise.
+        self._rescan_verified_skills: "list | None" = None
+        self._seed_skills_fs_signature(config)
 
         # MCP clients — one per mcp_servers entry; connected lazily via initialize()
         self._mcp_clients: list[MCPClient] = []
@@ -188,7 +203,10 @@ class Runtime:
 
         Every branch below is gated on an observed change, so the steady-state
         cost of a reload that found nothing new is one equality check — not a
-        rebuild of the tool registry on every message.
+        rebuild of the tool registry on every message. The one exception is
+        the skills_dirs freshness check (spc-110): skill *files* change
+        without the config changing, so it runs on EVERY call, before the
+        early return, and its own steady-state cost is one stat per file.
 
         Fields that a running process cannot re-seat (MCP servers, the store
         connections, the agent identity) are pinned upstream by
@@ -199,6 +217,12 @@ class Runtime:
             Names of the config areas that were actually applied, for logging
             and for tests to assert against.
         """
+        # Skill-file freshness runs before the early return: this method is
+        # called once per inbound message, most often with an unchanged
+        # config object, and an edited SKILL.md must not wait for a config
+        # edit (or a restart) to be noticed.
+        self._rescan_skills_if_changed(config)
+
         previous = self.config
         if config == previous:
             return []
@@ -296,9 +320,223 @@ class Runtime:
 
         Cleared and refilled in place rather than replaced: the auto-injected
         ``load_skill`` tool holds a reference to this exact registry object.
+
+        The spc-110 rescan also rebuilds through here, but with the sentinel
+        config and ``_rescan_verified_skills`` set: it refills from its own
+        pre-verified, fail-loud discovery result inside ``_skill_swap``
+        instead of re-running bootstrap. Normal config reloads never see the
+        sentinel and keep the bootstrap path exactly as before.
         """
+        verified = getattr(self, "_rescan_verified_skills", None)
+        if verified is not None:
+            with self._skill_swap():
+                for skill in verified:
+                    self.skill_registry.register(skill)
+            return
         self.skill_registry.clear()
         self._bootstrap_skills(config)
+
+    @contextmanager
+    def _skill_swap(self) -> "Iterator[None]":
+        """Clear the skill registry, refilling it from the ``with`` body.
+
+        If the body raises, the registry's exact previous contents are
+        restored instead — a clear-then-refill never leaves it partially
+        filled. The registry OBJECT is never replaced either way.
+        """
+        previous_skills = dict(self.skill_registry._skills)
+        self.skill_registry.clear()
+        try:
+            yield
+        except BaseException:
+            self.skill_registry._skills.clear()
+            self.skill_registry._skills.update(previous_skills)
+            raise
+
+    # ------------------------------------------------------------------
+    # Skills_dirs freshness rescan (spc-110)
+    # ------------------------------------------------------------------
+
+    def _seed_skills_fs_signature(self, config: SpectreConfig) -> None:
+        """Record the skills_dirs filesystem signature after a full scan.
+
+        Called from ``__init__`` right after ``_bootstrap_skills``: bootstrap
+        already scanned the dirs, so seeding here makes the first message on
+        an unchanged filesystem cost zero rebuilds. A failed seed leaves the
+        signature None, which makes the next rescan rebuild once and re-seed
+        — safe, if one message late.
+        """
+        try:
+            self._skills_fs_signature = self._skills_fs_signature_now(config)
+        except Exception as exc:  # noqa: BLE001 — a bad seed only costs one rebuild
+            logger.warning(
+                "Could not seed skills_dirs signature (%s) — the next "
+                "reload will rescan and rebuild once",
+                exc,
+            )
+            self._skills_fs_signature = None
+
+    @staticmethod
+    def _skills_fs_signature_now(config: SpectreConfig) -> tuple:
+        """Change signature over the configured ``agent.skills_dirs``.
+
+        Covers each configured directory (existence only) and, inside each
+        one, the entries the two discovery layouts recognise — flat
+        ``<dir>/<name>.md`` and bundled ``<dir>/<name>/SKILL.md`` — as
+        (path, mtime_ns, size). Unrecognised entries are not skill-visible,
+        so they stay out: steady state costs one stat per skill file.
+
+        The directory itself is signed by existence only, never mtime: the
+        files live inside it, so any add/remove already flips their entries,
+        and signing the dir would double-count the mtime churn ``os.utime``
+        causes on the parent.
+
+        Raises:
+            OSError: If a configured directory cannot be stat'd or listed.
+                Unreadable and empty are indistinguishable in the signature,
+                so the failure must escape for the caller's last-good path
+                to fire.
+        """
+        signature: list[tuple] = []
+        for dir_raw in config.agent.skills_dirs:
+            root = Path(dir_raw).expanduser()
+            exists = root.is_dir()
+            files: list[tuple] = []
+            if exists:
+                for name in sorted(os.listdir(root)):
+                    child = root / name
+                    skill_file: Path | None = None
+                    if name.endswith(".md") and child.is_file():
+                        skill_file = child
+                    elif child.is_dir():
+                        bundled = child / "SKILL.md"
+                        if bundled.is_file():
+                            skill_file = bundled
+                    if skill_file is not None:
+                        stat = skill_file.stat()
+                        files.append(
+                            (str(skill_file), stat.st_mtime_ns, stat.st_size)
+                        )
+            signature.append((str(root), exists, tuple(files)))
+        return tuple(signature)
+
+    def _rescan_skills_if_changed(self, config: SpectreConfig) -> None:
+        """Rebuild the skill catalog iff the skills_dirs filesystem changed.
+
+        Runs on every ``apply_config`` call, including the unchanged-config
+        ones the early return swallows. Steady state: signature match, zero
+        log output, no rebuild.
+
+        Last-good contract: on any rescan failure (unreadable configured
+        dir, unreadable skill file) the previous registry stays exactly in
+        force, exactly one warning is logged, and this returns normally —
+        the message is processed against the last known-good catalog. An
+        unreadable skill FILE counts as a failed rescan here rather than as
+        core's per-file skip: core silently dropping it would change the
+        catalog on a transient mid-edit error. The signature is left
+        untouched on failure so the next message retries.
+        """
+        if not config.agent.skills_dirs:
+            # Nothing to watch: keep the signature aligned with this config
+            # (one bool check) so switching skills_dirs off via a config
+            # change cannot leave a stale signature triggering rebuilds.
+            self._skills_fs_signature = ()
+            return
+
+        try:
+            signature = self._skills_fs_signature_now(config)
+        except OSError as exc:
+            logger.warning(
+                "Skill directories rescan failed — keeping the previous "
+                "skill registry until the next reload succeeds: %s",
+                exc,
+            )
+            return
+
+        if signature == self._skills_fs_signature:
+            return
+
+        # Something changed. Build the replacement set BEFORE touching the
+        # registry: ``discover_skills_in_dir`` swallows per-file read errors
+        # with a warning and returns what it could read — a stripped catalog
+        # on a transient mid-edit error — so re-run that discovery through a
+        # reader that raises instead of skipping. Any failure keeps the old
+        # catalog, warns once, and leaves the signature untouched so the
+        # next message retries.
+        try:
+            replacement = self._discover_skills_strict(config.agent.skills_dirs)
+        except Exception as exc:  # noqa: BLE001 — last-good: any failure keeps old registry
+            logger.warning(
+                "Skill directories rescan failed — keeping the previous "
+                "skill registry until the next reload succeeds: %s",
+                exc,
+            )
+            return
+
+        self._skills_fs_signature = signature
+        # Enter the rebuild through the named seam — the design constraint
+        # names ``_rebuild_skills`` as the sole rebuild entry point — but
+        # refill from the verified set instead of re-running bootstrap: the
+        # verified set already holds the disk skills that overwrite
+        # builtins. The sentinel routes this one process through
+        # ``_skill_swap``: cleared, refilled, and restored to its exact
+        # snapshot if the refill itself fails. The registry OBJECT is never
+        # replaced, so the load_skill tool keeps serving.
+        self._rescan_verified_skills = replacement
+        try:
+            self._rebuild_skills(_RESCAN_VERIFIED_SENTINEL)  # type: ignore[arg-type]
+        finally:
+            self._rescan_verified_skills = None
+
+    def _discover_skills_strict(self, skills_dirs: list[str]) -> list:
+        """Discover every skill in *skills_dirs*, raising on any file failure.
+
+        Mirrors ``skills.core.discover_skills_in_dir`` — same two layouts,
+        same ordering, same parser — but a file that cannot be read raises
+        instead of being skipped and warned about, so the caller's last-good
+        path owns the failure. This is the "build the replacement contents
+        before clearing" half of that contract, kept entirely inside the
+        Runtime.
+        """
+        replacement: list = []
+        for dir_raw in skills_dirs:
+            root = Path(dir_raw).expanduser()
+            names = sorted(os.listdir(root))
+            # Flat form first, then bundled — the order discover_skills uses
+            # so last-wins registration stays deterministic.
+            for name in names:
+                if name.endswith(".md") and (root / name).is_file():
+                    skill = self._load_skill_file_strict(root / name, None)
+                    if skill is not None:
+                        replacement.append(skill)
+            for name in names:
+                child = root / name
+                if child.is_dir():
+                    bundled = child / "SKILL.md"
+                    if bundled.is_file():
+                        skill = self._load_skill_file_strict(bundled, name)
+                        if skill is not None:
+                            replacement.append(skill)
+        return replacement
+
+    @staticmethod
+    def _load_skill_file_strict(md_file: Path, fallback_name: str | None):
+        """Read and parse one skill file, raising on failure.
+
+        Same read and parser as ``discover_skills_in_dir`` — except a file
+        that cannot be read propagates instead of being skipped, which is
+        the whole difference the last-good contract needs. A file the parser
+        legitimately skips (no usable frontmatter in the flat form) yields
+        None and is dropped by the caller.
+        """
+        from sr2_spectre.skills.core import _parse_skill_frontmatter
+
+        skill = _parse_skill_frontmatter(
+            md_file.read_text(encoding="utf-8"),
+            md_file,
+            fallback_name=fallback_name,
+        )
+        return skill
 
     async def initialize(self) -> None:
         """Connect all MCP clients and register their tool bridges into the registry.
