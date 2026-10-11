@@ -33,11 +33,6 @@ from sr2_spectre.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
-#: Passed to ``_rebuild_skills`` in place of a config when the spc-110
-#: per-message rescan rebuilds from its own verified skill set. Identity is
-#: the contract; the object carries nothing.
-_RESCAN_VERIFIED_SENTINEL: Any = object()
-
 
 def _tool_accepts_workspace_root(class_path: str) -> bool:
     """Return True if the tool class's __init__ accepts a workspace_root kwarg.
@@ -97,17 +92,21 @@ class Runtime:
         # resolver's plans_root so there's a single source of truth.
         self._auto_inject_complete_step(config)
 
-        # Bootstrap SkillRegistry: builtin DEFAULT_SKILLS + config-declared files.
+        # Bootstrap SkillRegistry: the full three-tier catalog (builtins,
+        # discovered skills_dirs, per-file skills[]), registered in place by
+        # the same rebuild path the per-message rescan uses (spc-110).
         self.skill_registry = SkillRegistry()
-        self._bootstrap_skills(config)
+        self._rebuild_skills(config)
 
         # Filesystem signature of skills_dirs as of the bootstrap scan above.
         # Seeded here so the first per-message apply_config on an unchanged
         # filesystem does not rebuild (spc-110).
         self._skills_fs_signature: "tuple | None" = None
-        # Set to the verified skill list for the duration of a rescan-driven
-        # ``_rebuild_skills`` call (spc-110); None otherwise.
-        self._rescan_verified_skills: "list | None" = None
+        # Last rescan failure message, for warn-once suppression (spc-110,
+        # mirrors config_source.LiveConfigSource._load_error): repeats of the
+        # same failure are quiet, a different failure warns again, and a
+        # success clears it.
+        self._skills_rescan_error: "str | None" = None
         self._seed_skills_fs_signature(config)
 
         # MCP clients — one per mcp_servers entry; connected lazily via initialize()
@@ -316,25 +315,29 @@ class Runtime:
         self._config_tool_names = registered
 
     def _rebuild_skills(self, config: SpectreConfig) -> None:
-        """Repopulate the skill registry after a config reload.
+        """Repopulate the skill registry after a config reload or rescan.
 
-        Cleared and refilled in place rather than replaced: the auto-injected
-        ``load_skill`` tool holds a reference to this exact registry object.
+        Both the config-value-change branch and the spc-110 per-message
+        rescan rebuild through here, and both go through ``_skill_swap``:
+        clear + refill in place rather than replacing the registry object
+        (the auto-injected ``load_skill`` tool holds a reference to this
+        exact object), and restore the exact previous contents if the
+        refill raises.
 
-        The spc-110 rescan also rebuilds through here, but with the sentinel
-        config and ``_rescan_verified_skills`` set: it refills from its own
-        pre-verified, fail-loud discovery result inside ``_skill_swap``
-        instead of re-running bootstrap. Normal config reloads never see the
-        sentinel and keep the bootstrap path exactly as before.
+        The registry is a pure function of config + filesystem: the full
+        three-tier set (builtins, discovered dirs, per-file ``skills[]``)
+        is built and registered inside the swap, so a rescan can never
+        drop a tier the bootstrap had.
+
+        ``_auto_inject_load_skill`` is re-run after every refill (not inside
+        ``_bootstrap_skills``) so the load_skill tool's registration always
+        matches the catalog in BOTH directions: empty→non-empty registers it;
+        non-empty→empty withdraws it.
         """
-        verified = getattr(self, "_rescan_verified_skills", None)
-        if verified is not None:
-            with self._skill_swap():
-                for skill in verified:
-                    self.skill_registry.register(skill)
-            return
-        self.skill_registry.clear()
-        self._bootstrap_skills(config)
+        with self._skill_swap():
+            for skill in self._bootstrap_skills(config):
+                self.skill_registry.register(skill)
+        self._auto_inject_load_skill()
 
     @contextmanager
     def _skill_swap(self) -> "Iterator[None]":
@@ -342,7 +345,8 @@ class Runtime:
 
         If the body raises, the registry's exact previous contents are
         restored instead — a clear-then-refill never leaves it partially
-        filled. The registry OBJECT is never replaced either way.
+        filled. The registry OBJECT is never replaced either way, so the
+        auto-injected ``load_skill`` tool keeps serving.
         """
         previous_skills = dict(self.skill_registry._skills)
         self.skill_registry.clear()
@@ -368,16 +372,41 @@ class Runtime:
         """
         try:
             self._skills_fs_signature = self._skills_fs_signature_now(config)
-        except Exception as exc:  # noqa: BLE001 — a bad seed only costs one rebuild
-            logger.warning(
-                "Could not seed skills_dirs signature (%s) — the next "
-                "reload will rescan and rebuild once",
-                exc,
-            )
+        except Exception:  # noqa: BLE001 — a bad seed only costs one rebuild
+            # Warn-once (mirrors _note_rescan_failure); no recovery line at
+            # startup — there is no prior state to have lost.
+            self._skills_rescan_error = "signature seeding failed at startup"
             self._skills_fs_signature = None
 
     @staticmethod
-    def _skills_fs_signature_now(config: SpectreConfig) -> tuple:
+    def _resolve_skills_dir(dir_raw: str) -> Path | None:
+        """Resolve one ``agent.skills_dirs`` entry to a concrete directory.
+
+        Same resolution as core discovery (``resolve_path``: ``~`` expansion,
+        ``${VAR}`` interpolation, relative anchoring against the process
+        cwd) so the rescan signature and the rebuild agree on which files
+        they mean.
+
+        Returns:
+            The resolved directory, or None when the path cannot be resolved
+            (unset ``${VAR}``). Callers must treat None the way core's
+            ``discover_skills_in_dir`` treats it — skip the entry (a stable
+            signature component; no failure) — not raise: a raise here fires
+            once per message, which is the log noise warn-once exists to
+            prevent, and ``resolve_path`` bakes the raw string into the
+            exception message so even that could not deduplicate across
+            differing entries.
+        """
+        from sr2_spectre.path_resolution import resolve_path
+
+        root = Path(dir_raw).expanduser()
+        try:
+            return resolve_path(str(root), Path.cwd(), dict(os.environ))
+        except ConfigPathError:
+            return None
+
+    @classmethod
+    def _skills_fs_signature_now(cls, config: SpectreConfig) -> tuple:
         """Change signature over the configured ``agent.skills_dirs``.
 
         Covers each configured directory (existence only) and, inside each
@@ -393,13 +422,26 @@ class Runtime:
 
         Raises:
             OSError: If a configured directory cannot be stat'd or listed.
-                Unreadable and empty are indistinguishable in the signature,
-                so the failure must escape for the caller's last-good path
-                to fire.
+                Unreadable and empty ARE distinguishable here (missing dir
+                signs as ``exists=False``; unreadable dir raises), but both
+                stay out of the recorded signature so the caller's last-good
+                path owns the failure instead of silently freezing the
+                catalog. An unresolvable path (unset ``${VAR}``) is not a
+                failure: it signs as ``(raw, False, (), "unresolvable")``,
+                matching the way core discovery skips it while staying
+                distinct from the same path resolving to a missing dir.
         """
         signature: list[tuple] = []
         for dir_raw in config.agent.skills_dirs:
-            root = Path(dir_raw).expanduser()
+            root = cls._resolve_skills_dir(dir_raw)
+            if root is None:
+                # Unresolvable (${VAR} unset): a stable non-change while it
+                # stays unset. Marked unresolvable=True so the message that
+                # later sets the var flips the signature even when the dir
+                # still does not exist — core discovery would pick it up
+                # then, and so must we.
+                signature.append((dir_raw, False, (), "unresolvable"))
+                continue
             exists = root.is_dir()
             files: list[tuple] = []
             if exists:
@@ -420,6 +462,23 @@ class Runtime:
             signature.append((str(root), exists, tuple(files)))
         return tuple(signature)
 
+    def _note_rescan_failure(self, exc: BaseException) -> None:
+        """Warn about a rescan failure, once per distinct message.
+
+        Mirrors ``config_source.LiveConfigSource._note_failure``: repeats of
+        the same failure are quiet (a persistently broken tree must not log
+        one WARNING per inbound message), a DIFFERENT failure warns again,
+        and the next successful scan clears the suppressed state.
+        """
+        message = f"{type(exc).__name__}: {exc}"
+        if message != self._skills_rescan_error:
+            logger.warning(
+                "Skill directories rescan failed — keeping the previous "
+                "skill registry until the next reload succeeds: %s",
+                exc,
+            )
+            self._skills_rescan_error = message
+
     def _rescan_skills_if_changed(self, config: SpectreConfig) -> None:
         """Rebuild the skill catalog iff the skills_dirs filesystem changed.
 
@@ -429,10 +488,15 @@ class Runtime:
 
         Last-good contract: on any rescan failure (unreadable configured
         dir, unreadable skill file) the previous registry stays exactly in
-        force, exactly one warning is logged, and this returns normally —
-        the message is processed against the last known-good catalog. An
-        unreadable skill FILE counts as a failed rescan here rather than as
-        core's per-file skip: core silently dropping it would change the
+        force, this returns normally — the message is processed against the
+        last known-good catalog — and at most one warning is logged per
+        distinct failure (repeats suppressed; see ``_note_rescan_failure``).
+        The rebuild goes through ``_rebuild_skills`` on this same config, so
+        the registry is a pure function of config + filesystem: builtins,
+        disk discovery and the per-file ``skills[]`` tier are all re-asserted
+        in the established order (builtins weakest, per-file strongest).
+        An unreadable skill FILE counts as a failed rescan here rather than
+        as core's per-file skip: core silently dropping it would change the
         catalog on a transient mid-edit error. The signature is left
         untouched on failure so the next message retries.
         """
@@ -441,52 +505,40 @@ class Runtime:
             # (one bool check) so switching skills_dirs off via a config
             # change cannot leave a stale signature triggering rebuilds.
             self._skills_fs_signature = ()
+            if self._skills_rescan_error is not None:
+                logger.info("skills_dirs rescans recovered")
+                self._skills_rescan_error = None
             return
 
         try:
             signature = self._skills_fs_signature_now(config)
-        except OSError as exc:
-            logger.warning(
-                "Skill directories rescan failed — keeping the previous "
-                "skill registry until the next reload succeeds: %s",
-                exc,
-            )
+        except Exception as exc:  # noqa: BLE001 — last-good: any scan failure keeps old registry
+            self._note_rescan_failure(exc)
             return
 
         if signature == self._skills_fs_signature:
             return
 
-        # Something changed. Build the replacement set BEFORE touching the
-        # registry: ``discover_skills_in_dir`` swallows per-file read errors
-        # with a warning and returns what it could read — a stripped catalog
-        # on a transient mid-edit error — so re-run that discovery through a
-        # reader that raises instead of skipping. Any failure keeps the old
-        # catalog, warns once, and leaves the signature untouched so the
-        # next message retries.
+        # Something changed. The strict discovery below raises on any
+        # per-file read failure (``discover_skills`` would skip and warn,
+        # silently shrinking the catalog on a transient mid-edit error), so
+        # a failed rebuild attempt never reaches the registry.
         try:
-            replacement = self._discover_skills_strict(config.agent.skills_dirs)
+            self._discover_skills_strict(config.agent.skills_dirs)
         except Exception as exc:  # noqa: BLE001 — last-good: any failure keeps old registry
-            logger.warning(
-                "Skill directories rescan failed — keeping the previous "
-                "skill registry until the next reload succeeds: %s",
-                exc,
-            )
+            self._note_rescan_failure(exc)
+            return
+
+        try:
+            self._rebuild_skills(config)
+        except Exception as exc:  # noqa: BLE001 — _skill_swap restores the previous registry
+            self._note_rescan_failure(exc)
             return
 
         self._skills_fs_signature = signature
-        # Enter the rebuild through the named seam — the design constraint
-        # names ``_rebuild_skills`` as the sole rebuild entry point — but
-        # refill from the verified set instead of re-running bootstrap: the
-        # verified set already holds the disk skills that overwrite
-        # builtins. The sentinel routes this one process through
-        # ``_skill_swap``: cleared, refilled, and restored to its exact
-        # snapshot if the refill itself fails. The registry OBJECT is never
-        # replaced, so the load_skill tool keeps serving.
-        self._rescan_verified_skills = replacement
-        try:
-            self._rebuild_skills(_RESCAN_VERIFIED_SENTINEL)  # type: ignore[arg-type]
-        finally:
-            self._rescan_verified_skills = None
+        if self._skills_rescan_error is not None:
+            logger.info("skills_dirs rescans recovered")
+            self._skills_rescan_error = None
 
     def _discover_skills_strict(self, skills_dirs: list[str]) -> list:
         """Discover every skill in *skills_dirs*, raising on any file failure.
@@ -500,7 +552,11 @@ class Runtime:
         """
         replacement: list = []
         for dir_raw in skills_dirs:
-            root = Path(dir_raw).expanduser()
+            root = self._resolve_skills_dir(dir_raw)
+            if root is None:
+                # Unresolvable (${VAR} unset): core skips it with a warning,
+                # so the rebuilt catalog matches without it. Not a failure.
+                continue
             names = sorted(os.listdir(root))
             # Flat form first, then bundled — the order discover_skills uses
             # so last-wins registration stays deterministic.
@@ -785,26 +841,30 @@ class Runtime:
         env = os.environ.get("SPECTRE_MEMORY_DSN")
         return env or None
 
-    def _bootstrap_skills(self, config: SpectreConfig) -> None:
-        """Bootstrap the SkillRegistry from config.
+    def _bootstrap_skills(self, config: SpectreConfig) -> list:
+        """Build the full three-tier skill catalog for *config* WITHOUT registering.
 
-        Registers the builtin DEFAULT_SKILLS unless ``agent.default_skills``
-        is false, then discovers ``agent.skills_dirs[]`` by directory scan,
-        then loads ``agent.skills[]`` from disk.  Later registrations win, so
-        the order is deliberate: builtins are the weakest claim on a name and
-        an explicit per-file skill is the strongest.
+        Returns the skill list in registration order — the caller
+        (``_rebuild_skills``) registers it, so the registry is a pure
+        function of config + filesystem and both rebuild paths (startup and
+        per-message rescan) produce identical catalogs.
 
-        Auto-injects the load_skill tool when there is at least one skill for
-        it to serve.
+        The tiers and their order: builtin DEFAULT_SKILLS (unless
+        ``agent.default_skills`` is false), then ``agent.skills_dirs[]``
+        discovery, then ``agent.skills[]`` per-file loads. Later
+        registrations win, so the order is deliberate: builtins are the
+        weakest claim on a name and an explicit per-file skill is the
+        strongest.
         """
-        # 1. Register builtin defaults, unless the agent opted out.
+        skills: list = []
+
+        # 1. Builtin defaults, unless the agent opted out.
         #
         # Opt-out exists because these describe SR2's own architecture and
         # file layout. An agent facing people who are not the operator has no
         # use for them and should not be able to read them out (obsidian-4z94).
         if config.agent.default_skills:
-            for skill in DEFAULT_SKILLS:
-                self.skill_registry.register(skill)
+            skills.extend(DEFAULT_SKILLS)
             logger.info("Registered %d default skill(s)", len(DEFAULT_SKILLS))
         else:
             logger.info(
@@ -814,8 +874,8 @@ class Runtime:
         # 2. Discover skills from skills_dirs (bulk loading)
         if config.agent.skills_dirs:
             discovered = discover_skills(config.agent.skills_dirs)
+            skills.extend(discovered)
             for skill in discovered:
-                self.skill_registry.register(skill)
                 logger.info(
                     "Discovered skill '%s' (v%s) from skills_dirs",
                     skill.name,
@@ -837,14 +897,13 @@ class Runtime:
                     description=skill_cfg.description,
                     tags=skill_cfg.tags,
                 )
-                self.skill_registry.register(skill)
-                logger.info("Loaded skill '%s' from %s", skill_cfg.name, skill_cfg.path)
             except FileNotFoundError:
                 logger.warning(
                     "Skill file not found: '%s' at %s — skipping",
                     skill_cfg.name,
                     skill_cfg.path,
                 )
+                continue
             except ConfigPathError as exc:
                 logger.warning(
                     "Skill path unresolvable: '%s' at %s — skipping (%s)",
@@ -852,9 +911,11 @@ class Runtime:
                     skill_cfg.path,
                     exc,
                 )
+                continue
+            skills.append(skill)
+            logger.info("Loaded skill '%s' from %s", skill_cfg.name, skill_cfg.path)
 
-        # 4. Auto-inject load_skill tool
-        self._auto_inject_load_skill()
+        return skills
 
     def _auto_inject_load_skill(self) -> None:
         """Register or withdraw the load_skill tool to match the registry.
