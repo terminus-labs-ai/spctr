@@ -37,6 +37,8 @@ from typing import TYPE_CHECKING, AsyncIterator
 if TYPE_CHECKING:
     from sr2.pipeline.tracing import Tracer
 
+    from sr2_spectre.session import Session
+
 from sr2_spectre.config import SpectreConfig
 from sr2_spectre.core import RunContext, TurnResult
 from sr2_spectre.events import AgentEvent
@@ -169,6 +171,19 @@ class Agent:
     async def aclose(self) -> None:
         """Close all MCP client transports."""
         await self._runtime.aclose()
+
+    def create_session(self, frame_id: str) -> Session:
+        """Create an independent Session under this Agent's Runtime.
+
+        The returned Session shares the Runtime (config, LLM, MCP, tool
+        registry, memory) and carries the Agent's tracer, but has its own
+        history and SR2. The facade's current conversation is untouched:
+        nothing here resets, replaces, or appends to it. The caller owns
+        the returned Session and closes it when its conversation ends.
+
+        Unlike new_session(), this never touches the facade's Session.
+        """
+        return self._runtime.new_session(frame_id=frame_id, tracer=self._tracer)
 
     def new_session(self, session_id: str | None = None) -> None:
         """Reset conversation history and start a new session.

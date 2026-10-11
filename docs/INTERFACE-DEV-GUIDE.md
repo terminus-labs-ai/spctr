@@ -118,6 +118,31 @@ async for event in agent.stream_message(prompt):
         print(f"\n[{event.tool_calls_executed} tools]")
 ```
 
+### Independent Sessions — `create_session(frame_id)`
+
+Interfaces that need one independent conversation per channel/topic (e.g. a
+multi-topic chat interface) should hold one `Session` per conversation instead
+of resetting a single conversation. The public seam is:
+
+```python
+session = agent.create_session(f"zulip-{channel_id}-{topic}")
+# ... drive the conversation on the Session ...
+await session.handle_user_message(prompt)
+```
+
+- The returned `Session` is a real Session under the Agent's existing
+  Runtime: it shares the Runtime's config, LLM handle, tool registry and
+  memory store, and carries the Agent's tracer. It has its own history and
+  its own SR2, so two `create_session()` calls keep separate transcripts.
+- The Agent's facade conversation (`agent.history`, `agent.session_id`) is
+  never reset, replaced, or appended to by `create_session()`.
+- `agent.new_session()` keeps its existing contract: it resets the facade's
+  single conversation and returns `None`. Use it only where the legacy
+  single-conversation semantics are wanted.
+- **Ownership:** the interface owns the Sessions it creates. Close each of
+  them (`session.close()`) in `stop()` when the conversation ends; the Agent
+  retains its facade semantics and does not close them for you.
+
 ### Available event types
 
 | Event | Attributes | Meaning |
