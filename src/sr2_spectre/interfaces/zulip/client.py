@@ -6,7 +6,11 @@ This module holds only credential and error definitions. Transport behavior
 HTTP or model work.
 
 The API key never appears in a URL, a log record, or an exception message:
-credential failures name the path and the reason, never the contents.
+credential failures name the path and the reason, never the contents. Values
+are read through the raw (non-interpolating) view and the file is decoded
+before parsing, so a ``%(...)`` marker in a value and invalid UTF-8 bytes
+both surface as sanitized credential failures, never as a raw configparser
+or codec error echoing the file.
 """
 from __future__ import annotations
 
@@ -57,21 +61,28 @@ def load_zulip_credentials(path: str) -> ZulipCredentials:
     read both come back as an empty result).
     """
     try:
-        handle = open(path, encoding="utf-8")
-    except OSError:
+        with open(path, "rb") as handle:
+            raw = handle.read()
+    except (OSError, UnicodeDecodeError):
         raise ZulipCredentialError(
             f"Zulip credential file could not be read: {path}"
         ) from None
     try:
-        try:
-            parser = configparser.ConfigParser()
-            parser.read_file(handle)
-        except configparser.Error:
-            raise ZulipCredentialError(
-                f"Malformed zuliprc file: {path}"
-            ) from None
-    finally:
-        handle.close()
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ZulipCredentialError(
+            f"Zulip credential file is not valid UTF-8: {path}"
+        ) from None
+    try:
+        # The raw, non-interpolating parser: a value such as
+        # ``key = secret %(missing)s`` is a literal credential, not an
+        # interpolation reference, so it is preserved verbatim.
+        parser = configparser.RawConfigParser()
+        parser.read_string(text)
+    except configparser.Error:
+        raise ZulipCredentialError(
+            f"Malformed zuliprc file: {path}"
+        ) from None
     if not parser.has_section("zulip"):
         raise ZulipCredentialError(
             f"zuliprc {path} has no [zulip] section"
