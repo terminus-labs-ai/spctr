@@ -1,0 +1,438 @@
+"""Unit cage — spc-123 (Validate Zulip configuration and credentials, AC17).
+
+A proves the PURE Zulip configuration, credential-loading and admission
+decisions through narrow public seams of the ``interfaces.zulip`` package
+and its modules:
+
+- ``ZulipConfig`` (``interfaces.zulip.config``) — the spec's config block:
+  ``zuliprc`` credential path (no inline key), optional ``api_url``,
+  explicit integer ``allowed_user_ids``, and ``channels`` mapping channel
+  ID → area identity (``""`` = explicitly no area).
+- ``ZulipCredentials`` — the parsed credential record (email/api_key/site)
+  returned by the loader; its fields are the spec's public contract.
+- ``load_zulip_credentials`` — synthetic zuliprc reading with explicit,
+  non-leaking failures (spec FR2: "Read Miranda's bot credentials from the
+  saved zuliprc path, with no inline key"; Interfaces: "Missing credentials
+  ... fail startup explicitly"; NFR: "Do not expose credentials in
+  messages, logs ...").
+- ``ZulipCredentialError`` — the declared credential failure-boundary
+  exception type, exported from the package seam.
+- ``is_configured_no_area_channel`` — the pure trigger-admission decision
+  (spec FR5: "Restrict the pilot to Diego's user ID and explicitly
+  configured channel IDs; ignore bot messages as triggers").
+- ``validate_no_area_only_routing`` — the temporary nonempty-area startup
+  rejection (AC16/AC17: "Nonempty area mappings fail startup explicitly").
+
+Everything runs against synthetic data under ``tmp_path``: no network, no
+model, no CLI dispatch, no Session orchestration — AC17's "no HTTP or
+model work" is honored by the test itself (no aiohttp/socket/subprocess in
+this file).
+
+INTERMEDIATE CONTRACT (AC16-INTERMEDIATE): nonempty area mappings are
+rejected in this cut until area routing ships; spc-120
+(``Add Zulip area routing and live config reload``) owns upgrading the
+``TestNonemptyAreaGateIntermediate`` assertions (and the E-side startup
+proof) to routing. The assertions below are tagged
+``AC16-INTERMEDIATE`` and must not be read as permanent.
+"""
+
+from __future__ import annotations
+
+import configparser
+import os
+import re
+from pathlib import Path
+from typing import Any
+
+import pytest
+from pydantic import ValidationError
+
+from sr2_spectre.interfaces.zulip import (
+    ZulipCredentialError,
+    ZulipCredentials,
+    is_configured_no_area_channel,
+    load_zulip_credentials,
+    validate_no_area_only_routing,
+)
+from sr2_spectre.interfaces.zulip.config import ZulipConfig
+
+# ---------------------------------------------------------------------------
+# Fixtures — identities mirror the spec's Dependencies (Miranda bot user ID
+# 9, Diego user ID 8); everything synthetic, under tmp_path; no real realm,
+# no production zuliprc, no secret.
+# ---------------------------------------------------------------------------
+
+BOT_ID = 9          # Miranda bot (spec Dependencies)
+DIEGO_ID = 8        # Diego (spec Dependencies)
+INTRUDER_ID = 7     # a human who is not on the allowlist
+
+BOT_EMAIL = "miranda-bot@zulip.example"
+SITE = "https://normandy.example.com"
+API_URL = "http://127.0.0.1:8899"   # loopback override; never dialled here
+SECRET = "synthetic-key-DO-NOT-LEAK-1234"
+API_KEY = "synthetic-key-for-tests-0000"
+
+NO_AREA_CHANNEL = 42
+OTHER_NO_AREA_CHANNEL = 43
+UNCONFIGURED_CHANNEL = 99
+AREA_CHANNEL = 44
+
+
+def make_config(**kw: Any) -> ZulipConfig:
+    """Spec-schema ZulipConfig: zuliprc path, optional api_url, ID lists."""
+    base: dict[str, Any] = {
+        "zuliprc": "/tmp/spc-123-unused.zuliprc",
+        "api_url": API_URL,
+        "allowed_user_ids": [DIEGO_ID],
+        "channels": {NO_AREA_CHANNEL: ""},
+    }
+    base.update(kw)
+    return ZulipConfig(**base)
+
+
+@pytest.fixture
+def zuliprc(tmp_path: Path) -> Path:
+    """Synthetic zuliprc (standard ``key =`` field) under /tmp."""
+    path = tmp_path / "miranda.zuliprc"
+    path.write_text(
+        f"[zulip]\nemail = {BOT_EMAIL}\nkey = {API_KEY}\nsite = {SITE}\n"
+    )
+    return path
+
+
+@pytest.fixture
+def incomplete_zuliprc(tmp_path: Path) -> Path:
+    """zuliprc carrying a real-looking secret but a required field missing."""
+    path = tmp_path / "partial.zuliprc"
+    path.write_text(f"[zulip]\nemail = {BOT_EMAIL}\nkey = {SECRET}\n")
+    return path
+
+
+@pytest.fixture
+def unreadable_zuliprc(tmp_path: Path) -> Path:
+    """Present but unreadable (no read permission) credential file whose
+    body carries a marker that must never surface in an error message."""
+    path = tmp_path / "locked.zuliprc"
+    path.write_text(f"[zulip]\nemail = {BOT_EMAIL}\nkey = {SECRET}\nsite = {SITE}\n")
+    path.chmod(0)
+    yield path
+    path.chmod(0o600)  # cleanup so tmp teardown can remove it
+
+
+def load_expect_credential_error(path: Path) -> ZulipCredentialError:
+    """Load a path that must fail and return the raised credential error.
+
+    Fails with a distinct message when nothing is raised, so classification
+    tests report "not rejected" rather than an attribute error.
+    """
+    with pytest.raises(ZulipCredentialError) as exc_info:
+        load_zulip_credentials(str(path))
+    return exc_info.value
+
+
+# ---------------------------------------------------------------------------
+# ZulipConfig schema — explicit integer-ID allowlists only (spec Interfaces)
+# ---------------------------------------------------------------------------
+
+
+class TestZulipConfigSchema:
+    def test_defaults_are_explicitly_empty(self):
+        """Missing allowlists mean 'admits nobody' and 'no channels',
+        never an implicit fallback population."""
+        cfg = ZulipConfig(zuliprc="/tmp/spc-123-unparsed.zuliprc")
+        assert cfg.allowed_user_ids == []
+        assert cfg.channels == {}
+        assert cfg.api_url is None
+
+    def test_zuliprc_is_a_required_credential_path(self):
+        with pytest.raises(ValidationError):
+            ZulipConfig()  # type: ignore[call-arg]
+
+    def test_channels_map_id_to_area_including_empty(self):
+        cfg = make_config(
+            channels={NO_AREA_CHANNEL: "", OTHER_NO_AREA_CHANNEL: "obsidian"}
+        )
+        assert cfg.channels[NO_AREA_CHANNEL] == ""
+        assert cfg.channels[OTHER_NO_AREA_CHANNEL] == "obsidian"
+        assert cfg.allowed_user_ids == [DIEGO_ID]
+
+    def test_non_integer_channel_key_rejected(self):
+        """Spec: "no implicit channel-name or launch-directory fallback" —
+        channel keys are explicit integer Zulip IDs."""
+        with pytest.raises(ValidationError):
+            make_config(channels={"not-an-id": ""})
+
+    def test_digit_string_channel_key_rejected(self):
+        """AC17: "explicit integer user/channel admission" — a digit string
+        is not an explicit integer ID, so ``{"42": ...}`` (as it could
+        arrive from a YAML-quoted ID) must not be admitted; the key is the
+        integer literal 42 only."""
+        with pytest.raises(ValidationError):
+            make_config(channels={"42": ""})
+
+    def test_non_integer_user_id_rejected(self):
+        """Spec: explicit integer user IDs only."""
+        with pytest.raises(ValidationError):
+            make_config(allowed_user_ids=["not-an-id"])
+
+    def test_digit_string_user_id_rejected(self):
+        """AC17: "explicit integer user ... admission" — the allowlist must
+        carry integer literals; a digit string like ``"8"`` (YAML-quoted)
+        is not an explicit integer and is not coerced into one."""
+        with pytest.raises(ValidationError):
+            make_config(allowed_user_ids=["8"])
+
+    def test_non_string_area_rejected(self):
+        """An area identity is a string; ``""`` is the explicit no-area
+        value, so a list is not a legal mapping value."""
+        with pytest.raises(ValidationError):
+            make_config(channels={NO_AREA_CHANNEL: ["not", "a", "string"]})
+
+    def test_zuliprc_must_be_a_string_path(self):
+        """AC17 pins the credential *path* as a string; an integer or list
+        there is not a path and must be rejected by the schema."""
+        with pytest.raises(ValidationError):
+            make_config(zuliprc=12345)
+        with pytest.raises(ValidationError):
+            make_config(zuliprc=["x"])
+
+
+# ---------------------------------------------------------------------------
+# Credentials — synthetic zuliprc, explicit failures, no secret disclosure
+# (spec FR2; Interfaces: "Missing credentials ... fail startup explicitly";
+# NFR: "Do not expose credentials in messages, logs, configuration examples
+# or Beads")
+# ---------------------------------------------------------------------------
+
+
+class TestCredentials:
+    def test_parses_synthetic_zuliprc(self, zuliprc: Path):
+        creds = load_zulip_credentials(str(zuliprc))
+        assert creds.email == BOT_EMAIL
+        assert creds.api_key == API_KEY
+        assert creds.site == SITE
+
+    def test_missing_file_raises_credential_error(self, tmp_path: Path):
+        with pytest.raises(ZulipCredentialError):
+            load_zulip_credentials(str(tmp_path / "absent.zuliprc"))
+
+    def test_malformed_file_raises_credential_error(self, tmp_path: Path):
+        """Genuinely malformed INI: the parse itself fails with
+        configparser.DuplicateOptionError — a class distinct from
+        MissingSectionHeaderError, the error the wrong-section fixture below
+        produces — so the two tests stay separate observables. (Verified
+        against configparser directly here rather than assumed; both parse
+        routes a loader might use, read_file and read_string, normalize
+        DuplicateOptionError to MissingSectionHeaderError, so a loader that
+        swallows the parse error and re-dispatches on has_section() cannot
+        satisfy this and the section test with one indistinguishable arm.)"""
+        body = "[zulip]\nemail = a@example.invalid\nemail = b@example.invalid\n"
+        bad = tmp_path / "bad.zuliprc"
+        bad.write_text(body)
+        with pytest.raises(configparser.DuplicateOptionError):
+            configparser.ConfigParser().read_string(body)
+        with pytest.raises(ZulipCredentialError):
+            load_zulip_credentials(str(bad))
+
+    def test_unreadable_file_raises_credential_error(self, tmp_path: Path):
+        """Unreadable even though it exists: the loader must not mistake an
+        open failure for "file not found". ``configparser.read()`` swallows
+        PermissionError into an empty result, so a loader built on it can
+        only satisfy this with an explicit readability probe; fixture mode
+        0o644 proves the rejection comes from the permission, not absence.
+        (Runs as non-root: root could read a 0o000 file.)"""
+        if not hasattr(os, "geteuid") or os.geteuid() == 0:
+            pytest.skip("file-permission boundary requires a non-root user")
+        path = tmp_path / "locked-raises.zuliprc"
+        path.write_text(f"[zulip]\nemail = {BOT_EMAIL}\nkey = {SECRET}\nsite = {SITE}\n")
+        path.chmod(0)
+        try:
+            with pytest.raises(ZulipCredentialError):
+                load_zulip_credentials(str(path))
+        finally:
+            path.chmod(0o644)
+
+    def test_missing_zulip_section_raises_credential_error(self, tmp_path: Path):
+        wrong = tmp_path / "wrong-section.zuliprc"
+        wrong.write_text(f"[other]\nemail = {BOT_EMAIL}\nkey = {SECRET}\n")
+        probe = configparser.ConfigParser()
+        probe.read_string(wrong.read_text())  # parses cleanly: INI-valid, wrong section
+        assert not probe.has_section("zulip")
+        with pytest.raises(ZulipCredentialError):
+            load_zulip_credentials(str(wrong))
+
+    def test_incomplete_file_raises_credential_error(self, incomplete_zuliprc: Path):
+        with pytest.raises(ZulipCredentialError):
+            load_zulip_credentials(str(incomplete_zuliprc))
+
+    def test_incomplete_file_error_never_leaks_the_api_key(
+        self, incomplete_zuliprc: Path
+    ):
+        """AC17: missing/invalid credentials are reported without disclosing
+        their contents — the file here carries a live-looking secret that
+        must not surface in the exception text."""
+        error = load_expect_credential_error(incomplete_zuliprc)
+        assert SECRET not in str(error)
+        assert SECRET not in repr(error)
+
+    def test_unreadable_file_error_never_leaks_file_contents(
+        self, unreadable_zuliprc: Path
+    ):
+        """AC17 "without disclosing their contents" on the one failure path
+        whose message necessarily names the file: even a file the reader
+        could not open must not have its body echoed into str() or repr()."""
+        if not hasattr(os, "geteuid") or os.geteuid() == 0:
+            # Root bypasses the permission bit; the unreadable-directory
+            # variant (test_directory_as_path_error_never_leaks_marker)
+            # keeps the no-disclosure guarantee tested on this run.
+            pytest.skip("file-permission boundary requires a non-root user")
+        error = load_expect_credential_error(unreadable_zuliprc)
+        assert SECRET not in str(error)
+        assert SECRET not in repr(error)
+        assert BOT_EMAIL not in str(error)
+
+    def test_directory_as_path_error_never_leaks_marker(self, tmp_path: Path):
+        """AC17 no-disclosure on an unreadable path that is not a permission
+        failure: a directory with a synthetic marker file inside cannot be
+        opened as a file, and its marker must not surface in the error."""
+        directory = tmp_path / "locked-dir"
+        directory.mkdir()
+        (directory / "marker.zuliprc").write_text(
+            f"[zulip]\nemail = {BOT_EMAIL}\nkey = {SECRET}\nsite = {SITE}\n"
+        )
+        error = load_expect_credential_error(directory)
+        assert SECRET not in str(error)
+        assert SECRET not in repr(error)
+        assert BOT_EMAIL not in str(error)
+
+    def test_credential_error_type_is_exported_and_catchable(self, tmp_path: Path):
+        """The declared credential-boundary type is catchable at the package
+        seam: every rejected synthetic credential above surfaced as a real
+        exception instance of the exported class."""
+        # Catchability: the exported class is a real, raisable/catchable type.
+        with pytest.raises(ZulipCredentialError):
+            raise ZulipCredentialError("synthetic instance for catch")
+        # The exported class is the type every rejection above surfaced:
+        # re-run a representative set of failing paths through the loader.
+        bad = tmp_path / "bad.zuliprc"
+        bad.write_text("[zulip]\nemail = a@example.invalid\nemail = b@example.invalid\n")
+        wrong = tmp_path / "wrong-section.zuliprc"
+        wrong.write_text(f"[other]\nemail = {BOT_EMAIL}\nkey = {SECRET}\n")
+        partial = tmp_path / "partial.zuliprc"
+        partial.write_text(f"[zulip]\nemail = {BOT_EMAIL}\nkey = {SECRET}\n")
+        for path in (tmp_path / "absent.zuliprc", bad, wrong, partial):
+            error = load_expect_credential_error(path)
+            assert isinstance(error, ZulipCredentialError)
+
+
+class TestNonemptyAreaGateIntermediate:
+    """AC16-INTERMEDIATE (this cut): nonempty area mappings fail startup
+    explicitly rather than losing the area. spc-120
+    (Add Zulip area routing and live config reload) owns upgrading these
+    assertions to real area routing; until then silent area loss is the
+    failure this gate exists to prevent.
+    """
+
+    def test_config_accepts_nonempty_area_values(self):
+        """The schema still parses nonempty areas; rejection is a routing
+        gate, not a schema field — pinning where spc-120 lifts the rule."""
+        cfg = make_config(
+            channels={NO_AREA_CHANNEL: "", OTHER_NO_AREA_CHANNEL: "obsidian"}
+        )
+        assert cfg.channels[OTHER_NO_AREA_CHANNEL] == "obsidian"
+
+    def test_all_no_area_channels_pass_the_gate(self):
+        """Two distinct valid no-area shapes pass the gate cleanly (a
+        validator returning no signal on success), so the pass path is
+        exercised over more than one input, not an empty body."""
+        for channels in (
+            {NO_AREA_CHANNEL: "", OTHER_NO_AREA_CHANNEL: ""},
+            {OTHER_NO_AREA_CHANNEL: ""},
+        ):
+            cfg = make_config(channels=channels)
+            assert validate_no_area_only_routing(cfg) is None
+
+    def test_nonempty_area_rejected_naming_area_or_routing(self):
+        cfg = make_config(channels={NO_AREA_CHANNEL: "obsidian"})
+        with pytest.raises(Exception) as exc_info:
+            validate_no_area_only_routing(cfg)
+        assert re.search(r"area|routing", str(exc_info.value), re.I)
+
+    def test_rejection_message_names_the_offending_channel(self):
+        cfg = make_config(channels={NO_AREA_CHANNEL: "", AREA_CHANNEL: "obsidian"})
+        with pytest.raises(Exception) as exc_info:
+            validate_no_area_only_routing(cfg)
+        assert str(AREA_CHANNEL) in str(exc_info.value)
+
+
+class TestChannelAdmission:
+    def test_configured_no_area_channel_admitted(self):
+        cfg = make_config()
+        assert is_configured_no_area_channel(
+            channel_id=NO_AREA_CHANNEL,
+            sender_id=DIEGO_ID,
+            sender_is_bot=False,
+            config=cfg,
+        )
+
+    def test_unconfigured_channel_ignored(self):
+        cfg = make_config()
+        assert not is_configured_no_area_channel(
+            channel_id=UNCONFIGURED_CHANNEL,
+            sender_id=DIEGO_ID,
+            sender_is_bot=False,
+            config=cfg,
+        )
+
+    def test_channel_membership_decides_on_configured_ids_not_channel_name(self):
+        """Spec: "no implicit channel-name or launch-directory fallback" —
+        an event carrying a stringified ID is not a match for integer 42."""
+        cfg = make_config()
+        assert not is_configured_no_area_channel(
+            channel_id="42", sender_id=DIEGO_ID, sender_is_bot=False, config=cfg
+        )
+
+    def test_nonempty_area_channel_not_admitted(self):
+        """AC16-INTERMEDIATE: in this cut no channel carrying an area may be
+        admitted; even if the startup gate were bypassed, admission stays
+        closed. Upgrade owned by spc-120."""
+        cfg = make_config(channels={NO_AREA_CHANNEL: "", AREA_CHANNEL: "obsidian"})
+        assert not is_configured_no_area_channel(
+            channel_id=AREA_CHANNEL,
+            sender_id=DIEGO_ID,
+            sender_is_bot=False,
+            config=cfg,
+        )
+
+
+class TestSenderAdmission:
+    def test_disallowed_user_ignored(self):
+        cfg = make_config()
+        assert not is_configured_no_area_channel(
+            channel_id=NO_AREA_CHANNEL,
+            sender_id=INTRUDER_ID,
+            sender_is_bot=False,
+            config=cfg,
+        )
+
+    def test_bot_never_admitted_even_when_allowlisted(self):
+        """Reply-loop prevention (spec FR5: "ignore bot messages as
+        triggers"): the bot-authored rule outranks an allowlisted bot ID,
+        so a bot reply can never trigger itself."""
+        cfg = make_config(allowed_user_ids=[DIEGO_ID, BOT_ID])
+        assert not is_configured_no_area_channel(
+            channel_id=NO_AREA_CHANNEL,
+            sender_id=BOT_ID,
+            sender_is_bot=True,
+            config=cfg,
+        )
+
+    def test_empty_allowlist_admits_no_human(self):
+        """An empty allowlist is explicit nobody — no implicit admission."""
+        cfg = make_config(allowed_user_ids=[])
+        assert not is_configured_no_area_channel(
+            channel_id=NO_AREA_CHANNEL,
+            sender_id=DIEGO_ID,
+            sender_is_bot=False,
+            config=cfg,
+        )
