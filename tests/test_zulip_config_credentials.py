@@ -305,6 +305,63 @@ class TestCredentials:
         assert SECRET not in repr(error)
         assert BOT_EMAIL not in str(error)
 
+    def test_interpolating_key_value_fails_without_leaking_raw_value(
+        self, tmp_path: Path
+    ):
+        """Regression: a key value containing an interpolation marker
+        (``%(missing)s``) must not escape as a raw configparser
+        interpolation error — that error embeds the raw value, disclosing
+        the credential. The loader reports a sanitized credential failure
+        (or preserves a valid value) and never echoes the raw value."""
+        marker = "LEAK-MARKER-INTERP-98765"
+        path = tmp_path / "interp.zuliprc"
+        path.write_text(
+            f"[zulip]\nemail = {BOT_EMAIL}\n"
+            f"key = {marker} %(missing)s\nsite = {SITE}\n"
+        )
+        try:
+            creds = load_zulip_credentials(str(path))
+            assert creds.api_key == f"{marker} %(missing)s"
+        except Exception as exc:
+            assert isinstance(exc, ZulipCredentialError)
+            assert marker not in str(exc)
+            assert marker not in repr(exc)
+
+    def test_invalid_utf8_file_fails_without_leaking_bytes(
+        self, tmp_path: Path
+    ):
+        """Regression: a credential file with invalid UTF-8 must not escape
+        as a raw UnicodeDecodeError — its repr embeds the decoded bytes,
+        disclosing the file contents. The loader reports a sanitized
+        credential failure without echoing the bytes."""
+        marker = "LEAK-MARKER-UTF8-13579"
+        path = tmp_path / "binary.zuliprc"
+        # Raw invalid UTF-8 bytes, spliced into otherwise valid UTF-8.
+        # Built at the byte level: a Python str cannot hold 0xff, so
+        # concatenating the bytes is the only way the file actually
+        # contains the undecodable sequence.
+        raw = b"\xff\xfe\x81"
+        path.write_bytes(
+            f"[zulip]\nemail = {BOT_EMAIL}\nkey = {marker} ".encode("utf-8")
+            + raw
+            + f"\nsite = {SITE}\n".encode("utf-8")
+        )
+        # Verify the fixture is genuinely undecodable as UTF-8 BEFORE
+        # exercising the public loader, so the red proof below is
+        # attributable to the bytes, not to fixture construction.
+        try:
+            path.read_bytes().decode("utf-8")
+            raise AssertionError(
+                "fixture is decodable as UTF-8; the test would be "
+                "exercising the wrong boundary"
+            )
+        except UnicodeDecodeError:
+            pass  # fixture is genuinely invalid UTF-8, as intended
+        error = load_expect_credential_error(path)
+        assert marker not in str(error)
+        assert marker not in repr(error)
+        assert b"\xff\xfe\x81" not in repr(error).encode("utf-8", "replace")
+
     def test_credential_error_type_is_exported_and_catchable(self, tmp_path: Path):
         """The declared credential-boundary type is catchable at the package
         seam: every rejected synthetic credential above surfaced as a real
