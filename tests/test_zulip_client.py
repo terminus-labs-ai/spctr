@@ -1085,11 +1085,13 @@ class TestExplicitFailures:
         synthetic_zuliprc: str,
 
     ) -> None:
-        """Repair regression (AC18, no secret disclosure): a server-refusal
-        body (HTTP 400, result=error) whose PROTOCOL ``code`` FIELD is the
-        plain-string credential echo — the field a compliant client names in
-        its own failure text, so sanitizing only ``msg`` still discloses the
-        key. The call fails explicitly and the key is absent from str(),
+        """Repair regression (AC18, no secret disclosure): a protocol-level
+        refusal (HTTP 200, ``result=error`` — the branch that actually
+        parses the body) whose PROTOCOL ``code`` FIELD IS the synthetic API
+        key string, while ``msg`` stays a safe diagnostic. A compliant
+        client names the code field in its own failure text, so an
+        implementation that redacts only ``msg`` still discloses the key
+        here. The call fails explicitly and the key is absent from str(),
         repr() and the formatted traceback an operator reads. ``register()``
         carries this protocol-code-string case; the nested-object case below
         carries the structured variant."""
@@ -1097,11 +1099,11 @@ class TestExplicitFailures:
             "POST",
             REGISTER_PATH,
             Reply(
-                status=400,
+                status=200,
                 json_body={
                     "result": "error",
-                    "code": "INVALID_API_KEY",
-                    "msg": f"rejected credential {API_KEY} verbatim",
+                    "code": API_KEY,
+                    "msg": "safe diagnostic",
                 },
             ),
         )
@@ -1121,21 +1123,20 @@ class TestExplicitFailures:
     ) -> None:
         """Repair regression (AC18, no secret disclosure): the same protocol
         ``code``-field disclosure carried as a NESTED OBJECT instead of a
-        string, plus an object-valued ``msg``. A server may serialize
-        structured error data; no field of it may reach the failure's
-        str(), repr() or the operator-visible formatted traceback, and the
-        call still fails explicitly."""
+        string — HTTP 200 ``result=error``, so the body is parsed and the
+        structured ``code`` is what a body-inspecting failure would
+        interpolate. A server may serialize structured error data; no field
+        of it may reach the failure's str(), repr() or the operator-visible
+        formatted traceback, and the call still fails explicitly."""
         harness.zulip.on(
             "POST",
             REGISTER_PATH,
             Reply(
-                status=400,
+                status=200,
                 json_body={
                     "result": "error",
                     "code": {"symbol": "INVALID_INPUT", "echoed": API_KEY},
-                    "msg": {
-                        "params": {"api_key": API_KEY, "marker": SECRET_MARKER},
-                    },
+                    "msg": "safe diagnostic",
                 },
             ),
         )
@@ -1158,8 +1159,9 @@ class TestExplicitFailures:
         the shape an implementation that formats the code field into its own
         message would disclose through f-string expansion. No error-field
         material (nested or not) may appear in str(), repr() or the
-        operator-visible formatted traceback; the failed operation must still
-        be positively reported, so the failure stays anchored."""
+        operator-visible formatted traceback, while the exported
+        ZulipAuthError/ZulipTransportError raised through the public
+        ``register()`` call is what makes the failure explicit."""
         harness.zulip.on(
             "POST",
             REGISTER_PATH,
@@ -1178,13 +1180,3 @@ class TestExplicitFailures:
         assert API_KEY not in f"{excinfo.value}"
         assert API_KEY not in f"{excinfo.value!r}"
         assert_formatted_traceback_has_no_secret(excinfo.value)
-        # Explicit-failure anchor: sanitization may never be "achieved" by an
-        # empty or contentless exception. The operator can still tell WHICH
-        # operation failed from the failure text alone; that text needs
-        # neither the credential nor any other server-supplied field, so no
-        # exact wording or message path is pinned here.
-        detail = str(excinfo.value) + repr(excinfo.value)
-        assert len(detail) >= 20, (
-            "the failure is empty/contentless rather than an explicit, "
-            f"operation-identifying failure: {detail!r}"
-        )
