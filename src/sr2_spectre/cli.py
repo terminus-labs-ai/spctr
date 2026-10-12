@@ -220,6 +220,7 @@ def _load_interface(interface_name: str, **kwargs: Any) -> Any:
         "repl": "sr2_spectre.interfaces.repl.REPLInterface",
         "tui": "sr2_spectre.interfaces.tui.TUIInterface",
         "discord": "sr2_spectre.interfaces.discord.interface.DiscordInterface",
+        "zulip": "sr2_spectre.interfaces.zulip.interface.ZulipInterface",
     }
 
     class_path = known_interfaces.get(interface_name, interface_name)
@@ -403,6 +404,16 @@ async def run_async(argv: list[str] | None = None) -> None:
         interface_kwargs["config_source"] = DiscordConfigView(
             build_spectre_config_source(config_path, Path.cwd(), config)
         )
+    if interface_name == "zulip":
+        # No live reload in this cut (spc-120 owns it): the validated zulip
+        # block is frozen at startup. A missing block fails startup
+        # explicitly rather than starting a bot with no routing at all.
+        if config.zulip is None:
+            raise ValueError(
+                "Zulip interface selected but no `zulip` config block is "
+                "present."
+            )
+        interface_kwargs["config"] = config.zulip
 
     await agent.initialize()
 

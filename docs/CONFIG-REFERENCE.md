@@ -502,6 +502,28 @@ unreachable-server or malformed-response failures raise
 `ZulipTransportError`. Neither message ever contains the API key or a
 server response body. Call `aclose()` to release the connection pool.
 
+### Chat interface (no-area pilot)
+
+Selecting `--interface zulip` runs `ZulipInterface` with the validated
+`zulip` block (a missing block fails startup explicitly). Startup loads the
+zuliprc, rejects any nonempty channel area, and registers the event queue —
+it fetches no history and makes no model request.
+
+- Only allowed human users in configured no-area channels trigger turns;
+  bot messages and unconfigured channels are ignored without model work.
+- Each (channel, exact topic) owns one Session; the frame identity carries
+  the agent, the resolved server origin, the channel ID and the escaped
+  topic. New topics start with an explicit no-area run context
+  (`area: ""`) and never inherit the working-directory area.
+- Model turns are serialized globally; concurrent messages in the same
+  topic share one Session and keep ordered history, and distinct topics
+  stay isolated.
+- Until history restoration ships (spc-120), a topic that already holds
+  messages — including bot-only alerts — gets an explicit
+  unsupported-history reply with no model/tool work, and a failed
+  history probe blocks the turn the same way.
+- `stop()` closes all interface-owned Sessions and the transport.
+
 ---
 
 ## Live reload

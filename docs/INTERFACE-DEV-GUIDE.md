@@ -143,6 +143,14 @@ await session.handle_user_message(prompt)
   them (`session.close()`) in `stop()` when the conversation ends; the Agent
   retains its facade semantics and does not close them for you.
 
+Zulip's frame identity shows the pattern for a multi-destination chat
+interface: include the agent name, the resolved server origin, the integer
+channel ID and the URL-escaped exact topic (`topic_frame_id()` in
+`sr2_spectre.interfaces.zulip`), so two topics can never collide on a bare
+name. Set the per-Session run context with an explicit `area` (`""` for
+no-area channels; never `None`, which permits fallback) and drive the
+conversation with `session.handle_user_message()`.
+
 ### Available event types
 
 | Event | Attributes | Meaning |

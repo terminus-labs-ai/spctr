@@ -26,6 +26,7 @@ from sr2.config.models import PipelineConfig
 
 from sr2_spectre.config_merge import merge_configs
 from sr2_spectre.interfaces.discord.config import DiscordConfig
+from sr2_spectre.interfaces.zulip.config import ZulipConfig
 from sr2_spectre.path_resolution import ConfigPathError, resolve_path
 
 
@@ -150,6 +151,7 @@ class SpectreConfig(BaseModel):
         ),
     )
     discord: DiscordConfig | None = None
+    zulip: ZulipConfig | None = None
     provenance_store_path: str | None = Field(
         default=None,
         description=(
