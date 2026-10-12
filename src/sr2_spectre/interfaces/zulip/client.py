@@ -1,9 +1,10 @@
-"""Zulip credential record and the declared failure-boundary types.
+"""Zulip credentials, failure-boundary types, and the public HTTP transport.
 
-This module holds only credential and error definitions. Transport behavior
-(authenticated requests, events API, send-message) arrives with spc-124
-(``Exercise Zulip transport through its public API``); nothing here performs
-HTTP or model work.
+Credentials and errors ship here alongside the ``ZulipClient`` transport
+(spc-124): authenticated calls to the configured server only — queue
+registration, event polling, exact-topic history and send. No CLI, retry
+policy or history restoration lives here; later slices build on these
+methods.
 
 The API key never appears in a URL, a log record, or an exception message:
 credential failures name the path and the reason, never the contents. Values
@@ -14,10 +15,24 @@ or codec error echoing the file.
 """
 from __future__ import annotations
 
+import base64
 import configparser
+import json
 from dataclasses import dataclass
+from typing import Any
+from urllib.parse import urlencode
+
+import aiohttp
+
+from sr2_spectre.interfaces.zulip.config import ZulipConfig
 
 _REQUIRED_FIELDS = ("email", "key", "site")
+_API_PREFIX = "/api/v1"
+_DEFAULT_REQUEST_TIMEOUT = 30.0
+
+
+class ZulipError(Exception):
+    """Base for the declared Zulip failure boundaries below."""
 
 
 class ZulipCredentialError(Exception):
@@ -28,7 +43,7 @@ class ZulipCredentialError(Exception):
     """
 
 
-class ZulipAuthError(Exception):
+class ZulipAuthError(ZulipError):
     """The server rejected the bot's credentials (generic reason only).
 
     Declared here for the transport slice (spc-124); raised there, never
@@ -36,7 +51,7 @@ class ZulipAuthError(Exception):
     """
 
 
-class ZulipTransportError(Exception):
+class ZulipTransportError(ZulipError):
     """A transport-level failure talking to the configured server.
 
     Declared here for the transport slice (spc-124); raised there.
@@ -102,3 +117,193 @@ def load_zulip_credentials(path: str) -> ZulipCredentials:
         api_key=parser.get("zulip", "key").strip(),
         site=parser.get("zulip", "site").strip().rstrip("/"),
     )
+
+
+class ZulipClient:
+    """Public Zulip transport over the official REST API (spc-124, AC18).
+
+    Every call goes to ONE explicitly configured origin: ``config.api_url``
+    when set (loopback/testing override), else the zuliprc ``site``. The bot
+    authenticates with HTTP Basic (email, key) on each request; redirects
+    are never followed (``max_redirects=0``), so a server-supplied Location
+    cannot carry the credentials to another host.
+
+    Failure boundary: HTTP 401/403 and protocol-level ``result: error``
+    answers raise :class:`ZulipAuthError`; timeouts, unreachable servers,
+    severed connections and malformed success bodies raise
+    :class:`ZulipTransportError`. Neither message ever contains the API key
+    or a server body — servers can echo request context into error text, so
+    the body is read for status classification only and then dropped.
+
+    Args:
+        credentials: The bot identity from :func:`load_zulip_credentials`.
+        config: The ``zulip`` config block; only ``api_url`` matters here.
+        request_timeout: Seconds that bound EACH request.
+    """
+
+    def __init__(
+        self,
+        *,
+        credentials: ZulipCredentials,
+        config: ZulipConfig,
+        request_timeout: float | None = None,
+    ) -> None:
+        self._origin = (config.api_url or credentials.site).rstrip("/")
+        self._timeout = (
+            _DEFAULT_REQUEST_TIMEOUT if request_timeout is None else request_timeout
+        )
+        self._auth_header = "Basic " + base64.b64encode(
+            f"{credentials.email}:{credentials.api_key}".encode("utf-8")
+        ).decode("ascii")
+        self._session = aiohttp.ClientSession(
+            headers={"Authorization": self._auth_header},
+            trust_env=False,
+        )
+
+    async def aclose(self) -> None:
+        """Close the underlying HTTP connection pool."""
+        await self._session.close()
+
+    # -- public API ----------------------------------------------------------
+
+    async def register(self) -> dict[str, Any]:
+        """Register an event queue (POST /api/v1/register).
+
+        Returns the protocol dict; ``queue_id`` is an OPAQUE STRING passed
+        through untouched, ``last_event_id`` an int.
+        """
+        return await self._request(
+            "POST", "/register", data={"events": json.dumps(["message"])}
+        )
+
+    async def get_events(
+        self, queue_id: str, last_event_id: int = -1
+    ) -> dict[str, Any]:
+        """Poll the event queue (GET /api/v1/events).
+
+        ``queue_id`` travels byte-for-byte as given; the answer's ``events``
+        key holds the event array.
+        """
+        return await self._request(
+            "GET",
+            "/events",
+            query={"queue_id": queue_id, "last_event_id": last_event_id},
+        )
+
+    async def get_topic_messages(
+        self, channel_id: int, topic: str
+    ) -> dict[str, Any]:
+        """Fetch one topic's history (GET /api/v1/messages).
+
+        The narrow is JSON-encoded per the construct-narrow contract: a
+        ``channel`` operator with the integer channel ID and a ``topic``
+        operator with the exact topic string. The answer's ``messages``
+        key holds the protocol message list.
+        """
+        narrow = [
+            {"operator": "channel", "operand": channel_id},
+            {"operator": "topic", "operand": topic},
+        ]
+        return await self._request(
+            "GET",
+            "/messages",
+            query={
+                "narrow": json.dumps(narrow),
+                "anchor": "newest",
+                "num_before": 100,
+                "num_after": 0,
+            },
+        )
+
+    async def send_message(
+        self,
+        *,
+        type: str = "stream",
+        to: int,
+        topic: str,
+        content: str,
+    ) -> Any:
+        """Send a message (POST /api/v1/messages) to the given destination.
+
+        Returns the new message ID (the protocol response's ``id``).
+        """
+        payload = await self._request(
+            "POST",
+            "/messages",
+            data={"type": type, "to": to, "topic": topic, "content": content},
+        )
+        return payload["id"]
+
+    # -- request core ----------------------------------------------------------
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        query: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        url = f"{self._origin}{_API_PREFIX}{path}"
+        if query:
+            url = f"{url}?{urlencode(query)}"
+        try:
+            async with self._session.request(
+                method,
+                url,
+                data=data,
+                timeout=aiohttp.ClientTimeout(total=self._timeout),
+                max_redirects=0,
+                allow_redirects=False,
+            ) as resp:
+                status = resp.status
+                raw = await resp.read()
+            return self._classify(method, path, status, raw)
+        except ZulipError:
+            raise
+        except (
+            aiohttp.ClientError,
+            TimeoutError,
+            ConnectionError,
+            OSError,
+        ):
+            # ClientError covers redirects refused via max_redirects=0.
+            # Only the method/path is named — never the exception text,
+            # which can carry request context.
+            raise ZulipTransportError(
+                f"Zulip request failed: {method} {_API_PREFIX}{path}"
+            ) from None
+
+    def _classify(
+        self, method: str, path: str, status: int, raw_body: bytes
+    ) -> dict[str, Any]:
+        if status in (401, 403):
+            raise ZulipAuthError(
+                f"Zulip server rejected authentication (HTTP {status}): "
+                f"{method} {_API_PREFIX}{path}"
+            )
+        if status >= 400:
+            raise ZulipTransportError(
+                f"Zulip server error (HTTP {status}): "
+                f"{method} {_API_PREFIX}{path}"
+            )
+        try:
+            payload = json.loads(raw_body)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ZulipTransportError(
+                f"Zulip server returned a malformed response body: "
+                f"{method} {_API_PREFIX}{path}"
+            ) from None
+        if not isinstance(payload, dict):
+            raise ZulipTransportError(
+                f"Zulip server returned a non-object response: "
+                f"{method} {_API_PREFIX}{path}"
+            )
+        if payload.get("result") != "success":
+            # A server-supplied msg may echo request context (even the key),
+            # so it is never propagated into the failure.
+            raise ZulipAuthError(
+                f"Zulip server rejected the request "
+                f"(code: {payload.get('code')}): {method} {_API_PREFIX}{path}"
+            )
+        return payload

@@ -489,6 +489,19 @@ A missing, unreadable, malformed or incomplete zuliprc fails startup with
 contents. Until area routing ships (spc-120), a nonempty `channels` area
 also fails startup explicitly instead of routing without its area.
 
+### Transport
+
+`ZulipClient(credentials=..., config=..., request_timeout=...)` (from
+`sr2_spectre.interfaces.zulip`) is the public HTTP transport: `register()`,
+`get_events(queue_id, last_event_id)`, `get_topic_messages(channel_id,
+topic)` and `send_message(type=, to=, topic=, content=)`. Requests go only
+to `api_url` when set, otherwise the zuliprc `site` — with HTTP Basic,
+redirects never followed, and queue IDs treated as opaque strings. A
+401/403 or protocol-level error raises `ZulipAuthError`; timeout,
+unreachable-server or malformed-response failures raise
+`ZulipTransportError`. Neither message ever contains the API key or a
+server response body. Call `aclose()` to release the connection pool.
+
 ---
 
 ## Live reload
