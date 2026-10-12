@@ -300,10 +300,12 @@ class ZulipClient:
                 f"{method} {_API_PREFIX}{path}"
             )
         if payload.get("result") != "success":
-            # A server-supplied msg may echo request context (even the key),
-            # so it is never propagated into the failure.
+            # Every field of a server error body is untrusted: msg may echo
+            # request context (even the key) and code may be a string or a
+            # nested object carrying it. No response field is interpolated
+            # into the failure — only the method/path this client built.
             raise ZulipAuthError(
-                f"Zulip server rejected the request "
-                f"(code: {payload.get('code')}): {method} {_API_PREFIX}{path}"
+                f"Zulip server rejected the request: "
+                f"{method} {_API_PREFIX}{path}"
             )
         return payload
