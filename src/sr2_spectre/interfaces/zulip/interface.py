@@ -11,11 +11,18 @@ spc-123/124 seams:
   event queue. It performs no history fetch and no model work: a topic that
   already holds messages when the process starts is only discovered lazily,
   on the first user message that triggers in it.
-- A triggered topic that this process does not yet hold in a live Session is
-  probed for prior content. Any populated topic — including bot-only alerts —
-  is refused with an explicit unsupported-history reply and NO model/tool work
-  until complete history restoration ships (spc-120 slice). A probe failure
-  likewise blocks the model turn with an explicit error.
+- Bot identity comes from real server metadata: the registration response's
+  ``realm_users`` (and ``realm_bots``) arrays carry ``user_id``/``is_bot``
+  per https://zulip.com/api/register-queue; a message event never carries an
+  invented bot flag.
+- A triggered cold topic is probed through the topic history API
+  (https://zulip.com/api/get-messages, narrow JSON-encoded). The current
+  trigger is already inside that fetch, so it is excluded exactly once by
+  message id; ANY other message — including bot-only alerts — refuses the
+  topic with an explicit unsupported-history reply and NO model/tool work
+  until complete history restoration ships. Fresh messages this process
+  already admitted in-process never make a new topic look populated. A probe
+  failure or malformed answer blocks the model turn with an explicit error.
 - Only allowed human users in configured no-area channels trigger turns; bot
   messages and unconfigured channels are ignored without model work.
 - All model turns are serialized globally (one Miranda turn at a time);
@@ -79,8 +86,16 @@ class ZulipInterface:
         self._agent: Any = None
         self._credentials: Any = None
         self._client: ZulipClient | None = None
-        # Frame ID -> the live Session this process owns for that topic.
-        self._sessions: dict[str, Any] = {}
+        # Frame ID -> (live Session, per-topic history reserved for the
+        # history-restoration slice) for the topics this process owns.
+        self._sessions: dict[str, tuple[Any, list[Any]]] = {}
+        # Message IDs of the triggers this process ADMITTED to a Session;
+        # they appear in a later topic fetch (a trigger "already appears in
+        # fetched topic history") without making the new topic look
+        # populated. Refused triggers never join: they stay prior content.
+        self._admitted_ids: set[int] = set()
+        # Bot user IDs from registration realm metadata (see _read_bot_ids).
+        self._bot_ids: set[int] = set()
         # Global model-turn serialization: one Miranda turn at a time.
         self._turn_lock = asyncio.Lock()
         self._running = False
@@ -103,16 +118,39 @@ class ZulipInterface:
         registration = await self._client.register()
         self._queue_id: str = str(registration["queue_id"])
         self._last_event_id: int = int(registration["last_event_id"])
+        self._bot_ids = self._read_bot_ids(registration)
         self._running = True
         logger.info(
-            "Zulip interface started: origin=%s queue registered",
+            "Zulip interface started: origin=%s queue registered bot=%s",
             self._origin,
+            self._credentials.email,
         )
+
+    def _read_bot_ids(self, registration: dict[str, Any]) -> set[int]:
+        """Collect bot user IDs from registration realm metadata.
+
+        Message events carry no bot flag; per the register-queue contract the
+        ``realm_users`` array (every account, ``is_bot`` marks bots) plus the
+        ``realm_bots`` array are the real server metadata that identifies
+        bots by ``user_id``.
+        """
+        bot_ids: set[int] = set()
+        for entry in registration.get("realm_users") or []:
+            if isinstance(entry, dict) and entry.get("is_bot") is True:
+                user_id = entry.get("user_id")
+                if isinstance(user_id, int):
+                    bot_ids.add(user_id)
+        for entry in registration.get("realm_bots") or []:
+            if isinstance(entry, dict):
+                bot_id = entry.get("bot_id")
+                if isinstance(bot_id, int):
+                    bot_ids.add(bot_id)
+        return bot_ids
 
     async def stop(self) -> None:
         """Close every interface-owned Session, then the transport."""
         self._running = False
-        for session in self._sessions.values():
+        for session, _seen in self._sessions.values():
             session.close()
         self._sessions.clear()
         if self._client is not None:
@@ -137,9 +175,11 @@ class ZulipInterface:
                 await asyncio.sleep(2.0)
                 continue
             for event in events:
-                self._last_event_id = max(
-                    self._last_event_id, int(event.get("id", self._last_event_id))
-                )
+                if not isinstance(event, dict):
+                    continue
+                event_id = event.get("id")
+                if isinstance(event_id, int):
+                    self._last_event_id = max(self._last_event_id, event_id)
                 if event.get("type") != "message":
                     # Topic rename/move/resolve etc. never start work.
                     continue
@@ -151,23 +191,30 @@ class ZulipInterface:
 
     async def _handle_message(self, message: dict[str, Any]) -> None:
         """Route one Zulip message event; ignored events do no model work."""
-        channel_id = message.get("channel_id")
-        sender_id = message.get("sender_id")
-        if not isinstance(channel_id, int) or not isinstance(sender_id, int):
+        # Official stream-message shape (get-events contract): ``type``
+        # "stream", the channel under ``stream_id``, the exact topic under
+        # ``subject`` (legacy name), the sender under ``sender_id``.
+        if message.get("type") != "stream":
             return
-        sender_is_bot = bool(
-            (message.get("sender_type") or "").lower() == "bot"
-        )
+        channel_id = message.get("stream_id")
+        sender_id = message.get("sender_id")
+        message_id = message.get("id")
+        if (
+            not isinstance(channel_id, int)
+            or not isinstance(sender_id, int)
+            or not isinstance(message_id, int)
+        ):
+            return
         if not is_configured_no_area_channel(
             channel_id=channel_id,
             sender_id=sender_id,
-            sender_is_bot=sender_is_bot,
+            sender_is_bot=sender_id in self._bot_ids,
             config=self._config,
         ):
             # Bot, disallowed user, or unconfigured channel: no model work.
             return
 
-        topic = str(message.get("topic", ""))
+        topic = str(message.get("subject", ""))
         frame_id = topic_frame_id(
             self._agent.config.agent.name, self._origin, channel_id, topic
         )
@@ -175,49 +222,75 @@ class ZulipInterface:
             # Same-topic concurrency: one Session per topic; the lock above
             # serializes model turns globally, so queued follow-ups in one
             # topic keep their order and distinct topics stay isolated.
-            session = self._sessions.get(frame_id)
-            if session is None:
-                session = await self._ensure_session(frame_id, channel_id, topic)
-                if session is not None:
-                    self._sessions[frame_id] = session
-                else:
-                    return  # refused or probe-failed; reply already sent
-            await self._run_turn(session, message)
+            entry = self._sessions.get(frame_id)
+            if entry is None:
+                # Admit-and-remember only on success. The poller holds the
+                # turn lock across probe and turn, so the admitted set is
+                # exactly the earlier in-process triggers, plus this one.
+                entry = await self._ensure_session(
+                    frame_id, channel_id, topic, message_id,
+                    self._admitted_ids | {message_id},
+                )
+                if entry is not None:
+                    self._admitted_ids.add(message_id)
+                    self._sessions[frame_id] = entry
+            if entry is None:
+                return  # refused or probe-failed; reply already sent
+            session = entry[0]
+            await self._run_turn(session, channel_id, topic, message)
 
     async def _ensure_session(
-        self, frame_id: str, channel_id: int, topic: str
-    ) -> Any | None:
+        self,
+        frame_id: str,
+        channel_id: int,
+        topic: str,
+        trigger_id: int,
+        candidate_ids: set[int],
+    ) -> tuple[Any, list[Any]] | None:
         """Probe cold-topic history and create the Session for a new topic.
 
-        Called only for topics this process does not yet own. A topic that
-        already holds ANY messages — including bot-only alerts — is refused
-        with an explicit reply and no model work until history restoration
-        ships; a probe failure blocks the turn the same way. Returns None
-        when the turn was blocked (the reply is sent synchronously here,
-        while still holding the turn lock).
+        Called only for topics this process does not yet own. The trigger
+        message is already inside the fetched topic history, so it is
+        excluded exactly once by id; ANY other message — including bot-only
+        alerts — means the topic is populated and is refused with an
+        explicit reply and no model work until history restoration ships.
+        Messages this process admitted to a Session earlier
+        (``candidate_ids``) are likewise fresh in-process messages, not
+        prior content; a refused trigger never joins them and stays prior
+        content. A probe failure or malformed answer blocks the turn the
+        same way. Returns the (Session, per-topic history) entry on
+        success, or None when the turn was blocked (the blocking reply is
+        sent here, while still holding the turn lock).
         """
         try:
-            probe = self._client.get_topic_messages(channel_id, topic)
-            messages = (await probe).get("messages")
-            populated = isinstance(messages, list) and len(messages) > 0
+            response = await self._client.get_topic_messages(channel_id, topic)
+            messages = response.get("messages")
+            if not isinstance(messages, list):
+                raise TypeError("history response has no messages array")
         except (ZulipError, KeyError, TypeError) as exc:
             # Probe failure blocks model work: explicit reply, no turn.
             logger.error(
                 "Topic history probe failed for channel %s: %s", channel_id, exc
             )
-            asyncio.get_running_loop().create_task(
-                self._send_reply(channel_id, topic, _PROBE_FAILURE_TEXT)
-            )
+            await self._send_reply(channel_id, topic, _PROBE_FAILURE_TEXT)
             return None
-        if populated:
+        # The trigger (and any trigger this process already admitted to a
+        # Session) appears in the fetch without being prior content; each is
+        # excluded by its unique id. Anything else — a bot alert included —
+        # is prior content.
+        def _is_prior(entry: Any) -> bool:
+            if not isinstance(entry, dict):
+                return True
+            entry_id = entry.get("id")
+            return entry_id != trigger_id and entry_id not in candidate_ids
+
+        if any(_is_prior(entry) for entry in messages):
             logger.info(
                 "Populated cold topic (channel %s, topic %r): refusing "
                 "without history restoration",
                 channel_id, topic,
             )
-            asyncio.get_running_loop().create_task(
-                self._send_reply(channel_id, topic, _REFUSAL_TEXT)
-            )
+            await self._send_reply(channel_id, topic, _REFUSAL_TEXT)
             return None
         session = self._agent.create_session(frame_id)
         session.set_run_context(
@@ -228,9 +301,11 @@ class ZulipInterface:
                 area="",  # explicit no-area: never fall back to cwd
             )
         )
-        return session
+        return session, set()
 
-    async def _run_turn(self, session: Any, message: dict[str, Any]) -> None:
+    async def _run_turn(
+        self, session: Any, channel_id: int, topic: str, message: dict[str, Any]
+    ) -> None:
         """Run one admitted message through its topic's Session."""
         try:
             result = await session.handle_user_message(
@@ -241,9 +316,7 @@ class ZulipInterface:
             return
         if not result.text:
             return
-        await self._send_reply(
-            int(message["channel_id"]), str(message.get("topic", "")), result.text
-        )
+        await self._send_reply(channel_id, topic, result.text)
 
     async def _send_reply(self, channel_id: int, topic: str, content: str) -> None:
         """Deliver one bot-authored message back to the original topic."""
