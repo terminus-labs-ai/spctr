@@ -1057,3 +1057,110 @@ class TestExplicitFailures:
                 )
             )
         assert_no_secret(excinfo.value)
+
+    async def test_http_error_body_with_key_as_direct_string_never_leaks(
+        self, harness: TransportHarness,
+        make_client: Callable[..., Any],
+        synthetic_zuliprc: str,
+
+    ) -> None:
+        """Repair regression (AC18, no secret disclosure): a server-refusal
+        body (HTTP 400, result=error) that echoes the API key back as a
+        plain string. The message is server-controlled text — propagating
+        it into the failure (directly, or through exception chaining)
+        would disclose the credential. The call fails explicitly and the
+        key is absent from BOTH str() and repr() of the raised exception."""
+        harness.zulip.on(
+            "POST",
+            MESSAGES_PATH,
+            Reply(
+                status=400,
+                json_body={
+                    "result": "error",
+                    "code": "INVALID_API_KEY",
+                    "msg": f"rejected credential {API_KEY} verbatim",
+                },
+            ),
+        )
+        client = make_client(config_for(harness.zulip_url, synthetic_zuliprc))
+        with pytest.raises((ZulipAuthError, ZulipTransportError)) as excinfo:
+            await call_maybe_await(
+                client.send_message(
+                    type="stream", to=CHANNEL, topic=TOPIC, content="leak probe string"
+                )
+            )
+        assert_no_secret(excinfo.value)
+        assert API_KEY not in f"{excinfo.value}"
+        assert API_KEY not in f"{excinfo.value!r}"
+
+    async def test_http_error_body_with_key_nested_in_an_object_never_leaks(
+        self, harness: TransportHarness,
+        make_client: Callable[..., Any],
+        synthetic_zuliprc: str,
+
+    ) -> None:
+        """Repair regression (AC18, no secret disclosure): the same credential
+        echo carried as a NESTED OBJECT rather than a string, in both the
+        msg field and the code field. A server may serialize structured
+        error data; no field of it may reach the failure's str() or
+        repr(), and the call still fails explicitly."""
+        harness.zulip.on(
+            "POST",
+            MESSAGES_PATH,
+            Reply(
+                status=400,
+                json_body={
+                    "result": "error",
+                    "code": {"symbol": "INVALID_INPUT", "echoed": API_KEY},
+                    "msg": {
+                        "params": {"api_key": API_KEY, "marker": SECRET_MARKER},
+                    },
+                },
+            ),
+        )
+        client = make_client(config_for(harness.zulip_url, synthetic_zuliprc))
+        with pytest.raises((ZulipAuthError, ZulipTransportError)) as excinfo:
+            await call_maybe_await(
+                client.send_message(
+                    type="stream", to=CHANNEL, topic=TOPIC, content="leak probe nested"
+                )
+            )
+        assert_no_secret(excinfo.value)
+        assert API_KEY not in f"{excinfo.value}"
+        assert API_KEY not in f"{excinfo.value!r}"
+
+    async def test_protocol_error_with_key_nested_in_the_code_never_leaks(
+        self, harness: TransportHarness,
+        make_client: Callable[..., Any],
+        synthetic_zuliprc: str,
+
+    ) -> None:
+        """Repair regression (AC18, no secret disclosure): HTTP 200 with
+        result=error whose ``code`` field is an object embedding the key —
+        the shape an implementation that formats ``code: {payload['code']}``
+        would disclose through f-string expansion. No error-field material
+        (nested or not) may appear in str() or repr(); the path/method
+        remains acceptable, so the explicit failure stays anchored."""
+        harness.zulip.on(
+            "POST",
+            REGISTER_PATH,
+            Reply(
+                json_body={
+                    "result": "error",
+                    "code": {"name": "UNAUTHORIZED", "credential": API_KEY},
+                    "msg": "authentication failed",
+                }
+            ),
+        )
+        client = make_client(config_for(harness.zulip_url, synthetic_zuliprc))
+        with pytest.raises((ZulipAuthError, ZulipTransportError)) as excinfo:
+            await call_maybe_await(client.register())
+        assert_no_secret(excinfo.value)
+        assert API_KEY not in f"{excinfo.value}"
+        assert API_KEY not in f"{excinfo.value!r}"
+        # Explicit-failure anchor: the raised failure must positively name
+        # the operation that failed, so sanitization can never be
+        # "achieved" by an empty or contentless exception. Anchored on the
+        # path element alone — never on any server-supplied field.
+        assert REGISTER_PATH in str(excinfo.value)
+        assert REGISTER_PATH in repr(excinfo.value)
