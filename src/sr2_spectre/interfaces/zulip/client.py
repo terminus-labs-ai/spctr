@@ -247,6 +247,12 @@ class ZulipClient:
         url = f"{self._origin}{_API_PREFIX}{path}"
         if query:
             url = f"{url}?{urlencode(query)}"
+        import os as _o, time as _tm, threading as _th
+        def _w(msg):
+            with open("/tmp/spc125/diag5.log", "a") as _f2:
+                _f2.write(f"{_tm.monotonic()} pid={_o.getpid()} th={_th.get_ident()} {msg}\n")
+        _w(f"REQ> {method} {path} data_keys={sorted((data or {}).keys())} "
+           f"content={((data or {}).get('content') or '')[:20]!r}")
         try:
             async with self._session.request(
                 method,
@@ -258,6 +264,7 @@ class ZulipClient:
             ) as resp:
                 status = resp.status
                 raw = await resp.read()
+            _w(f"RESP {method} {path} status={status} bytes={len(raw)}")
             return self._classify(method, path, status, raw)
         except ZulipError:
             raise
