@@ -16,16 +16,13 @@ spc-123/124 seams:
   per https://zulip.com/api/register-queue; a message event never carries an
   invented bot flag.
 - A triggered cold topic is probed through the topic history API
-  (https://zulip.com/api/get-messages, narrow JSON-encoded). Every trigger
-  this process has already delivered counts as an in-flight fresh message and
-  is excluded by message id — the current trigger, and its siblings when the
-  server returned several same-topic messages inside ONE events batch, are
-  concurrent triggers of that topic's single Session and never prior content
-  for each other. ANY other message — including bot-only alerts — refuses the
+  (https://zulip.com/api/get-messages, narrow JSON-encoded). The current
+  trigger and eligible siblings from the same event batch are already in
+  that fetch, so their message IDs are excluded; ANY other message — including bot-only alerts — refuses the
   topic with an explicit unsupported-history reply and NO model/tool work
-  until complete history restoration ships; a trigger refused here stays
-  prior content for every later process, which never saw it. A probe failure
-  or malformed answer blocks the model turn with an explicit error.
+  until complete history restoration ships. Fresh messages this process
+  already admitted in-process never make a new topic look populated. A probe
+  failure or malformed answer blocks the model turn with an explicit error.
 - Only allowed human users in configured no-area channels trigger turns; bot
   messages and unconfigured channels are ignored without model work.
 - All model turns are serialized globally (one Miranda turn at a time);
@@ -92,14 +89,11 @@ class ZulipInterface:
         # Frame ID -> (live Session, per-topic history reserved for the
         # history-restoration slice) for the topics this process owns.
         self._sessions: dict[str, tuple[Any, list[Any]]] = {}
-        # Message IDs this process DELIVERED as an event, admitted or refused.
-        # They appear in a later topic fetch (an in-flight trigger "already
-        # appears in fetched topic history") without making a new topic look
-        # populated: several fresh same-topic triggers returned inside ONE
-        # events batch are concurrent triggers of that topic's single
-        # Session, never prior content for each other. A refused trigger
-        # stays prior content for every later process, which never saw it.
-        self._delivered_ids: set[int] = set()
+        # Message IDs of the triggers this process ADMITTED to a Session;
+        # they appear in a later topic fetch (a trigger "already appears in
+        # fetched topic history") without making the new topic look
+        # populated. Refused triggers never join: they stay prior content.
+        self._admitted_ids: set[int] = set()
         # Bot user IDs from registration realm metadata (see _read_bot_ids).
         self._bot_ids: set[int] = set()
         # Global model-turn serialization: one Miranda turn at a time.
@@ -180,6 +174,15 @@ class ZulipInterface:
                 logger.error("Zulip event poll returned no events array")
                 await asyncio.sleep(2.0)
                 continue
+            # Snapshot eligible triggers before processing the batch: the history
+            # probe can already see later siblings from this same response.
+            batch_ids = {
+                message["id"]
+                for event in events
+                if isinstance(event, dict) and event.get("type") == "message"
+                and isinstance(message := event.get("message"), dict)
+                and self._is_allowed_message(message)
+            }
             for event in events:
                 if not isinstance(event, dict):
                     continue
@@ -191,35 +194,36 @@ class ZulipInterface:
                     continue
                 message = event.get("message")
                 if isinstance(message, dict):
-                    await self._handle_message(message)
+                    await self._handle_message(message, batch_ids)
 
     # ---- message handling ----------------------------------------------------
 
-    async def _handle_message(self, message: dict[str, Any]) -> None:
-        """Route one Zulip message event; ignored events do no model work."""
-        # Official stream-message shape (get-events contract): ``type``
-        # "stream", the channel under ``stream_id``, the exact topic under
-        # ``subject`` (legacy name), the sender under ``sender_id``.
+    def _is_allowed_message(self, message: dict[str, Any]) -> bool:
+        """Recognize human triggers eligible for this no-area pilot."""
         if message.get("type") != "stream":
-            return
+            return False
         channel_id = message.get("stream_id")
         sender_id = message.get("sender_id")
-        message_id = message.get("id")
-        if (
-            not isinstance(channel_id, int)
-            or not isinstance(sender_id, int)
-            or not isinstance(message_id, int)
+        if not all(
+            isinstance(value, int)
+            for value in (channel_id, sender_id, message.get("id"))
         ):
-            return
-        if not is_configured_no_area_channel(
+            return False
+        return is_configured_no_area_channel(
             channel_id=channel_id,
             sender_id=sender_id,
             sender_is_bot=sender_id in self._bot_ids,
             config=self._config,
-        ):
-            # Bot, disallowed user, or unconfigured channel: no model work.
-            return
+        )
 
+    async def _handle_message(
+        self, message: dict[str, Any], batch_ids: set[int] | None = None,
+    ) -> None:
+        """Route one eligible event without changing its batch order."""
+        if not self._is_allowed_message(message):
+            return
+        channel_id = message["stream_id"]
+        message_id = message["id"]
         topic = str(message.get("subject", ""))
         frame_id = topic_frame_id(
             self._agent.config.agent.name, self._origin, channel_id, topic
@@ -230,16 +234,16 @@ class ZulipInterface:
             # topic keep their order and distinct topics stay isolated.
             entry = self._sessions.get(frame_id)
             if entry is None:
-                # The poller holds the turn lock across probe and turn, so
-                # every trigger this process already delivered (this one
-                # included) is in the delivered set and none of them is prior
-                # content for a cold topic.
-                self._delivered_ids.add(message_id)
+                # Admit-and-remember only on success. The poller holds the
+                # turn lock across probe and turn. Eligible siblings from this
+                # batch are fresh too, but refused IDs are never remembered
+                # after the batch ends.
                 entry = await self._ensure_session(
                     frame_id, channel_id, topic, message_id,
-                    self._delivered_ids,
+                    self._admitted_ids | {message_id} | (batch_ids or set()),
                 )
                 if entry is not None:
+                    self._admitted_ids.add(message_id)
                     self._sessions[frame_id] = entry
             if entry is None:
                 return  # refused or probe-failed; reply already sent
@@ -256,17 +260,17 @@ class ZulipInterface:
     ) -> tuple[Any, list[Any]] | None:
         """Probe cold-topic history and create the Session for a new topic.
 
-        Called only for topics this process does not yet own. The fetched
-        history already contains this trigger and any sibling trigger the
-        server returned in the same batch, so every id in ``candidate_ids``
-        (this trigger included) is an in-flight fresh message, not prior
-        content; ANY other message — including bot-only alerts — means the
-        topic is populated and is refused with an explicit reply and no model
-        work until history restoration ships. A refused trigger stays in
-        ``candidate_ids`` for this process only, so it remains prior content
-        for every later process. A probe failure or malformed answer blocks
-        the turn the same way. Returns the (Session, per-topic history) entry
-        on success, or None when the turn was blocked (the blocking reply is
+        Called only for topics this process does not yet own. The trigger
+        message and eligible siblings in the current batch are already inside
+        fetched history, so their IDs are excluded. Any other message,
+        including bot-only alerts — means the topic is populated and is refused with an
+        explicit reply and no model work until history restoration ships.
+        Messages this process admitted to a Session earlier
+        (``candidate_ids``) are likewise fresh in-process messages, not
+        prior content; a refused trigger never joins them and stays prior
+        content. A probe failure or malformed answer blocks the turn the
+        same way. Returns the (Session, per-topic history) entry on
+        success, or None when the turn was blocked (the blocking reply is
         sent here, while still holding the turn lock).
         """
         try:
@@ -281,34 +285,16 @@ class ZulipInterface:
             )
             await self._send_reply(channel_id, topic, _PROBE_FAILURE_TEXT)
             return None
-        # The triggers this process delivered (this one and any batch
-        # sibling) appear in the fetch without being prior content; each is
+        # The trigger (and any trigger this process already admitted to a
+        # Session) appears in the fetch without being prior content; each is
         # excluded by its unique id. Anything else — a bot alert included —
         # is prior content.
         def _is_prior(entry: Any) -> bool:
             if not isinstance(entry, dict):
                 return True
             entry_id = entry.get("id")
-            r = entry_id != trigger_id and entry_id not in candidate_ids
-            import os as _os
-            with open("/tmp/spc125/diag2.log", "a") as _fh:
-                _fh.write(f"{_os.getpid()} trig={trigger_id} id={entry_id!r} "
-                          f"type={type(entry_id).__name__} cand={sorted(candidate_ids)} -> {r}\n")
-            return r
+            return entry_id != trigger_id and entry_id not in candidate_ids
 
-        import os as _os, json as _json, time as _t
-        with open("/tmp/spc125/diag.log", "a") as _fh:
-            _fh.write(f"{_t.monotonic()} pid={_os.getpid()} trigger={trigger_id} "
-                      f"candidate={sorted(candidate_ids)} "
-                      f"fetched={[(m.get('id') if isinstance(m, dict) else m) for m in messages]} "
-                      f"prior={[(m.get('id') if isinstance(m, dict) else m) for m in messages if _is_prior(m)]}\n")
-        _prior_flags = [(m.get("id") if isinstance(m, dict) else m, _is_prior(m))
-                        for m in messages]
-        _any_prior = any(_is_prior(entry) for entry in messages)
-        import os as _os2
-        with open("/tmp/spc125/diag3.log", "a") as _fh:
-            _fh.write(f"CALL trig={trigger_id} flags={_prior_flags} "
-                      f"any={_any_prior} any2={any(f for _, f in _prior_flags)}\n")
         if any(_is_prior(entry) for entry in messages):
             logger.info(
                 "Populated cold topic (channel %s, topic %r): refusing "
@@ -332,24 +318,16 @@ class ZulipInterface:
         self, session: Any, channel_id: int, topic: str, message: dict[str, Any]
     ) -> None:
         """Run one admitted message through its topic's Session."""
-        import os as _o, time as _tm
-        def _d(msg):
-            with open("/tmp/spc125/diag4.log", "a") as _f2:
-                _f2.write(f"{_tm.monotonic()} pid={_o.getpid()} msg={message.get('id')} {msg}\n")
-        _d(f"ENTER session={type(session).__name__}")
         try:
             result = await session.handle_user_message(
                 str(message.get("content", ""))
             )
         except Exception as exc:
-            _d(f"EXC {type(exc).__name__}: {exc}")
             logger.error("Zulip model turn failed: %s", exc)
             return
-        _d(f"result text_len={len(result.text or '')}")
         if not result.text:
             return
         await self._send_reply(channel_id, topic, result.text)
-        _d("sent")
 
     async def _send_reply(self, channel_id: int, topic: str, content: str) -> None:
         """Deliver one bot-authored message back to the original topic."""
