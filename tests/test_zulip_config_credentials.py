@@ -20,27 +20,27 @@ and its modules:
 - ``is_configured_no_area_channel`` — the pure trigger-admission decision
   (spec FR5: "Restrict the pilot to Diego's user ID and explicitly
   configured channel IDs; ignore bot messages as triggers").
-- ``validate_no_area_only_routing`` — the temporary nonempty-area startup
-  rejection (AC16/AC17: "Nonempty area mappings fail startup explicitly").
+- ``TestNonemptyAreaGateIntermediate`` — spc-123-era rows were upgraded by
+  spc-120 to the shipped routing behavior (mapped areas are valid); the
+  helper those rows called (``validate_no_area_only_routing``) was declared
+  temporary and is removed with them, so its import is gone too.
 
 Everything runs against synthetic data under ``tmp_path``: no network, no
 model, no CLI dispatch, no Session orchestration — AC17's "no HTTP or
 model work" is honored by the test itself (no aiohttp/socket/subprocess in
 this file).
 
-INTERMEDIATE CONTRACT (AC16-INTERMEDIATE): nonempty area mappings are
-rejected in this cut until area routing ships; spc-120
-(``Add Zulip area routing and live config reload``) owns upgrading the
-``TestNonemptyAreaGateIntermediate`` assertions (and the E-side startup
-proof) to routing. The assertions below are tagged
-``AC16-INTERMEDIATE`` and must not be read as permanent.
+ROUTING CONTRACT (spc-120, supersedes the AC16-INTERMEDIATE note of the
+spc-119/123 cuts): mapped-area channels are valid startup configuration;
+the temporary nonempty-area rejection exists nowhere in this file, and the
+routed area itself is proven by the spc-120 routing/journey cages. The
+original approval record of the removed assertions stays in git history.
 """
 
 from __future__ import annotations
 
 import configparser
 import os
-import re
 from pathlib import Path
 from typing import Any
 
@@ -52,7 +52,6 @@ from sr2_spectre.interfaces.zulip import (
     ZulipCredentials,
     is_configured_no_area_channel,
     load_zulip_credentials,
-    validate_no_area_only_routing,
 )
 from sr2_spectre.interfaces.zulip.config import ZulipConfig
 
@@ -383,43 +382,52 @@ class TestCredentials:
 
 
 class TestNonemptyAreaGateIntermediate:
-    """AC16-INTERMEDIATE (this cut): nonempty area mappings fail startup
-    explicitly rather than losing the area. spc-120
-    (Add Zulip area routing and live config reload) owns upgrading these
-    assertions to real area routing; until then silent area loss is the
-    failure this gate exists to prevent.
+    """spc-120 upgrade (staged behavior transition, replacing the
+    AC16-INTERMEDIATE gate of spc-119/123): mapped-area channels are now
+    supported routing, so a nonempty area mapping is a VALID startup
+    configuration — it must never be rejected, and it must never silently
+    lose its area either. The former rejection assertions
+    (``validate_no_area_only_routing``) are removed with the temporary gate
+    they caged; the original approval record for those assertions stays in
+    git history and the artifact record. All sender/channel admission and
+    credential assertions in this file are unchanged.
     """
 
     def test_config_accepts_nonempty_area_values(self):
-        """The schema still parses nonempty areas; rejection is a routing
-        gate, not a schema field — pinning where spc-120 lifts the rule."""
+        """The schema parses nonempty areas — now a permanent routing
+        contract, not a schema-only tolerance ahead of a rejection gate."""
         cfg = make_config(
             channels={NO_AREA_CHANNEL: "", OTHER_NO_AREA_CHANNEL: "obsidian"}
         )
         assert cfg.channels[OTHER_NO_AREA_CHANNEL] == "obsidian"
 
-    def test_all_no_area_channels_pass_the_gate(self):
-        """Two distinct valid no-area shapes pass the gate cleanly (a
-        validator returning no signal on success), so the pass path is
-        exercised over more than one input, not an empty body."""
-        for channels in (
-            {NO_AREA_CHANNEL: "", OTHER_NO_AREA_CHANNEL: ""},
-            {OTHER_NO_AREA_CHANNEL: ""},
-        ):
-            cfg = make_config(channels=channels)
-            assert validate_no_area_only_routing(cfg) is None
+    def test_area_mapping_requires_no_live_vault_access(self):
+        """Implementation note: "validate mapping shape, not live vault
+        access" — a never-created area identity is a valid mapping and its
+        mere presence in a config object touches no vault."""
+        cfg = make_config(channels={AREA_CHANNEL: "not-created-yet"})
+        assert cfg.channels[AREA_CHANNEL] == "not-created-yet"
 
-    def test_nonempty_area_rejected_naming_area_or_routing(self):
-        cfg = make_config(channels={NO_AREA_CHANNEL: "obsidian"})
-        with pytest.raises(Exception) as exc_info:
-            validate_no_area_only_routing(cfg)
-        assert re.search(r"area|routing", str(exc_info.value), re.I)
+    def test_mapped_area_startup_restriction_removed(self):
+        """The temporary gate shipped as a startup validator; after this cut
+        a mapped area must satisfy whatever validation remains (returning no
+        error), or the validator is gone entirely — either way the former
+        rejection can no longer fire. Silent area loss is still forbidden:
+        the routed area itself is proven by the spc-120 routing decision and
+        journey tests."""
+        import importlib
 
-    def test_rejection_message_names_the_offending_channel(self):
-        cfg = make_config(channels={NO_AREA_CHANNEL: "", AREA_CHANNEL: "obsidian"})
-        with pytest.raises(Exception) as exc_info:
-            validate_no_area_only_routing(cfg)
-        assert str(AREA_CHANNEL) in str(exc_info.value)
+        import sr2_spectre.interfaces.zulip as pkg
+        cfg_mod = importlib.import_module(f"{pkg.__name__}.config")
+        gate = getattr(pkg, "validate_no_area_only_routing", None) or getattr(
+            cfg_mod, "validate_no_area_only_routing", None
+        )
+        if gate is None:
+            assert True  # restriction removed with the cut that owned it
+        else:
+            cfg = make_config(channels={NO_AREA_CHANNEL: "",
+                                        AREA_CHANNEL: "obsidian"})
+            assert gate(cfg) is None
 
 
 class TestChannelAdmission:

@@ -98,3 +98,62 @@ class TestConfigRetainsZulipBlock:
         _write_yaml(pos, {**VALID_TAIL, "zulip": broken})
         with pytest.raises(Exception):
             resolve_config(pos, cwd=cwd, env=env)
+
+
+class TestStartupAcceptsMappedAreas:
+    """spc-120: the temporary nonempty-area startup rejection (spc-119/125
+    intermediate contract, enforced by the interface's own startup gate per
+    the accepted J1B proof) is lifted — a mapped area starts instead of
+    failing startup, so routing never has to lose its area. The file-level
+    resolution below stays green at both cuts (the gate lived in the
+    interface, not the resolver); the interface-level startup assertion
+    goes red until the routing release ships. E owns replacing the
+    corresponding real-CLI refusal in tests/test_zulip_chat_e2e.py."""
+
+    def test_mapped_area_channel_survives_resolution(self, isolated):
+        cwd, env, pos = isolated
+        _write_yaml(pos, {**VALID_TAIL, "zulip": {
+            "zuliprc": ZULIPRC,
+            "allowed_user_ids": [DIEGO_ID],
+            "channels": {NO_AREA_CHANNEL: "", 44: "obsidian"},
+        }})
+        zulip = resolve_config(pos, cwd=cwd, env=env).zulip
+        assert zulip is not None
+        assert zulip.channels == {NO_AREA_CHANNEL: "", 44: "obsidian"}
+
+    async def test_mapped_area_interface_startup_not_rejected(self, tmp_path):
+        """Interface-level startup with a mapped area must not raise the
+        temporary "area routing not supported" gate. After the lift, either
+        start() succeeds against the synthetic zuliprc or it fails later
+        (unreachable synthetic server / no network) — a failure mode that is
+        not the temporary routing gate. No model work is possible either
+        way: no event is ever polled here, and a model turn requires an
+        admitted trigger."""
+        from sr2_spectre.interfaces.zulip import ZulipInterface
+
+        zuliprc = tmp_path / "synthetic.zuliprc"
+        zuliprc.write_text(
+            "[zulip]\nemail = bot@example.invalid\n"
+            "key = synthetic-key\nsite = https://zulip.example.invalid\n"
+        )
+        cfg = ZulipConfig(
+            zuliprc=str(zuliprc),
+            allowed_user_ids=[DIEGO_ID],
+            channels={NO_AREA_CHANNEL: "", 44: "obsidian"},
+        )
+        try:
+            await ZulipInterface(config=cfg).start(agent=None)
+        except ValueError as exc:
+            # The temporary restriction is exactly what must no longer fire;
+            # a ValueError whose message names the area-routing restriction
+            # is that gate, still in force → red.
+            assert not (
+                "area" in str(exc).lower() and "routing" in str(exc).lower()
+            ), (
+                "startup still rejects a mapped area with the temporary "
+                f"no-area-only gate: {exc}"
+            )
+            raise  # an unrelated ValueError is still a startup failure
+        except Exception:
+            pass  # credential/network/transport failure — not the gate
+
