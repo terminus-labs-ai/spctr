@@ -21,9 +21,11 @@ and its modules:
   (spec FR5: "Restrict the pilot to Diego's user ID and explicitly
   configured channel IDs; ignore bot messages as triggers").
 - ``TestNonemptyAreaGateIntermediate`` — spc-123-era rows were upgraded by
-  spc-120 to the shipped routing behavior (mapped areas are valid); the
-  helper those rows called (``validate_no_area_only_routing``) was declared
-  temporary and is removed with them, so its import is gone too.
+  spc-120 to the shipped routing behavior (mapped areas are valid): the
+  named startup validator (``validate_no_area_only_routing`` in this cut)
+  must accept a mapped-area map instead of rejecting it. The rows no longer
+  probe for the helper's existence — they call it directly and fail if it
+  rejects a mapped area.
 
 Everything runs against synthetic data under ``tmp_path``: no network, no
 model, no CLI dispatch, no Session orchestration — AC17's "no HTTP or
@@ -409,25 +411,19 @@ class TestNonemptyAreaGateIntermediate:
         assert cfg.channels[AREA_CHANNEL] == "not-created-yet"
 
     def test_mapped_area_startup_restriction_removed(self):
-        """The temporary gate shipped as a startup validator; after this cut
-        a mapped area must satisfy whatever validation remains (returning no
-        error), or the validator is gone entirely — either way the former
-        rejection can no longer fire. Silent area loss is still forbidden:
-        the routed area itself is proven by the spc-120 routing decision and
-        journey tests."""
-        import importlib
+        """Pin the current startup validator directly. The temporary gate
+        that lives at interface startup today (spc-119/123 intermediate
+        contract) accepts a no-area-only map and raises on a mapped area;
+        after spc-120 removes it, whatever startup validation remains must
+        accept the same mixed map without raising. Calling it positively is
+        red today (the gate raises) and green after the lift either way;
+        silent area loss stays caged by the routing decision and journey
+        tests, not by this row."""
+        from sr2_spectre.interfaces.zulip import validate_no_area_only_routing
 
-        import sr2_spectre.interfaces.zulip as pkg
-        cfg_mod = importlib.import_module(f"{pkg.__name__}.config")
-        gate = getattr(pkg, "validate_no_area_only_routing", None) or getattr(
-            cfg_mod, "validate_no_area_only_routing", None
-        )
-        if gate is None:
-            assert True  # restriction removed with the cut that owned it
-        else:
-            cfg = make_config(channels={NO_AREA_CHANNEL: "",
-                                        AREA_CHANNEL: "obsidian"})
-            assert gate(cfg) is None
+        cfg = make_config(channels={NO_AREA_CHANNEL: "",
+                                    AREA_CHANNEL: "obsidian"})
+        assert validate_no_area_only_routing(cfg) is None
 
 
 class TestChannelAdmission:
