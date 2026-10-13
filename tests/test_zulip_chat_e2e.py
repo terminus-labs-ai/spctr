@@ -697,7 +697,7 @@ def test_existing_topic_refusal(tmp_path):
                for i in (1, 2, 3)]
         run.zulip.release_poll()
         assert run.wait_cold_batch(topics=[(CONFIGURED_CHANNEL, "batch")],
-                                   probes=1, replies=3), _fail(
+                                   probes=1, replies=5), _fail(
             run, f"batch of 3 fresh same-topic cold messages ({ids}) was never "
                  "fully handled")
         assert len(run.model.requests) == 3, _fail(
@@ -730,7 +730,7 @@ def test_existing_topic_refusal(tmp_path):
         run.zulip.release_poll()
         assert run.wait_cold_batch(topics=[(CONFIGURED_CHANNEL, "t1"),
                                            (CONFIGURED_CHANNEL, "t2")],
-                                   probes=1, replies=5), _fail(
+                                   probes=1, replies=7), _fail(
             run, "distinct fresh cold topics in one batch were not both handled")
         assert len(run.model.requests) == 5, _fail(
             run, "distinct fresh cold topics in one batch each need their own turn")
@@ -749,7 +749,7 @@ def test_existing_topic_refusal(tmp_path):
 
         # A fresh topic after the refusals still works normally.
         run.zulip.push_message(CONFIGURED_CHANNEL, "fresh", DIEGO_ID, "fresh topic")
-        assert run.wait_idle(expected_replies=6), _fail(
+        assert run.wait_idle(expected_replies=8), _fail(
             run, "fresh topic after refusals produced no reply")
         fresh_replies = _reply_for(run, CONFIGURED_CHANNEL, "fresh")
         assert len(fresh_replies) == 1
