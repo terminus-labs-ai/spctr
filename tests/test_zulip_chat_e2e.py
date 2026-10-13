@@ -38,9 +38,8 @@ from __future__ import annotations
 import base64
 import re
 import sys
-import threading
 import time
-import urllib.parse
+import pytest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -126,62 +125,21 @@ def _occurrences(haystack: str, needle: str) -> int:
 
 def _assert_history_order(request: list[dict], expected: list[tuple[str, str]],
                           current: tuple[str, str]) -> None:
-    """Assert one captured model request's conversation shape.
+    """One request contains exactly the completed history and current input.
 
-    - every compiled prompt begins with its system context;
-    - ``expected`` (the prior turns, in chronological role order) appears as
-      an in-order subsequence of the non-system messages;
-    - ``current`` (this turn's input) appears LAST, after all history;
-    - the current content appears EXACTLY once (the trigger is never
-      duplicated into the history);
-    - no assistant turn precedes the user turn it answers (strict overall
-      user/assistant alternation from the first user message on).
+    A no-area pipeline may have no system message. Compare the complete
+    conversation, including every assistant response, so duplicates, missing
+    history, extra future turns and incorrect role order all fail.
     """
-    msgs = [m for m in request if isinstance(m, dict)]
-    assert msgs and msgs[0].get("role") == "system", (
-        f"compiled request must start with system context: {request}")
-    turns = [(m.get("role"), str(m.get("content") or "")) for m in msgs[1:]]
-    body = turns
-    # In-order history subsequence.
-    pos = 0
-    for role, content in expected:
-        while pos < len(body) and not (body[pos][0] == role
-                                       and content in body[pos][1]):
-            pos += 1
-        assert pos < len(body), (
-            f"history turn ({role}, {content!r}) missing from its position in "
-            f"the request; turns were {turns}")
-        pos += 1
-    cur_role, cur_content = current
-    matching = [i for i, (role, text) in enumerate(body)
-                if role == cur_role and cur_content in text]
-    assert matching, (
-        f"current input ({cur_role}, {cur_content!r}) absent from request: {turns}")
-    assert _occurrences(_flatten(msgs), cur_content) == 1, (
-        f"current input {cur_content!r} must appear exactly once: {turns}")
-    assert matching[-1] == len(body) - 1, (
-        f"current input must be the last turn, got {turns}")
-    # Strict user/assistant alternation over the conversation body.
-    conv = [role for role, _ in body]
-    for i in range(len(conv) - 1):
-        assert conv[i] != conv[i + 1], (
-            f"conversation roles must alternate, got {conv}")
-    assert conv[-1] == cur_role
+    turns = [(m.get("role"), str(m.get("content") or ""))
+             for m in request if isinstance(m, dict)
+             and m.get("role") != "system"]
+    assert turns == expected + [current], (
+        f"expected ordered history {expected + [current]!r}; got {turns!r}")
 
 
 class _HeldTurn:
-    """Drive one model turn held open at the actual HTTP response boundary.
-
-    The signal for "the CLI is waiting on this in-flight turn" is a decisive
-    NEGATIVE measured at the transport: the model endpoint captures A's
-    request and parks the response (A in flight), and while held the CLI
-    issues NO NEW events request (arrival quiescence).  A CLI that had
-    dispatched A and moved on would poll again within milliseconds — as it
-    demonstrably does between turns.  The trigger itself is delivered by
-    holding the event lane opaque across arming: the held trigger's poll
-    arrival is observed, then its model request is observed; the lane stays
-    opaque afterwards so nothing else can be delivered during the hold.
-    """
+    """Hold only the actual model response; leave event delivery natural."""
 
     def __init__(self, run: ZulipCliRun, channel: int, topic: str,
                  content: str) -> None:
@@ -190,103 +148,29 @@ class _HeldTurn:
         self.topic = topic
         self.content = content
         self.model_gen = 0
-
-    def _wait_quiescent(self, label: str, hold_remaining: float,
-                        window: float = 2.0) -> None:
-        """Assert the CLI issues NO new events request for *window* seconds.
-
-        ``hold_remaining`` is the time (relative to now) before an armed hold
-        crosses a client-side deadline; the observation MUST finish before
-        that, so no parked request ever expires on its own.
-        """
-        run = self.run
-        latest_start = time.monotonic() + max(0.5, hold_remaining - 2.0)
-        while time.monotonic() < latest_start:
-            mark = run.zulip.poll_mark()
-            time.sleep(window)
-            if not run.zulip.new_poll_arrivals(mark):
-                return
-        raise AssertionError(_fail(
-            run, f"{label}: the CLI never went quiet on the event transport"))
+        self.sends_before = len(run.zulip.sends)
 
     def arm_and_trigger(self) -> None:
-        """Arm both gates, then trigger; prove the turn is in flight.
-
-        1. Make event delivery opaque (existing parked polls are received
-           and recorded, never answered).
-        2. Enqueue the trigger; wait until the CLI's NEXT poll arrives and
-           is parked, holding the trigger — delivery is now genuinely
-           in-progress and the trigger is at the boundary, not in the CLI.
-        3. Arm the model-response hold, release parked polls exactly once
-           (the observed one returns the trigger; later polls park again),
-           and wait until the model endpoint has CAPTURED this turn's
-           request.
-        4. Wait for the CLI to go transport-quiet: it parked a long-poll and
-           now awaits the held model response, with no second request begun.
-        """
-        run = self.run
-        self._t0 = time.monotonic()
-        run.zulip.hold_next_events()
-        # Arm the model-response hold BEFORE the trigger exists, anchored at
-        # the current completed-request count: any request captured from
-        # here on is a turn the test must account for (fail fast, never a
-        # silent wedge).  The trigger is therefore admitted either way —
-        # before this request (hold catches the request) or after (hold is
-        # already armed) — so it can never slip through unanswered-but-held
-        # later, and can never be answered-and-sent during the hold.
-        self.model_gen = len(run.model.requests) + 1
-        run.model.hold_responses()
-        delivered_mark = run.zulip.poll_mark()
-        run.zulip.push_message(self.channel, self.topic, DIEGO_ID,
-                               self.content)
-        assert run.zulip.wait_new_poll(delivered_mark, timeout=10.0), _fail(
-            run, f"the CLI never polled for the held trigger {self.content!r}")
-        # Answer ONLY the polls that had arrived up to now (the one that
-        # carries the trigger); anything newer parks unanswered.
-        deliver_through = run.zulip.poll_mark()
-        run.zulip.release_and_answer_through(deliver_through)
-        assert run.model.wait_request_arrived(
+        self.model_gen = self.run.model.hold_responses()
+        self.run.zulip.push_message(self.channel, self.topic, DIEGO_ID,
+                                    self.content)
+        assert self.run.model.wait_request_arrived(
             timeout=10.0, generation=self.model_gen), _fail(
-            run, f"held trigger {self.content!r} never reached the model "
-                 "endpoint (no request captured)")
-        assert len(run.zulip.sends) == 3, _fail(
-            run, "a reply was delivered while the model response was held")
-        self._wait_quiescent(
-            "the CLI kept polling while its model response was held",
-            hold_remaining=25.0 - (time.monotonic() - self._t0))
-        assert len(run.model.requests) == self.model_gen, _fail(
-            run, "a second model request began while A's response was held "
-                 "(overlapping same-topic turn)")
+                self.run, "A's actual model request was not captured")
+        request = self.run.model_messages()[self.model_gen - 1]
+        assert self.content in _flatten(request), request
+        assert len(self.run.zulip.sends) == self.sends_before, _fail(
+            self.run, "A replied before its model response was released")
 
-    def trigger_queued(self, content: str) -> threading.Event:
-        """Enqueue another trigger while the held turn is in flight.
-
-        The event lane is opaque, so this message provably stays queued
-        (never delivered to the CLI) until ``release`` runs; the returned
-        flag flips when its reply send lands, which must happen only AFTER
-        the held turn completes.
-        """
-        run = self.run
-        assert not run.zulip._events_block.is_set(), (
-            "the event lane must stay opaque during a held turn")
-        run.zulip.push_message(self.channel, self.topic, DIEGO_ID, content)
-        done = threading.Event()
-        prev = run.zulip.on_send
-
-        def hook(form: dict) -> None:
-            if (form.get("to") == str(self.channel)
-                    and form.get("topic") == self.topic
-                    and content in (form.get("content") or "")):
-                done.set()
-            if prev is not None:
-                prev(form)
-
-        run.zulip.on_send = hook
-        return done
+    def trigger_queued(self, content: str) -> None:
+        # No event gate: a responsive receiver may drain B immediately; a
+        # serial receiver may naturally leave B queued until A completes.
+        # Both must avoid overlapping same-topic model requests and replies.
+        self.run.zulip.push_message(self.channel, self.topic, DIEGO_ID, content)
+        self.run.assert_quiescent(self.model_gen, self.sends_before, window=2.0)
 
     def release(self) -> None:
         self.run.model.release_responses()
-        self.run.zulip.release_events()
 
 
 def _fail(run: ZulipCliRun, message: str) -> str:
@@ -357,9 +241,7 @@ def test_chat_routing_and_filters(tmp_path):
     send_auth: list[str | None] = []
 
     def audit(form: dict) -> None:
-        if not run.zulip._handler.last_request:
-            return
-        auth = run.zulip._handler.last_request.get("authorization", "")
+        auth = run.zulip.send_headers[-1].get("authorization", "")
         user: str | None = None
         if auth.startswith("Basic "):
             try:
@@ -517,15 +399,13 @@ def test_chat_routing_and_filters(tmp_path):
         assert len(run.zulip.sends) == 3, _fail(
             run, "a reply was delivered while its model response was held")
 
-        # Enqueue B's trigger while A is provably still in flight, and keep
-        # B pending in the endpoint queue (a parked poll): B is admitted
-        # only after the release, exactly once A's turn ends.
-        pending = held.trigger_queued("concurrent B")
+        # Enqueue B while A's captured model response remains held.
+        # Event delivery has no fixture gate; observe no overlap for a bounded
+        # window, then require eventual exactly-once ordered completion.
+        held.trigger_queued("concurrent B")
         assert len(run.model.requests) == 4, _fail(
             run, "a second model request began while A's response was held "
                  "(overlapping same-topic turn)")
-        assert run.zulip.turn_parked(), _fail(
-            run, "the CLI did not wait on A's in-flight model request")
         assert len(run.zulip.sends) == 3, _fail(
             run, "B was answered before A's held turn completed")
         assert run.assert_topic_identity(
@@ -541,8 +421,8 @@ def test_chat_routing_and_filters(tmp_path):
         assert len(alpha_replies) == 4, (
             f"concurrent same-topic messages must both be answered in order, "
             f"got {len(alpha_replies)} replies")
-        assert not run.zulip.events_pending() and not pending.is_set(), (
-            "the held-batch contract broke: B's event was never delivered")
+        _wait_events_drained(run)
+        run.assert_quiescent(5, 5, window=1.0)
 
         # EACH captured request independently, in trigger order:
         # A's request carries alpha's completed history plus currentA
@@ -583,7 +463,6 @@ def test_chat_routing_and_filters(tmp_path):
 
     finally:
         run.zulip.on_send = None
-        run.collect()
         harness.close(run)
 
 
@@ -659,7 +538,7 @@ def test_same_topic_two_configured_channels(tmp_path):
         # read from the envelope ``session_id``, with no file-name-encoding
         # coupling (the topic argument below is the same SHARED_TOPIC constant
         # this journey opened, never a hardcoded helper-internal spelling).
-        topic_in_id = urllib.parse.quote(SHARED_TOPIC, safe="")
+        topic_in_id = SHARED_TOPIC
         id42, file42 = run.assert_topic_identity(
             "miranda", run.zulip._handler.port, CONFIGURED_CHANNEL, topic_in_id)
         id44, file44 = run.assert_topic_identity(
@@ -667,6 +546,16 @@ def test_same_topic_two_configured_channels(tmp_path):
             topic_in_id)
         assert id42 != id44, (
             "both channels share one Session identity for the same topic name")
+        # Negative controls reject a different server/channel/exact topic
+        # using the same real Session envelopes, without altering production.
+        for port, channel, topic in [
+            (run.zulip._handler.port + 1, CONFIGURED_CHANNEL, SHARED_TOPIC),
+            (run.zulip._handler.port, UNCONFIGURED_CHANNEL, SHARED_TOPIC),
+            (run.zulip._handler.port, CONFIGURED_CHANNEL, SHARED_TOPIC + "2"),
+        ]:
+            with pytest.raises(AssertionError):
+                run.assert_topic_identity("miranda", port, channel, topic)
+
         # One Session log file per actual identity (no merged global facade).
         assert run.identity_file_names("miranda", id42) == [file42]
         assert run.identity_file_names("miranda", id44) == [file44]
@@ -725,7 +614,6 @@ def test_same_topic_two_configured_channels(tmp_path):
             "miranda", run.zulip._handler.port, SECOND_CONFIGURED_CHANNEL,
             topic_in_id)[0] == id44
     finally:
-        run.collect()
         harness.close(run)
 
 
@@ -739,15 +627,29 @@ def test_existing_topic_refusal(tmp_path):
     harness = Harness(workdir=tmp_path / "j1b-refusal")
     run, cwd, env = harness.build()
     try:
-        harness.launch(run, cwd, env)
-        assert run.wait_started(), _startup_failure(run)
-
         # A topic populated BEFORE the process saw it — bot alert plus a
         # user message. Both are prior content: the topic must be refused.
         run.zulip.seed_message(CONFIGURED_CHANNEL, "populated",
                                BOT_ID, "ALERT: disk full")
         run.zulip.seed_message(CONFIGURED_CHANNEL, "populated",
                                DIEGO_ID, "please investigate")
+
+        # The topic is populated before either CLI process starts. Restart
+        # the real CLI against that same server history, then prove passive
+        # startup: no history probe, replayed model request or bot send.
+        harness.launch(run, cwd, env)
+        assert run.wait_started(), _startup_failure(run)
+        run.assert_quiescent(0, 0, window=1.0)
+        assert run.zulip.history_calls == [], _fail(run, "startup replayed history")
+        run.collect()
+        harness.launch(run, cwd, env)
+        deadline = time.monotonic() + 45.0
+        while run.zulip.register_calls < 2 and time.monotonic() < deadline:
+            assert run.proc.poll() is None, _startup_failure(run)
+            time.sleep(0.05)
+        assert run.zulip.register_calls == 2, _startup_failure(run)
+        run.assert_quiescent(0, 0, window=1.0)
+        assert run.zulip.history_calls == [], _fail(run, "restart replayed history")
 
         # Diego's new message in that topic gets an explicit refusal reply,
         # not an answer, and no model/tool work.
@@ -809,9 +711,8 @@ def test_existing_topic_refusal(tmp_path):
                 f"handled: {r!r}")
         assert run.zulip.history_calls.count((CONFIGURED_CHANNEL, "batch")) == 1, (
             "the batch topic must get ONE Session, probed once")
-        assert len([n for n in (p.name for p in run.session_log_files("miranda"))
-                    if "batch" in n]) == 1, (
-            "concurrent same-topic batch spawned multiple Sessions")
+        run.assert_topic_identity(
+            "miranda", run.zulip._handler.port, CONFIGURED_CHANNEL, "batch")
         # Ordered history: the last turn sees all three triggers exactly once
         # each, in order.
         users = _user_of(run.model_messages()[-1:])
@@ -860,7 +761,6 @@ def test_existing_topic_refusal(tmp_path):
         assert "ALERT: only bot messages here" not in fresh_text
 
     finally:
-        run.collect()
         harness.close(run)
 
 
@@ -909,7 +809,6 @@ def test_existing_topic_probe_failure_blocks_turn(tmp_path):
 
     finally:
         run.zulip.on_send = None
-        run.collect()
         harness.close(run)
 
 
@@ -944,5 +843,4 @@ def test_nonempty_area_rejected(tmp_path):
         assert "area" in all_text.lower(), (
             f"startup failure did not name the area problem: {all_text[-1500:]!r}")
     finally:
-        run.collect()
         harness.close(run)

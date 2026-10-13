@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import socket
 import subprocess
 import threading
@@ -105,6 +104,7 @@ class _ServingHandler:
         self._thread: threading.Thread | None = None
         self._conns: set[socket.socket] = set()
         self._conns_lock = threading.Lock()
+        self._workers: list[threading.Thread] = []
         self.last_error: str | None = None
         self.last_request: dict[str, str] = {}
 
@@ -142,8 +142,10 @@ class _ServingHandler:
                 except OSError:
                     break
                 self._track(conn)
-                threading.Thread(target=self._one, args=(conn,),
-                                 daemon=True).start()
+                worker = threading.Thread(target=self._one, args=(conn,),
+                                          daemon=True)
+                self._workers.append(worker)
+                worker.start()
             try:
                 server.close()
             except OSError:
@@ -169,6 +171,13 @@ class _ServingHandler:
         self.close_live()
         if self._thread is not None:
             self._thread.join(timeout=5.0)
+            assert not self._thread.is_alive(), "endpoint listener did not stop"
+        deadline = time.monotonic() + 5.0
+        for worker in self._workers:
+            worker.join(timeout=max(0.0, deadline - time.monotonic()))
+        assert not any(w.is_alive() for w in self._workers), (
+            "endpoint request worker survived bounded cleanup")
+        assert not self._conns, "endpoint connections survived cleanup"
 
     def _one(self, conn: socket.socket) -> None:
         try:
@@ -249,6 +258,7 @@ class ZulipServer:
         self.events_calls = 0
         self.history_calls: list[tuple[int, str]] = []
         self.sends: list[dict] = []
+        self.send_headers: list[dict[str, str]] = []
         self.fail_history = False
         self.fail_send = False
         # Deterministic batch delivery (F1 D7): while held, an events request
@@ -258,18 +268,6 @@ class ZulipServer:
         self._poll_gate = threading.Event()
         self._poll_gate.set()
         self._poll_armed = threading.Event()
-        # Event-delivery lane (scope 1): clear the gate to make delivery
-        # OPAQUE.  While opaque the CLI cannot drain the queue: it issues its
-        # long-polls and they are never answered (parked), and the endpoint
-        # records the newest request it RECEIVED.  A "the CLI is waiting on
-        # its in-flight turn" observation is then the decisive NEGATIVE:
-        # zero NEW poll arrivals across a window (a CLI dispatching or
-        # retrying would arrive fast; only a CLI awaiting the model sits
-        # silent).  stop() releases the lane and force-closes parked
-        # connections, so a park can never wedge the test.
-        self._events_block = threading.Event()
-        self._events_block.set()
-        self._parked_events: list[tuple[float, str]] = []
         self._delivered_ceiling: int | None = None
         self.last_send_response: dict = {}
         # Optional test hook: mutate/inspect the decoded form of every send
@@ -291,39 +289,6 @@ class ZulipServer:
 
     def release_poll(self) -> None:
         self._poll_gate.set()
-
-    def hold_next_events(self) -> None:
-        """Make event delivery opaque until :meth:`release_events`.
-
-        Independent of the batch hold above: from now on every events
-        request that ARRIVES is recorded (a poll arrival) and parked
-        unanswered, so a queued trigger provably stays in the endpoint and
-        the CLI's request pattern becomes observable.  The parked requests
-        survive :meth:`release_events` and are ANSWERED then, so nothing is
-        ever lost.  Use :meth:`new_poll_arrivals` to measure arrivals since
-        a mark.
-        """
-        self._events_block.clear()
-
-    def release_events(self) -> None:
-        self._events_block.set()
-
-    def poll_mark(self) -> int:
-        """A mark into the poll-arrival log (see :meth:`new_poll_arrivals`)."""
-        return len(self._parked_events)
-
-    def new_poll_arrivals(self, mark: int) -> list[tuple[float, str]]:
-        """Every events request RECEIVED since *mark* (parked or answered)."""
-        return self._parked_events[mark:]
-
-    def wait_new_poll(self, mark: int, timeout: float = 25.0) -> bool:
-        """True once at least one events request arrives after *mark*."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if len(self._parked_events) > mark:
-                return True
-            time.sleep(0.02)
-        return False
 
     def events_pending(self) -> bool:
         """True while undelivered events remain in the endpoint queue."""
@@ -375,9 +340,8 @@ class ZulipServer:
         # Release every lane first so a parked worker cannot outlive the
         # endpoint, then force-close any live connection (a parked poll dies
         # at once), then shut the listener down.  The journey's ``finally``
-        # calls this BEFORE collecting/killing the child.
+        # calls this after collecting/killing the child.
         self.release_poll()
-        self.release_events()
         self._handler.close_live()
         self._handler.stop()
 
@@ -396,7 +360,7 @@ class ZulipServer:
         if resource == "messages" and method == "GET":
             return self._history_call(parsed)
         if resource == "messages" and method == "POST":
-            return self._send_call(body)
+            return self._send_call(body, headers)
         return 404, json.dumps({"result": "error", "msg": "not found"})
 
     def _register(self):
@@ -421,13 +385,6 @@ class ZulipServer:
             # never expires while armed.
             self._poll_armed.set()
             self._poll_gate.wait(timeout=10.0)
-        # Every request arrival is recorded, whether answered or parked.
-        self._parked_events.append((time.monotonic(), str(parsed.query)))
-        if not self._events_block.is_set():
-            # Opaque lane: the request is received but never answered until
-            # release_events().  No expiry: stop() (journey finally, after
-            # the child is reaped) force-closes, so it cannot wedge a test.
-            self._events_block.wait()
         self.events_calls += 1
         query = urllib.parse.parse_qs(parsed.query)
         last = int((query.get("last_event_id") or ["-1"])[0])
@@ -462,7 +419,8 @@ class ZulipServer:
         messages = list(self._messages.get((channel, topic), []))
         return 200, json.dumps({"result": "success", "messages": messages})
 
-    def _send_call(self, body):
+    def _send_call(self, body, headers):
+        self.send_headers.append(dict(headers))
         # aiohttp's dict `data` form-encodes the payload per the Zulip
         # send-message contract (type/to/topic/content as form fields).
         form = dict(urllib.parse.parse_qsl(body.decode("utf-8")))
@@ -566,7 +524,7 @@ class ModelServer:
             if park:
                 # The request bytes are captured; park THIS connection
                 # without answering — "the model request is in flight".
-                self._gate.wait()
+                self._gate.wait(timeout=30.0)
             else:
                 self.requests.append(payload)
             return 200, self._sse()
@@ -691,52 +649,22 @@ class ZulipCliRun:
         }
 
     def assert_topic_identity(self, agent: str, port: int, channel: int,
-                              topic: str) -> str:
-        """Assert exactly one actual Session identity for this EXACT topic.
+                              topic: str) -> tuple[str, str]:
+        """Find one actual Session envelope with exact public frame identity.
 
-        Reads the ACTUAL ``session.start`` envelopes — the runtime record of
-        the identity handed to ``Agent.create_session()`` — and asserts the
-        required distinguishing features verbatim, in order
-        (agent -> resolved origin -> channel -> exact topic):
-
-        - the agent name;
-        - the exact resolved request origin (the ``api_url`` this run was
-          configured against; the zuliprc ``site`` is a deliberately
-          different, never-served loopback origin, so an identity built from
-          the credential site instead of the resolved origin fails);
-        - the integer channel between exactly one separator on each side, so
-          a channel/topic merge or a server-less identity cannot satisfy it;
-        - the EXACT passed *topic*: verbatim, immediately followed by
-          end-of-identity or exactly one separator.  An arbitrary suffix
-          cannot stretch a different topic into a match (``alpha`` never
-          matches ``alpha2``), and a mutated form (e.g. lowercased or
-          stripped) does not contain the exact topic at all.
-
-        No file-name pattern is asserted: the seam's name sanitization and
-        length cap are incidental encoding details the frozen spec does not
-        mandate.  File names are returned alongside so the caller can later
-        re-find THIS Session log.  Raises with the observed identities when
-        nothing matches, or when more than one Session matches; returns the
-        single (identity, file name) pair.
+        The public guide declares resolved origin, agent, integer channel
+        and URL-escaped exact topic. The caller passes the original topic;
+        encoding is performed here. File names only locate the JSONL record.
         """
-        resolved = f"http://127.0.0.1:{port}"
-        exact = re.compile(
-            rf"^.*{re.escape(agent)}.{re.escape(resolved)}."
-            rf"{re.escape(str(channel))}.{re.escape(topic)}(?:$|[^A-Za-z0-9].*)$"
-        )
-        matched = [(str(envelope.get("session_id")), name)
-                   for name, envelope in self.session_start_envelopes()
-                   if exact.match(str(envelope.get("session_id") or ""))]
-        if len(matched) == 1:
-            return matched[0]
-        observed = {name: str(envelope.get("session_id"))
-                    for name, envelope in self.session_start_envelopes()}
-        raise AssertionError(
-            f"expected exactly ONE runtime Session identity carrying agent="
-            f"{agent!r}, exact resolved origin {resolved!r}, channel "
-            f"{channel} and EXACT topic {topic!r}; matched {len(matched)}: "
-            f"{matched}\nobserved session.start identities: {observed}"
-        )
+        expected = (f"zulip:{agent}:http://127.0.0.1:{port}#{channel}#"
+                    f"{urllib.parse.quote(topic, safe='')}")
+        matches = [(str(e.get("session_id")), name)
+                   for name, e in self.session_start_envelopes()
+                   if e.get("session_id") == expected]
+        assert len(matches) == 1, (
+            f"expected one exact Session identity {expected!r}, found {matches}; "
+            f"observed={self.runtime_session_ids(agent)}")
+        return matches[0]
 
     def assert_reused_identity(self, agent: str, identity: str,
                                file_name: str) -> None:
@@ -756,23 +684,10 @@ class ZulipCliRun:
             f"{identity!r}: {same}")
 
     def count_identities(self, agent: str, topic: str) -> int:
-        """How many DISTINCT actual identities carry *topic* verbatim.
-
-        Envelope-content only (no file-name encoding): used to prove that
-        exactly the two admitted (channel, topic) pairs have Sessions while a
-        third channel never gained one.
-        """
-        ids = {sid for sid in self.runtime_session_ids(agent).values()}
-        exact = re.compile(
-            rf".*[^A-Za-z0-9]{re.escape(topic)}(?:$|[^A-Za-z0-9].*)$")
-        # A topic at the very end of the identity qualifies regardless of what
-        # precedes it; the bounded check above additionally requires a
-        # non-alphanumeric separator so "42alpha" never counts as "alpha".
-        return sum(1 for sid in ids
-                   if exact.match(sid)
-                   or (sid.endswith(topic)
-                       and (len(sid) == len(topic)
-                            or not sid[len(sid) - len(topic) - 1].isalnum())))
+        """Count actual Session identities for the exact original topic."""
+        suffix = "#" + urllib.parse.quote(topic, safe="")
+        return sum(sid.endswith(suffix)
+                   for sid in set(self.runtime_session_ids(agent).values()))
 
     def identity_file_names(self, agent: str, identity: str) -> list[str]:
         """The file names whose envelope carries *identity* verbatim."""
@@ -814,8 +729,7 @@ class ZulipCliRun:
         while time.monotonic() < deadline:
             if self.proc is not None and self.proc.poll() is not None:
                 return
-            if (not self.zulip._events and self.zulip._poll_gate.is_set()
-                    and self.zulip._events_block.is_set()):
+            if not self.zulip._events and self.zulip._poll_gate.is_set():
                 return
             time.sleep(0.1)
 
@@ -913,7 +827,7 @@ def _write_topic_docs(root: Path) -> None:
     """Synthetic topic documents with area markers (real topic_area resolvers).
 
     ``cwd-area`` is what an accidental working-directory fallback would inject
-    (the CLI's cwd IS the topics root); the others are legitimate per-area
+    (the CLI's cwd basename IS cwd-area); the others are legitimate per-area
     identities. None may appear in a no-area turn's compiled request.
     """
     def topic(folder: str, area: str, marker: str) -> None:
@@ -977,7 +891,7 @@ pipeline:
 zulip:
   zuliprc: {zuliprc}
   api_url: "{api_url}"
-  allowed_user_ids: [{diego_id}]
+  allowed_user_ids: [{diego_id}, 9]
   channels:
 {channels_yaml}
 """
@@ -995,7 +909,7 @@ class Harness:
         """Return (run, child cwd, child env). The caller must launch+close."""
         workdir = self.workdir
         sr2_home = workdir / "sr2-home"
-        cwd = workdir / "cwd"
+        cwd = workdir / "cwd-area"
         (sr2_home / "logs" / "sessions").mkdir(parents=True, exist_ok=True)
         cwd.mkdir(parents=True, exist_ok=True)
 
@@ -1068,6 +982,12 @@ class Harness:
         # inside collect()), then release every endpoint latch and close the
         # listening sockets: a parked request is always released or its
         # connection force-closed before the endpoint disappears.
-        run.collect()
-        run.zulip.stop()
-        run.model.stop()
+        try:
+            run.collect()
+        finally:
+            try:
+                run.zulip.stop()
+            finally:
+                run.model.stop()
+        assert run.proc is None or run.proc.poll() is not None, (
+            "CLI survived bounded cleanup")
