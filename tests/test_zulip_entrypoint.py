@@ -107,12 +107,15 @@ class TestStartupAcceptsMappedAreas:
     failing startup, so routing never has to lose its area. The file-level
     resolution below stays green at both cuts (the gate lived in the
     interface, not the resolver); the direct startup-validator row goes red
-    until the routing release ships. E owns replacing the corresponding
-    real-CLI refusal in tests/test_zulip_chat_e2e.py; an interface-level
-    start() assertion is NOT made here on purpose — spc-119/125 deliberately
-    froze the Zulip transport without a network-mock helper, and a unit-level
-    real start() would dial the network and swallow arbitrary transport
-    failures. The real startup proof is E's journey."""
+    until the routing release ships, and its routing-aware companion
+    (``test_mapped_area_channel_resolves_and_admits_through_entrypoint_
+    config``) keeps the pair from being satisfiable by a gate lift alone. E
+    owns replacing the corresponding real-CLI refusal in
+    tests/test_zulip_chat_e2e.py; an interface-level start() assertion is NOT
+    made here on purpose — spc-119/125 deliberately froze the Zulip transport
+    without a network-mock helper, and a unit-level real start() would dial
+    the network and swallow arbitrary transport failures. The real startup
+    proof is E's journey."""
 
     def test_mapped_area_channel_survives_resolution(self, isolated):
         cwd, env, pos = isolated
@@ -142,4 +145,32 @@ class TestStartupAcceptsMappedAreas:
             channels={NO_AREA_CHANNEL: "", 44: "obsidian"},
         )
         assert validate_no_area_only_routing(cfg) is None
+
+    def test_mapped_area_channel_resolves_and_admits(self, isolated):
+        """Routing-aware companion to the two gate-lift rows (B3 item 2):
+        the mapped-area config that resolves through the entry point must
+        ALSO route (area carried, not lost) and admit an allowed human —
+        deleting the gate while the facade still admits no-area channels
+        only goes red here. Today red at the routing import/step."""
+        from sr2_spectre.cli import resolve_config
+        from sr2_spectre.interfaces.zulip import (
+            is_configured_no_area_channel,
+            resolve_channel_area,
+        )
+
+        cwd, env, pos = isolated
+        _write_yaml(pos, {**VALID_TAIL, "zulip": {
+            "zuliprc": ZULIPRC,
+            "allowed_user_ids": [DIEGO_ID],
+            "channels": {NO_AREA_CHANNEL: "", 44: "obsidian"},
+        }})
+        zulip = resolve_config(pos, cwd=cwd, env={}).zulip
+        assert zulip is not None
+        assert resolve_channel_area(channel_id=44, config=zulip) == "obsidian"
+        assert is_configured_no_area_channel(
+            channel_id=44,
+            sender_id=DIEGO_ID,
+            sender_is_bot=False,
+            config=zulip,
+        )
 

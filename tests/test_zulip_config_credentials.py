@@ -411,14 +411,16 @@ class TestNonemptyAreaGateIntermediate:
         assert cfg.channels[AREA_CHANNEL] == "not-created-yet"
 
     def test_mapped_area_startup_restriction_removed(self):
-        """Pin the current startup validator directly. The temporary gate
-        that lives at interface startup today (spc-119/123 intermediate
-        contract) accepts a no-area-only map and raises on a mapped area;
-        after spc-120 removes it, whatever startup validation remains must
-        accept the same mixed map without raising. Calling it positively is
-        red today (the gate raises) and green after the lift either way;
-        silent area loss stays caged by the routing decision and journey
-        tests, not by this row."""
+        """Gate-lift signal, paired with the routing-aware companion
+        ``test_mapped_area_channel_admits_allowed_human`` (B3 item 2): on its
+        own this row goes green on a one-line gate lift with no routing.
+        Pin the current startup validator directly. The temporary gate that lives at interface startup today (spc-119/123
+        intermediate contract) accepts a no-area-only map and raises on a
+        mapped area; after spc-120 removes it, whatever startup validation
+        remains must accept the same mixed map without raising. Calling it
+        positively is red today (the gate raises) and green after the lift
+        either way; silent area loss stays caged by the routing decision and
+        journey tests, not by this row."""
         from sr2_spectre.interfaces.zulip import validate_no_area_only_routing
 
         cfg = make_config(channels={NO_AREA_CHANNEL: "",
@@ -453,13 +455,35 @@ class TestChannelAdmission:
             channel_id="42", sender_id=DIEGO_ID, sender_is_bot=False, config=cfg
         )
 
-    def test_nonempty_area_channel_not_admitted(self):
-        """AC16-INTERMEDIATE: in this cut no channel carrying an area may be
-        admitted; even if the startup gate were bypassed, admission stays
-        closed. Upgrade owned by spc-120."""
+    def test_mapped_area_channel_admits_allowed_human(self):
+        """spc-120 shipped contract (replaces the expired AC16-INTERMEDIATE
+        "nonempty area never admits" pin): a mapped-area channel with an
+        allowed human sender IS admitted, so lifting the startup gate
+        without implementing area-channel admission goes red here. AC3 stays
+        caged alongside: bot and off-allowlist events in the same mapped
+        channel, and an allowed human in an unconfigured channel, all stay
+        unadmitted."""
         cfg = make_config(channels={NO_AREA_CHANNEL: "", AREA_CHANNEL: "obsidian"})
+        assert is_configured_no_area_channel(
+            channel_id=AREA_CHANNEL,
+            sender_id=DIEGO_ID,
+            sender_is_bot=False,
+            config=cfg,
+        )
         assert not is_configured_no_area_channel(
             channel_id=AREA_CHANNEL,
+            sender_id=DIEGO_ID,
+            sender_is_bot=True,
+            config=cfg,
+        )
+        assert not is_configured_no_area_channel(
+            channel_id=AREA_CHANNEL,
+            sender_id=INTRUDER_ID,
+            sender_is_bot=False,
+            config=cfg,
+        )
+        assert not is_configured_no_area_channel(
+            channel_id=UNCONFIGURED_CHANNEL,
             sender_id=DIEGO_ID,
             sender_is_bot=False,
             config=cfg,
