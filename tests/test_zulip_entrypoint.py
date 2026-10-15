@@ -153,10 +153,8 @@ class TestStartupAcceptsMappedAreas:
         deleting the gate while the facade still admits no-area channels
         only goes red here. Today red at the routing import/step."""
         from sr2_spectre.cli import resolve_config
-        from sr2_spectre.interfaces.zulip import (
-            is_configured_no_area_channel,
-            resolve_channel_area,
-        )
+        from sr2_spectre.interfaces.zulip import is_configured_no_area_channel
+        from sr2_spectre.interfaces.zulip.config import resolve_channel_area
 
         cwd, env, pos = isolated
         _write_yaml(pos, {**VALID_TAIL, "zulip": {
