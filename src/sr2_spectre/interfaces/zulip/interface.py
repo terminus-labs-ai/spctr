@@ -1,16 +1,27 @@
 """ZulipInterface — the Interface protocol implementation for Zulip chat.
 
-Splice 1 (spc-125) is a safe no-area chat pilot built on the accepted
-spc-123/124 seams:
+Built on the accepted spc-123/124 seams; spc-120 added area routing and
+whole-config reload:
 
 - One independent `Session` per (channel, exact topic), created through the
   public `Agent.create_session()` API and owned by this interface. The frame
   identity carries the agent name, the resolved server origin, the channel ID
   and the exact topic — a topic name alone is never an identity.
-- Startup loads credentials, validates no-area-only routing and registers the
-  event queue. It performs no history fetch and no model work: a topic that
-  already holds messages when the process starts is only discovered lazily,
-  on the first user message that triggers in it.
+- Startup loads credentials, validates the routing mapping's shape and
+  registers the event queue. It performs no history fetch and no model work:
+  a topic that already holds messages when the process starts is only
+  discovered lazily, on the first user message that triggers in it.
+- Every inbound message re-reads the whole resolved config through a
+  ``ZulipConfigView`` (one reload at the single entry point, last-good
+  retained on a malformed edit), hands the same single read to
+  ``Agent.apply_config``, and routes against the slice it returned. The
+  ``zuliprc`` path and ``api_url`` override are pinned for the process:
+  the transport, the registered queue and the Session identities are built
+  from the startup values.
+- A configured channel routes to its mapped area through the existing
+  resolvers; a mapped ``""`` stays the explicit no-area
+  (``RunContext(area="")``). An unmapped channel is never admitted, so the
+  routing decision never falls back to the working directory.
 - Bot identity comes from real server metadata: the registration response's
   ``realm_users`` (and ``realm_bots``) arrays carry ``user_id``/``is_bot``
   per https://zulip.com/api/register-queue; a message event never carries an
@@ -23,7 +34,7 @@ spc-123/124 seams:
   until complete history restoration ships. Fresh messages this process
   already admitted in-process never make a new topic look populated. A probe
   failure or malformed answer blocks the model turn with an explicit error.
-- Only allowed human users in configured no-area channels trigger turns; bot
+- Only allowed human users in configured channels trigger turns; bot
   messages and unconfigured channels are ignored without model work.
 - All model turns are serialized globally (one Miranda turn at a time);
   concurrent messages in the same topic share one Session and keep ordered
@@ -35,7 +46,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import urllib.parse
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sr2_spectre.core import RunContext, RunMode
 from sr2_spectre.interfaces.zulip.client import (
@@ -46,13 +57,18 @@ from sr2_spectre.interfaces.zulip.client import (
 from sr2_spectre.interfaces.zulip.config import (
     ZulipConfig,
     is_configured_no_area_channel,
+    resolve_channel_area,
     validate_no_area_only_routing,
 )
+from sr2_spectre.interfaces.zulip.config_source import ZulipConfigView
 from sr2_spectre.reminders import (
     ChannelMatch,
     DeliveryLoop,
     ReminderOrigin,
 )
+
+if TYPE_CHECKING:
+    from sr2_spectre.config_source import SpectreConfigSource
 
 logger = logging.getLogger(__name__)
 
@@ -82,12 +98,48 @@ def topic_frame_id(agent_name: str, origin: str, channel_id: int, topic: str) ->
 
 
 class ZulipInterface:
-    """Zulip chat interface for SR2 Spectre (safe no-area pilot)."""
+    """Zulip chat interface for SR2 Spectre (area routing + live reload)."""
 
     name = "zulip"
 
-    def __init__(self, config: ZulipConfig) -> None:
-        self._config = config
+    def __init__(
+        self,
+        config: ZulipConfig | None = None,
+        config_source: "SpectreConfigSource | None" = None,
+    ) -> None:
+        """
+        Args:
+            config: A fixed zulip block, frozen for the life of the process.
+                Ignored when config_source is given.
+            config_source: The live whole-config source (a
+                ``SpectreConfigSource`` from the CLI). The adapter re-reads
+                it once per inbound message through a ``ZulipConfigView``
+                and hands the same single read to ``Agent.apply_config``,
+                so routing and allowlist edits — and the agent's own
+                models/endpoints — apply on the next message with last-good
+                fallback. When omitted, *config* is frozen for the life of
+                the process.
+        """
+        self._view = (
+            ZulipConfigView(config_source)
+            if config_source is not None
+            else None
+        )
+        self._config: ZulipConfig | None = config
+        if self._view is not None:
+            self._config = self._view.current
+        if config is not None:
+            # The startup block pins the transport, the registered queue and
+            # the Session identities for the life of the process, even when
+            # the rest of the slice reloads.
+            self._startup_config = config
+        elif self._config is not None:
+            self._startup_config = self._config
+        else:
+            raise ValueError(
+                "ZulipInterface needs a zulip config or a config source "
+                "whose current config carries a zulip block."
+            )
         self._agent: Any = None
         self._credentials: Any = None
         self._client: ZulipClient | None = None
@@ -348,6 +400,12 @@ class ZulipInterface:
                 logger.error("Zulip event poll returned no events array")
                 await asyncio.sleep(2.0)
                 continue
+            # One whole-config reload per inbound batch — the single entry
+            # point for inbound traffic (docs/INTERFACE-DEV-GUIDE.md § Live
+            # config reload): every message in this batch is admitted and
+            # routed against this one read, and existing Sessions keep the
+            # area they were created with.
+            config = self._reload_config()
             # Snapshot eligible triggers before processing the batch: the history
             # probe can already see later siblings from this same response.
             batch_ids = {
@@ -355,7 +413,7 @@ class ZulipInterface:
                 for event in events
                 if isinstance(event, dict) and event.get("type") == "message"
                 and isinstance(message := event.get("message"), dict)
-                and self._is_allowed_message(message)
+                and self._is_allowed_message(message, config)
             }
             for event in events:
                 if not isinstance(event, dict):
@@ -368,12 +426,44 @@ class ZulipInterface:
                     continue
                 message = event.get("message")
                 if isinstance(message, dict):
-                    await self._handle_message(message, batch_ids)
+                    await self._handle_message(message, batch_ids, config)
 
     # ---- message handling ----------------------------------------------------
 
-    def _is_allowed_message(self, message: dict[str, Any]) -> bool:
-        """Recognize human triggers eligible for this no-area pilot."""
+    def _reload_config(self) -> ZulipConfig:
+        """One whole-config reload at the single entry point for inbound traffic.
+
+        The view reload is the process's only re-read: it refreshes the
+        Zulip routing slice AND the agent's half of the same load (via
+        ``Agent.apply_config``), and a malformed edit keeps the last
+        known-good config in force (``LiveConfigSource.reload`` absorbs the
+        failure — never wrap it in a crash). The ``zuliprc`` path and
+        ``api_url`` override are pinned here for the process's life: the
+        transport, the registered queue and the Session identities were
+        built from the startup values, so the reloaded slice is rebound to
+        them. Without a live source (a fixed config) this is a no-op.
+        """
+        if self._view is None:
+            return self._config
+        config = self._view.reload()
+        pinned = config.model_copy(
+            update={
+                "zuliprc": self._startup_config.zuliprc,
+                "api_url": self._startup_config.api_url,
+            }
+        )
+        # Keep the view's own slice answering as the pinned effective slice
+        # (the no-op case: an unchanged whole load must not rebuild it).
+        self._view.pin_effective(pinned)
+        self._config = pinned
+        if self._agent is not None:
+            self._agent.apply_config(self._view.source.current)
+        return pinned
+
+    def _is_allowed_message(
+        self, message: dict[str, Any], config: ZulipConfig
+    ) -> bool:
+        """Recognize a human trigger in a configured channel on this read."""
         if message.get("type") != "stream":
             return False
         channel_id = message.get("stream_id")
@@ -387,18 +477,33 @@ class ZulipInterface:
             channel_id=channel_id,
             sender_id=sender_id,
             sender_is_bot=sender_id in self._bot_ids,
-            config=self._config,
+            config=config,
         )
 
     async def _handle_message(
-        self, message: dict[str, Any], batch_ids: set[int] | None = None,
+        self,
+        message: dict[str, Any],
+        batch_ids: set[int] | None = None,
+        config: ZulipConfig | None = None,
     ) -> None:
-        """Route one eligible event without changing its batch order."""
-        if not self._is_allowed_message(message):
+        """Route one eligible event without changing its batch order.
+
+        ``config`` is the resolved config this message arrived on (the poll
+        loop re-reads once per batch); a direct caller that passes none
+        reloads here, so every routed message reads exactly one config.
+        """
+        if config is None:
+            config = self._reload_config()
+        if not self._is_allowed_message(message, config):
             return
         channel_id = message["stream_id"]
         message_id = message["id"]
         topic = str(message.get("subject", ""))
+        # The area comes only from the mapping on this message's own read:
+        # "" stays the explicit no-area, a name routes through the existing
+        # resolvers, and an unmapped channel was never admitted above — so
+        # this process can never fall back to the working-directory area.
+        area = resolve_channel_area(channel_id=channel_id, config=config)
         frame_id = topic_frame_id(
             self._agent.config.agent.name, self._origin, channel_id, topic
         )
@@ -415,6 +520,7 @@ class ZulipInterface:
                 entry = await self._ensure_session(
                     frame_id, channel_id, topic, message_id,
                     self._admitted_ids | {message_id} | (batch_ids or set()),
+                    area,
                 )
                 if entry is not None:
                     self._admitted_ids.add(message_id)
@@ -431,6 +537,7 @@ class ZulipInterface:
         topic: str,
         trigger_id: int,
         candidate_ids: set[int],
+        area: str | None,
     ) -> tuple[Any, list[Any]] | None:
         """Probe cold-topic history and create the Session for a new topic.
 
@@ -446,6 +553,11 @@ class ZulipInterface:
         same way. Returns the (Session, per-topic history) entry on
         success, or None when the turn was blocked (the blocking reply is
         sent here, while still holding the turn lock).
+
+        ``area`` is the channel's mapped area on this message's config read:
+        a name is carried into the Session's RunContext for the existing
+        resolvers, and ``""`` is the explicit no-area — never collapsed,
+        never inferred from the working directory.
         """
         try:
             response = await self._client.get_topic_messages(channel_id, topic)
@@ -483,7 +595,9 @@ class ZulipInterface:
                 interface="zulip",
                 mode=RunMode.INTERACTIVE,
                 source=f"zulip:{channel_id}:{topic}",
-                area="",  # explicit no-area: never fall back to cwd
+                # Mapped area from this message's config read; "" stays the
+                # explicit no-area so no consumer falls back to the cwd.
+                area=area if area is not None else "",
             )
         )
         return session, set()

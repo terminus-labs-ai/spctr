@@ -8,12 +8,12 @@ integer-ID allowlists, and ``channels`` mapping channel ID → area identity
 fallback, and string forms of an ID (e.g. a YAML-quoted ``"42"``) are not
 admitted in place of the integer.
 
-INTERMEDIATE CONTRACT: nonempty area mappings are rejected until area
-routing ships in spc-120
-(``Add Zulip area routing and live config reload``), which owns lifting
-both the :func:`validate_no_area_only_routing` gate and the nonempty-area
-arm of :func:`is_configured_no_area_channel`. Until then a nonempty area
-fails startup explicitly rather than silently routing without its area.
+ROUTING CONTRACT (spc-120): a mapped nonempty area is valid configuration
+and routes through the existing resolvers; ``""`` stays the explicit
+no-area and an unconfigured channel is never routed. The former temporary
+gate (:func:`validate_no_area_only_routing`, spc-119/123 intermediate
+contract) only validates mapping shape now — live vault existence is never
+probed at config time.
 """
 from __future__ import annotations
 
@@ -31,8 +31,9 @@ class ZulipConfig(BaseModel):
             Empty admits no one; bot-authored messages never trigger even if
             an ID appears here (reply-loop prevention).
         channels: Channel ID → area identity. ``""`` means explicitly no
-            area. In this cut only ``""`` values are admitted; nonempty areas
-            fail startup (validate_no_area_only_routing) until spc-120.
+            area; a nonempty value is that channel's area identity, mapped
+            through :func:`resolve_channel_area` on every inbound message.
+            There is no implicit channel-name or working-directory fallback.
     """
     model_config = ConfigDict(strict=True)
 
@@ -51,31 +52,55 @@ def is_configured_no_area_channel(
 ) -> bool:
     """Decide whether one message event may trigger a model turn.
 
-    A turn is admitted only when the channel is explicitly configured as a
-    no-area channel, the sender is a human on the allowlist, and the message
-    is not bot-authored (the bot rule outranks the allowlist so replies can
-    never loop). Membership is decided on the configured integer IDs — an
-    event carrying a stringified ID is not a match, and there is no
-    channel-name fallback.
+    A turn is admitted only when the channel is explicitly configured (any
+    area, including the no-area ``""``), the sender is a human on the
+    allowlist, and the message is not bot-authored (the bot rule outranks
+    the allowlist so replies can never loop). Membership is decided on the
+    configured integer IDs — an event carrying a stringified ID is not a
+    match, and there is no channel-name fallback. The name is historical
+    (spc-119/123 admitted no-area channels only); since spc-120 it is the
+    trigger admission for every configured channel — the routed area itself
+    comes from :func:`resolve_channel_area`.
     """
     if sender_is_bot:
         return False
-    if config.channels.get(channel_id) != "":
+    if channel_id not in config.channels:
         return False
     return sender_id in config.allowed_user_ids
 
 
-def validate_no_area_only_routing(config: ZulipConfig) -> None:
-    """Fail startup when any configured channel carries a nonempty area.
+def resolve_channel_area(
+    *,
+    channel_id: int,
+    config: ZulipConfig,
+) -> str | None:
+    """Decide the area identity for one channel: ``""``, a name, or ``None``.
 
-    INTERMEDIATE CONTRACT: area routing ships in spc-120. Until then a
-    nonempty area mapping is rejected explicitly instead of silently routing
-    without its area.
+    The answer comes only from the configured mapping. A configured channel
+    gets exactly its mapped value — ``""`` is the explicit no-area and must
+    be returned as such, never collapsed into ``None`` (consumers treat
+    ``None`` as "may fall back"). An unconfigured channel gets a positive
+    non-answer of ``None``: this decision never consults the working
+    directory, ``SR2_AREA``, or a channel name, so an unmapped channel can
+    never accidentally inherit the service's area.
     """
-    offending = sorted(cid for cid, area in config.channels.items() if area)
-    if offending:
-        raise ValueError(
-            "Zulip area routing is not supported in this build: channel(s) "
-            f"{offending} map to a nonempty area. Configure area-less "
-            'channels (area "") or wait for the routing release (spc-120).'
-        )
+    return config.channels.get(channel_id)
+
+
+def validate_no_area_only_routing(config: ZulipConfig) -> None:
+    """Validate the routing mapping's shape at startup.
+
+    The temporary spc-119/123 gate that rejected any nonempty area is lifted
+    (spc-120): mapped areas are supported routing now. What stays is the
+    shape guard — every key an integer, every value a string (the strict
+    ``ZulipConfig`` schema enforces both) — and nothing else: a named area
+    that does not exist in the vault yet is a valid mapping, so this
+    validation opens no vault.
+    """
+    for channel_id, area in config.channels.items():
+        if not isinstance(channel_id, int) or not isinstance(area, str):
+            raise ValueError(
+                "Zulip channel mapping is malformed: each entry must map an "
+                f"integer channel ID to a string area identity, got "
+                f"{channel_id!r}: {type(area).__name__}."
+            )

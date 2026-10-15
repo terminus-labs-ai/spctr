@@ -488,8 +488,9 @@ zulip:
 
 A missing, unreadable, malformed or incomplete zuliprc fails startup with
 `ZulipCredentialError` naming the path and the reason, never the file's
-contents. Until area routing ships (spc-120), a nonempty `channels` area
-also fails startup explicitly instead of routing without its area.
+contents. Startup validates the `channels` mapping's shape only — integer
+IDs to string area identities; a named area that does not exist in the
+vault yet is a valid mapping and is resolved when a message routes to it.
 
 ### Transport
 
@@ -504,30 +505,47 @@ unreachable-server or malformed-response failures raise
 `ZulipTransportError`. Neither message ever contains the API key or a
 server response body. Call `aclose()` to release the connection pool.
 
-### Chat interface (no-area pilot)
+### Chat interface
 
 Selecting `--interface zulip` runs `ZulipInterface` with the validated
 `zulip` block (a missing block fails startup explicitly). Startup loads the
-zuliprc, rejects any nonempty channel area, and registers the event queue —
-it fetches no history and makes no model request.
+zuliprc, validates the routing mapping's shape, and registers the event
+queue — it fetches no history and makes no model request.
 
-- Only allowed human users in configured no-area channels trigger turns;
+- Only allowed human users in configured channels trigger turns;
   bots (identified by the registration realm metadata, since message
   events carry no bot flag) and unconfigured channels are ignored without
   model work.
+- A configured channel routes to its mapped area through the existing
+  resolvers; `""` stays the explicit no-area. An unmapped channel is never
+  admitted, and routing never consults the channel name or the working
+  directory, so a message can never accidentally inherit the service's
+  area.
 - Each (channel, exact topic) owns one Session; the frame identity carries
   the agent, the resolved server origin, the channel ID and the escaped
-  topic. New topics start with an explicit no-area run context
-  (`area: ""`) and never inherit the working-directory area.
+  topic. The Session's run context carries the area from the config read
+  the trigger arrived on.
 - Model turns are serialized globally; concurrent messages in the same
   topic share one Session and keep ordered history, and distinct topics
   stay isolated.
-- Until history restoration ships (spc-120), a topic that holds any message
+- Until history restoration ships, a topic that holds any message
   besides the trigger and messages this process already admitted —
   including bot-only alerts — gets an explicit unsupported-history reply
   with no model/tool work, and a failed history probe blocks the turn the
   same way.
 - `stop()` closes all interface-owned Sessions and the transport.
+
+### Config reload (Zulip)
+
+The Zulip interface re-reads the **whole** resolved config on every inbound
+event batch — not just this section — so `channels`, `allowed_user_ids`
+and everything outside `zulip` apply to the next message, with the same
+last-good guarantees as the [Live reload](#live-reload) section below: a
+malformed or mid-save file keeps the last known-good config in force and
+never takes the process down. `zuliprc` and `api_url` are the interface's
+own pinned fields — the transport, the registered event queue and the
+Session identities were built from them — so edits to those need a
+restart.
 
 ---
 
@@ -536,7 +554,10 @@ it fetches no history and makes no model request.
 A long-running interface re-reads the **whole resolved config on every inbound
 message or native slash interaction**, so most edits apply to the next event
 with no process restart.
-This is on for the Discord interface. Short-lived interfaces (`single_shot`,
+This is on for the Discord and Zulip interfaces (Zulip re-reads once per
+inbound event batch; see
+[Config reload (Zulip)](#config-reload-zulip)).
+Short-lived interfaces (`single_shot`,
 `tui`) resolve their config once at startup and never reload.
 
 The re-read runs the full 4-tier merge, so an edit to *any* tier is picked up —
@@ -557,6 +578,7 @@ not just the agent file.
 | `agent.skills`, `agent.skills_dirs` | Skill registry rebuilt |
 | `agent.tool_result_max_bytes` | New truncation limit |
 | `discord.*` except `token` | Channel filters, threading, streaming, embeds |
+| `zulip.channels`, `zulip.allowed_user_ids` | Which channels are admitted and the area each routes to, from the next message |
 
 ### What needs a restart
 
@@ -571,6 +593,7 @@ value the process started with stays in force.
 | `memory_store_dsn` | Backs a connection opened once at startup |
 | `provenance_store_path` | Backs a connection opened once at startup |
 | `discord.token` | The gateway session was opened with it |
+| `zulip.zuliprc`, `zulip.api_url` | The transport, registered event queue and Session identities were built from them |
 
 A change to one of these logs a warning **once** — not per message — then keeps
 the startup value:
