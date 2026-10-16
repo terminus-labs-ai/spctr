@@ -37,6 +37,20 @@ RETRY_DELAYS = (timedelta(minutes=1), timedelta(minutes=5))
 MAX_SEND_ATTEMPTS = len(RETRY_DELAYS) + 1
 
 
+def _next_attempt(reminder: Reminder) -> datetime:
+    """When this row's failed attempt should be re-run (FR18, spc-157).
+
+    The delay counts from the row's current attempt time — the original
+    due time on the first failure, the stored ``next_attempt_at`` after
+    that — so the schedule is due+1 then due+6 (cumulative), the timing
+    the AC9 tests pin.
+    """
+    current = reminder.next_attempt_at or reminder.due_at
+    return current + RETRY_DELAYS[
+        min(reminder.attempts, len(RETRY_DELAYS) - 1)
+    ]
+
+
 def format_reminder_message(reminder: Reminder, tz: ZoneInfo, now: datetime) -> str:
     """``<mention> Reminder: <text>`` plus the late suffix when sent >5 min
     after due (FR13, FR15)."""
@@ -117,14 +131,14 @@ class DeliveryLoop:
                     reminder.dest_channel_id, reminder.dest_topic, content
                 )
             except Exception as exc:  # noqa: BLE001 — any send failure is retried
-                # FR18 policy (spc-140): due +1 min, then +5 min; the third
-                # failure marks the row failed with an ERROR log naming the
-                # ID and the error.
+                # FR18 policy (spc-140): due +1 min, then +5 min, scheduled
+                # on next_attempt_at so due_at keeps the original due time
+                # (spc-157); the third failure marks the row failed with an
+                # ERROR log naming the ID and the error.
                 status = await self._store.due_with_retry_async(
                     reminder.id,
                     str(exc),
-                    reminder.due_at
-                    + RETRY_DELAYS[min(reminder.attempts, len(RETRY_DELAYS) - 1)],
+                    _next_attempt(reminder),
                     max_attempts=MAX_SEND_ATTEMPTS,
                 )
                 if status == "failed":

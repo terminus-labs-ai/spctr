@@ -43,12 +43,20 @@ _COLUMNS = (
     "status",
     "attempts",
     "last_error",
+    # spc-157: FR18 retries schedule from this column, never from due_at.
+    # It must stay out of ``_INSERT_COLUMNS`` (fresh rows start NULL) and
+    # out of the Reminder dataclass (rows map back by name; the field
+    # would otherwise break every frozen positional/keyword construction).
+    "next_attempt_at",
 )
 
-# Columns ``create`` inserts: the whole set except ``delivered_at``.
-# ``status`` and ``attempts`` carry the fixed 'pending'/0 of the
-# pre-spc-144 INSERT and ``last_error`` starts NULL.
-_INSERT_COLUMNS = tuple(c for c in _COLUMNS if c != "delivered_at")
+# Columns ``create`` inserts: every column above except the two that
+# start NULL. ``status`` and ``attempts`` carry the fixed 'pending'/0 of
+# the pre-spc-144 INSERT; ``last_error`` starts NULL and
+# ``next_attempt_at`` starts NULL (a first attempt is due at ``due_at``).
+_INSERT_COLUMNS = tuple(
+    c for c in _COLUMNS if c not in ("delivered_at", "next_attempt_at")
+)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS reminders (
@@ -68,7 +76,8 @@ CREATE TABLE IF NOT EXISTS reminders (
   status TEXT NOT NULL CHECK (status IN
     ('pending', 'sending', 'delivered', 'failed', 'cancelled')),
   attempts INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT NULL
+  last_error TEXT NULL,
+  next_attempt_at TEXT NULL
 );
 """
 
@@ -77,13 +86,26 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# spc-157: retries are scheduled from this column instead of moving
+# ``due_at``. A store file created before it existed (the spc-139 schema)
+# gains the column additively on connect; existing rows keep NULL and
+# stay deliverable (their next attempt is due at ``due_at``).
+_RETRY_COLUMN = "next_attempt_at"
+
+
 def _ts(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
 @dataclass(frozen=True)
 class Reminder:
-    """One stored reminder row."""
+    """One stored reminder row.
+
+    ``next_attempt_at`` is the FR18 retry schedule and stays None until a
+    send fails; ``due_at`` is the time the user asked for and never moves
+    (spc-157). Declared positionally last with a default so every other
+    field keeps its old position for positional construction.
+    """
 
     id: str
     agent: str
@@ -101,6 +123,10 @@ class Reminder:
     status: str
     attempts: int
     last_error: str | None
+    # FR18 retry schedule (spc-157). Declared last, with a default, so a
+    # caller building a fresh row never names it and old call sites keep
+    # working.
+    next_attempt_at: datetime | None = None
 
 
 class ReminderStore:
@@ -123,8 +149,26 @@ class ReminderStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 10000")
         conn.execute(_SCHEMA)
+        self._migrate(conn)
         conn.commit()
         return conn
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Add missing columns to a store file from an earlier schema.
+
+        ``_SCHEMA`` is a no-op on an existing table, so a file written
+        before spc-157 needs the retry column added in place; the change
+        is additive (NULL for every existing row) and the rows stay
+        deliverable.
+        """
+        existing = {
+            row["name"] for row in conn.execute("PRAGMA table_info(reminders)")
+        }
+        if _RETRY_COLUMN not in existing:
+            conn.execute(
+                "ALTER TABLE reminders ADD COLUMN next_attempt_at TEXT NULL"
+            )
 
     # ---- sync core (each call = one short-lived connection/transaction) ----
 
@@ -170,14 +214,21 @@ class ReminderStore:
         return new_id
 
     def due(self, now: datetime, statuses: Iterable[str] = ("pending",)) -> list[Reminder]:
-        """Rows whose due time is at or before ``now``, in due order."""
+        """Rows whose next attempt is at or before ``now``, in due order.
+
+        A row that has never been retried attempts at its ``due_at``; a
+        retried row attempts at ``next_attempt_at`` while ``due_at``
+        stays the time the user asked for (spc-157). Ordering and the
+        ``ORDER BY due_at, id`` the FR19 list relies on are unchanged.
+        """
         statuses = tuple(statuses)
         placeholders = ", ".join("?" for _ in statuses)
         with self._connect() as conn:
             rows = conn.execute(
                 f"""SELECT {", ".join(_COLUMNS)}
                     FROM reminders
-                    WHERE status IN ({placeholders}) AND due_at <= ?
+                    WHERE status IN ({placeholders})
+                      AND COALESCE(next_attempt_at, due_at) <= ?
                     ORDER BY due_at, id""",
                 (*statuses, _ts(now)),
             ).fetchall()
@@ -222,13 +273,16 @@ class ReminderStore:
         self,
         reminder_id: str,
         error: str,
-        next_due: datetime,
+        next_attempt: datetime,
         max_attempts: int = 3,
     ) -> str:
-        """One failed send with the bounded retry policy (FR18, spc-140).
+        """One failed send with the bounded retry policy (FR18, spc-140;
+        spc-157 keeps ``due_at``).
 
         Until the attempt budget runs out the row returns to ``pending``
-        with its due time moved to ``next_due``; once this failure
+        with its next attempt scheduled at ``next_attempt`` — ``due_at``
+        is left as the time the user asked for, so the FR15 late suffix
+        and the FR19 list keep the original due time. Once this failure
         reaches ``max_attempts`` it is terminal ``failed``. Returns the
         new status.
         """
@@ -249,8 +303,9 @@ class ReminderStore:
                 )
                 return "failed"
             conn.execute(
-                "UPDATE reminders SET status = 'pending', due_at = ? WHERE id = ?",
-                (_ts(next_due), reminder_id),
+                "UPDATE reminders SET status = 'pending', next_attempt_at = ? "
+                "WHERE id = ?",
+                (_ts(next_attempt), reminder_id),
             )
             return "pending"
 
@@ -301,7 +356,7 @@ class ReminderStore:
         column maps straight onto the field of the same name.
         """
         values = dict(row)
-        for ts_field in ("due_at", "created_at", "delivered_at"):
+        for ts_field in ("due_at", "next_attempt_at", "created_at", "delivered_at"):
             raw = values[ts_field]
             values[ts_field] = None if raw is None else datetime.fromisoformat(raw)
         return Reminder(**values)
@@ -328,11 +383,11 @@ class ReminderStore:
         await asyncio.to_thread(self.mark_failed_attempt, reminder_id, error)
 
     async def due_with_retry_async(
-        self, reminder_id: str, error: str, next_due: datetime,
+        self, reminder_id: str, error: str, next_attempt: datetime,
         max_attempts: int = 3,
     ) -> str:
         return await asyncio.to_thread(
-            self.due_with_retry, reminder_id, error, next_due, max_attempts
+            self.due_with_retry, reminder_id, error, next_attempt, max_attempts
         )
 
     async def cancel_async(self, reminder_id: str) -> bool:

@@ -277,9 +277,9 @@ class ReminderTool:
         """FR19: this agent's pending reminders plus failed ones within
         FAILED_LIST_WINDOW, sorted by due time.
 
-        The failed-row window is dated by ``due_at``: the FR18 retries
-        leave it at the row's final attempt time, so no separate
-        failed_at column is needed.
+        ``due_at`` is the original due time (spc-157): FR18 retries are
+        scheduled from ``next_attempt_at``, so each line shows and the
+        failed-row window is dated by the time the user asked for.
         """
         now = self._now()
         cutoff = _ts(now - FAILED_LIST_WINDOW)
