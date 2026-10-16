@@ -48,7 +48,12 @@ from sr2_spectre.interfaces.zulip.config import (
     is_configured_no_area_channel,
     validate_no_area_only_routing,
 )
-from sr2_spectre.reminders import DeliveryLoop, ReminderOrigin, ReminderTool
+from sr2_spectre.reminders import (
+    ChannelMatch,
+    DeliveryLoop,
+    ReminderOrigin,
+    ReminderTool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +238,12 @@ class ZulipInterface:
                 and entry["name"].lower() == name.lower()
                 and entry.get("can_send", True)
             ):
-                matches.append(entry)
+                matches.append(
+                    ChannelMatch(
+                        channel_id=entry["stream_id"],
+                        channel_name=entry["name"],
+                    )
+                )
         return matches
 
     def _channel_display_name(self, channel_id: int) -> str:

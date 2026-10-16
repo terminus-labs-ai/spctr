@@ -12,9 +12,14 @@ from __future__ import annotations
 
 from sr2_spectre.reminders.loop import DeliveryLoop
 from sr2_spectre.reminders.store import Reminder, ReminderStore
-from sr2_spectre.reminders.tool import ReminderOrigin, ReminderTool
+from sr2_spectre.reminders.tool import (
+    ChannelMatch,
+    ReminderOrigin,
+    ReminderTool,
+)
 
 __all__ = [
+    "ChannelMatch",
     "DeliveryLoop",
     "Reminder",
     "ReminderOrigin",

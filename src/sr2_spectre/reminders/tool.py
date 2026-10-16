@@ -34,6 +34,9 @@ NO_INTERFACE_ERROR = "Error: Reminders need the Discord or Zulip interface"
 # FR11: the platform a channel name may prefix ("discord#x", "zulip#x").
 _PLATFORM_PREFIXES = ("discord", "zulip")
 
+# FR10: the guard message when a resolver yields an unusable match.
+MALFORMED_RESOLVER_ERROR = "Error: channel lookup returned an unusable result"
+
 # FR19: list shows pending rows plus failed ones within this window.
 FAILED_LIST_WINDOW = timedelta(days=7)
 LIST_TEXT_LIMIT = 80
@@ -55,6 +58,22 @@ class ReminderOrigin:
     channel_id: str
     channel_name: str
     topic: str  # the Zulip topic the request came from (Discord: "")
+
+
+@dataclass(frozen=True)
+class ChannelMatch:
+    """FR10: one named-channel resolver match (what the tool consumes)."""
+
+    channel_id: int
+    channel_name: str
+
+
+def _match_has_channels(matches: Any) -> bool:
+    """True when every match carries channel_id and channel_name."""
+    return all(
+        hasattr(match, "channel_id") and hasattr(match, "channel_name")
+        for match in matches
+    )
 
 
 def format_local_due(due_utc: datetime, tz: ZoneInfo) -> str:
@@ -167,6 +186,13 @@ class ReminderTool:
         if self._channel_resolver is None:
             return "Error: named channels are not available in this build"
         matches = await self._channel_resolver(origin.platform, name)
+        # Guard: a resolver returning anything but the documented match
+        # shape (e.g. raw stream dicts) is a tool error, not an exception.
+        if matches and not _match_has_channels(matches):
+            logger.error(
+                "%s: resolver returned %r", MALFORMED_RESOLVER_ERROR, matches[0]
+            )
+            return MALFORMED_RESOLVER_ERROR
         if not matches:
             return f"Error: channel '{channel}' not found on this platform"
         if len(matches) > 1:
