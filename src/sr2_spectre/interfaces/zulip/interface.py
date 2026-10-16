@@ -48,6 +48,7 @@ from sr2_spectre.interfaces.zulip.config import (
     is_configured_no_area_channel,
     validate_no_area_only_routing,
 )
+from sr2_spectre.reminders import DeliveryLoop, ReminderOrigin
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,8 @@ class ZulipInterface:
         self._agent: Any = None
         self._credentials: Any = None
         self._client: ZulipClient | None = None
+        self._queue_id: str = ""
+        self._last_event_id: int = -1
         # Frame ID -> (live Session, per-topic history reserved for the
         # history-restoration slice) for the topics this process owns.
         self._sessions: dict[str, tuple[Any, list[Any]]] = {}
@@ -98,6 +101,9 @@ class ZulipInterface:
         self._bot_ids: set[int] = set()
         # Global model-turn serialization: one Miranda turn at a time.
         self._turn_lock = asyncio.Lock()
+        # Reminders (spc-139, FR6): delivery loop + the per-turn origin.
+        # The origin is recorded per turn (below), never shared globally.
+        self._reminders_loop: Any = None
         self._running = False
 
     # ---- Interface protocol --------------------------------------------------
@@ -119,6 +125,7 @@ class ZulipInterface:
         self._queue_id: str = str(registration["queue_id"])
         self._last_event_id: int = int(registration["last_event_id"])
         self._bot_ids = self._read_bot_ids(registration)
+        self._start_reminders(agent)
         self._running = True
         logger.info(
             "Zulip interface started: origin=%s queue registered bot=%s",
@@ -150,12 +157,54 @@ class ZulipInterface:
     async def stop(self) -> None:
         """Close every interface-owned Session, then the transport."""
         self._running = False
+        await self._stop_reminders()
         for session, _seen in self._sessions.values():
             session.close()
         self._sessions.clear()
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+
+    # ---- reminders (spc-139, FR6/FR22) --------------------------------------
+
+    def _start_reminders(self, agent: Any) -> None:
+        """Start the delivery loop when ``agent.reminders.enabled`` is on.
+
+        The loop claims due rows from the Runtime's store and sends them
+        through the interface's own transport (the Zulip client). Disabled
+        config registers no tool (Runtime) and starts no loop (here) —
+        AC3.
+        """
+        reminders = getattr(agent, "reminders", None)
+        if reminders is None:
+            return
+
+        async def send(channel_id: str, topic: str, content: str) -> None:
+            await self._send_reminder_reply(int(channel_id), topic, content)
+
+        loop = DeliveryLoop(
+            reminders.store,
+            send=send,
+            poll_seconds=reminders.poll_seconds,
+            tz=reminders.tz,
+            agent_name=reminders.agent_name,
+        )
+        self._reminders_loop = loop
+        self._reminders_start_task = asyncio.ensure_future(loop.start())
+
+    def _runtime_of(self, agent: Any) -> Any:
+        return getattr(agent, "_runtime", None)
+
+    async def _stop_reminders(self) -> None:
+        """End the delivery loop; pending rows are left intact (FR22)."""
+        loop = self._reminders_loop
+        self._reminders_loop = None
+        if loop is None:
+            return
+        try:
+            await loop.stop()
+        except asyncio.CancelledError:
+            pass
 
     async def run(self, agent: Any) -> None:
         """Poll the Zulip event queue until stopped."""
@@ -318,16 +367,45 @@ class ZulipInterface:
         self, session: Any, channel_id: int, topic: str, message: dict[str, Any]
     ) -> None:
         """Run one admitted message through its topic's Session."""
+        origin = self._reminders_origin_for(channel_id, message)
+        runtime = self._runtime_of(self._agent)
+        if runtime is not None:
+            runtime.set_reminders_origin(origin)
         try:
-            result = await session.handle_user_message(
-                str(message.get("content", ""))
-            )
-        except Exception as exc:
-            logger.error("Zulip model turn failed: %s", exc)
-            return
-        if not result.text:
-            return
-        await self._send_reply(channel_id, topic, result.text)
+            try:
+                result = await session.handle_user_message(
+                    str(message.get("content", ""))
+                )
+            except Exception as exc:
+                logger.error("Zulip model turn failed: %s", exc)
+                return
+            if not result.text:
+                return
+            await self._send_reply(channel_id, topic, result.text)
+        finally:
+            if runtime is not None:
+                runtime.clear_reminders_origin()
+
+    def _reminders_origin_for(self, channel_id: int, message: dict[str, Any]) -> ReminderOrigin:
+        """The origin of THIS turn, recorded per message.
+
+        Two concurrent turns in different channels must never record each
+        other's origin (spec, Delivery seam): the origin is captured from
+        this message's own event (channel, topic, sender, mention) and held
+        on the Runtime for the duration of exactly this turn — never a
+        global, and the turn lock is deliberately not relied on for it.
+        """
+        sender_id = message.get("sender_id")
+        topic = str(message.get("subject", ""))
+        return ReminderOrigin(
+            agent=self._agent.config.agent.name,
+            platform="zulip",
+            requester_id=str(sender_id) if sender_id is not None else "",
+            requester_mention=f"@{sender_id}" if sender_id is not None else "@user",
+            channel_id=str(channel_id),
+            channel_name=str(channel_id),
+            topic=topic,
+        )
 
     async def _send_reply(self, channel_id: int, topic: str, content: str) -> None:
         """Deliver one bot-authored message back to the original topic."""
@@ -337,6 +415,18 @@ class ZulipInterface:
             )
         except ZulipError as exc:
             logger.error("Zulip reply send failed: %s", exc)
+
+    async def _send_reminder_reply(
+        self, channel_id: int, topic: str, content: str
+    ) -> None:
+        """Deliver one reminder to its destination channel/topic.
+
+        Raises on transport failure: the delivery loop counts the attempt
+        and leaves the row pending for the next poll (spc-139 policy).
+        """
+        await self._client.send_message(
+            type="stream", to=channel_id, topic=topic, content=content
+        )
 
     @property
     def _origin(self) -> str:

@@ -98,6 +98,38 @@ class SkillConfig(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class RemindersConfig(BaseModel):
+    """Per-agent reminder settings (spc-139, FR6).
+
+    One switch enables BOTH the ``reminder`` tool and the delivery loop;
+    disabled (the default) registers neither, so a default config changes
+    nothing.
+
+    Attributes:
+        enabled: Register the tool and start the delivery loop.
+        timezone: IANA zone; ``at`` times and all rendered times use it.
+            Required (nonempty) when enabled.
+        store_path: SQLite file for this agent's reminders. Defaults to
+            ``~/.sr2/state/{agent}/reminders.sqlite`` — the interface
+            substitutes ``{agent}`` with the agent name at wiring time.
+        poll_seconds: Delivery loop poll interval.
+        zulip_topic: Topic reminders are posted to on Zulip (FR9).
+    """
+
+    enabled: bool = False
+    timezone: str = ""
+    store_path: str = ""
+    poll_seconds: float = Field(default=30.0, gt=0)
+    zulip_topic: str = "reminders"
+
+    def resolved_store_path(self, agent_name: str) -> str:
+        """Store path with ``{agent}`` substituted, then expanded."""
+        from pathlib import Path
+
+        raw = self.store_path or f"~/.sr2/state/{agent_name}/reminders.sqlite"
+        return str(Path(raw.replace("{agent}", agent_name)).expanduser())
+
+
 class AgentConfig(BaseModel):
     """Agent-level configuration — spectre-owned concerns only.
 
@@ -129,6 +161,7 @@ class AgentConfig(BaseModel):
     )
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     tool_result_max_bytes: int = Field(default=65536)
+    reminders: RemindersConfig = Field(default_factory=RemindersConfig)
 
 
 class SpectreConfig(BaseModel):

@@ -119,6 +119,17 @@ class Agent:
         """Tool executor callback (delegated to Session). Kept for test backward compat."""
         return self._session._execute_tool
 
+    @property
+    def reminders(self) -> Any:
+        """The Runtime's reminders handle (None when disabled, FR6).
+
+        The owning interface reads this in ``start()`` to launch the
+        delivery loop with its own send callable, and in ``stop()`` to end
+        it. None while ``agent.reminders.enabled`` is false — nothing is
+        registered and no loop exists.
+        """
+        return self._runtime.reminders
+
     # ---- Run context delegation ----
 
     @property

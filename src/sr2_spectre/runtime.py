@@ -13,6 +13,7 @@ import weakref
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -153,6 +154,87 @@ class Runtime:
         self._plan_resolver: Any = None
         self._plan_resolver_config = None
         self._wire_plan_resolver(config)
+
+        # Reminders (spc-139, FR6): one switch registers the ``reminder``
+        # tool and the delivery loop. Disabled (the default) registers
+        # neither, so an unchanged config keeps behavior identical.
+        self.reminders_enabled: bool = False
+        self.reminders: Any = None
+        self._reminders_origin: Any = None
+        self._reminders_for(config)
+
+    def _reminders_for(self, config: SpectreConfig) -> None:
+        """Register (or skip) the reminder tool per ``agent.reminders``.
+
+        The tool is registered in the Runtime's shared registry; the
+        delivery loop is started/stopped by the owning interface (which
+        supplies the send callable), through the ``reminders`` handle.
+        Disabled is a no-op — nothing is registered and no loop exists.
+        """
+        from sr2_spectre.reminders import (
+            DeliveryLoop,
+            ReminderStore,
+            ReminderTool,
+        )
+        from zoneinfo import ZoneInfo
+
+        block = config.agent.reminders
+        agent_name = config.agent.name
+        self.reminders_enabled = bool(block.enabled)
+        if not block.enabled:
+            self.reminders = None
+            self.registry.unregister(ReminderTool.name)
+            return
+        if not block.timezone:
+            raise ValueError(
+                "agent.reminders.enabled is true but agent.reminders.timezone "
+                "is empty; an IANA timezone is required when reminders are "
+                "enabled."
+            )
+        store = ReminderStore(block.resolved_store_path(agent_name))
+        tz = ZoneInfo(block.timezone)
+        tool = ReminderTool(
+            store=store,
+            timezone=block.timezone,
+            agent_name=agent_name,
+            origin_getter=self._reminders_origin_getter,
+            topic=block.zulip_topic,
+        )
+        self.registry.register(
+            name=ReminderTool.name,
+            description=ReminderTool.description,
+            input_schema=ReminderTool.input_schema,
+            fn=tool.__call__,
+        )
+        # The delivery loop is owned by the interface (it owns the send
+        # path); the Runtime only keeps the store and settings the
+        # interface needs to build its loop.
+        self.reminders = SimpleNamespace(
+            store=store,
+            tool=tool,
+            agent_name=agent_name,
+            poll_seconds=block.poll_seconds,
+            tz=tz,
+            topic=block.zulip_topic,
+        )
+
+    def _reminders_origin_getter(self) -> Any:
+        """The current turn's reminder origin, or None outside one.
+
+        The owning interface records the origin on this Runtime right
+        before its turn runs (and clears it after), so concurrent turns in
+        different channels never record each other's origin — this reads
+        per-turn state, not shared mutable config.
+        """
+        return getattr(self, "_reminders_origin", None)
+
+    def set_reminders_origin(self, origin: Any) -> None:
+        """Record the origin of the turn about to run (interface-owned)."""
+        self._reminders_origin = origin
+
+    def clear_reminders_origin(self) -> None:
+        """Clear the turn origin after the turn ends (interface-owned)."""
+        self._reminders_origin = None
 
     def _wire_plan_resolver(self, config: SpectreConfig) -> None:
         """Build the PlanResolver and the active_frame_provider SR2 gets.
