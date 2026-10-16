@@ -104,6 +104,11 @@ class ZulipInterface:
         # Reminders (spc-139, FR6): delivery loop + the per-turn origin.
         # The origin is recorded per turn (below), never shared globally.
         self._reminders_loop: Any = None
+        # spc-143: the Runtime reload stamp the live loop was started
+        # under, or None while no loop runs. The per-message sync starts,
+        # stops or restarts the loop when the Runtime's stamp differs.
+        self._reminders_stamp: int | None = None
+        self._reminders_start_task: Any = None
         self._running = False
 
     # ---- Interface protocol --------------------------------------------------
@@ -173,7 +178,8 @@ class ZulipInterface:
         The loop claims due rows from the Runtime's store and sends them
         through the interface's own transport (the Zulip client). Disabled
         config registers no tool (Runtime) and starts no loop (here) —
-        AC3.
+        AC3. The reload stamp recorded here is what ``_sync_reminders``
+        compares against on later messages (spc-143).
         """
         reminders = getattr(agent, "reminders", None)
         if reminders is None:
@@ -190,6 +196,7 @@ class ZulipInterface:
             agent_name=reminders.agent_name,
         )
         self._reminders_loop = loop
+        self._reminders_stamp = getattr(agent, "reminders_stamped", 0)
         self._reminders_start_task = asyncio.ensure_future(loop.start())
 
     def _runtime_of(self, agent: Any) -> Any:
@@ -199,12 +206,36 @@ class ZulipInterface:
         """End the delivery loop; pending rows are left intact (FR22)."""
         loop = self._reminders_loop
         self._reminders_loop = None
+        self._reminders_stamp = None
         if loop is None:
             return
         try:
             await loop.stop()
         except asyncio.CancelledError:
             pass
+
+    async def _sync_reminders(self) -> None:
+        """Re-seat the delivery loop after a live config reload (spc-143).
+
+        Runs once per message, after the per-message ``apply_config``
+        (inside the turn lock, so restarts serialize with turns). Steady
+        state costs one int compare: no reload since the loop started (or
+        no loop and none since) leaves everything untouched (R3). Once the
+        Runtime's stamp moves, re-assert from the current handle — stop
+        any running loop and start again only if the handle exists, which
+        covers all three edges with one path: enable starts (R1), disable
+        stops (pending rows intact, R2), settings change restarts on the
+        fresh settings (R4).
+        """
+        runtime = self._runtime_of(self._agent)
+        stamp = getattr(runtime, "reminders_stamped", None) if runtime else None
+        if self._reminders_stamp is not None:
+            if stamp == self._reminders_stamp:
+                return
+            await self._stop_reminders()
+        handle = getattr(self._agent, "reminders", None)
+        if self._reminders_loop is None and handle is not None:
+            self._start_reminders(self._agent)
 
     async def run(self, agent: Any) -> None:
         """Poll the Zulip event queue until stopped."""
@@ -372,6 +403,12 @@ class ZulipInterface:
         if runtime is not None:
             runtime.set_reminders_origin(origin)
         try:
+            # Live reload happens upstream in the per-message
+            # handle_user_message path; re-seat the delivery loop here so
+            # an enable/settings change lands before this turn's tool
+            # could create a row (spc-143). The turn lock keeps restarts
+            # serialized with turns.
+            await self._sync_reminders()
             try:
                 result = await session.handle_user_message(
                     str(message.get("content", ""))

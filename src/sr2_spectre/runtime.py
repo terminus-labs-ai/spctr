@@ -158,9 +158,14 @@ class Runtime:
         # Reminders (spc-139, FR6): one switch registers the ``reminder``
         # tool and the delivery loop. Disabled (the default) registers
         # neither, so an unchanged config keeps behavior identical.
+        # _reminders_seq counts enabled re-seats (startup included);
+        # _reminders_invalidated counts the re-seats a live owning
+        # interface must react to (spc-143, apply_config only).
         self.reminders_enabled: bool = False
         self.reminders: Any = None
         self._reminders_origin: Any = None
+        self._reminders_seq: int = 0
+        self._reminders_invalidated: int = 0
         self._reminders_for(config)
 
     def _reminders_for(self, config: SpectreConfig) -> None:
@@ -217,6 +222,10 @@ class Runtime:
             tz=tz,
             topic=block.zulip_topic,
         )
+        # spc-143: every re-seat (including the startup one) bumps the
+        # sequence, so an interface holding a stale loop notices the handle
+        # behind it was rebuilt even when enabled stays true.
+        self._reminders_seq += 1
 
     def _reminders_origin_getter(self) -> Any:
         """The current turn's reminder origin, or None outside one.
@@ -235,6 +244,35 @@ class Runtime:
     def clear_reminders_origin(self) -> None:
         """Clear the turn origin after the turn ends (interface-owned)."""
         self._reminders_origin = None
+
+    @property
+    def reminders_seq(self) -> int:
+        """Count of reminder re-seats — enabled constructions, startup
+        included (spc-143).
+
+        Changes whenever ``_reminders_for`` ran with an enabled block.
+        Disable clears the handle without a seat, so this alone cannot
+        tell an interface what to do — owning interfaces compare
+        ``reminders_stamped``; this distinguishes a rebuild (R4) from a
+        first start for consumers that want it.
+        """
+        return self._reminders_seq
+
+    @property
+    def reminders_stamped(self) -> int:
+        """Count of reminder re-seats a live interface must react to.
+
+        ``apply_config`` bumps it whenever ``agent.reminders`` changed
+        (enable, disable, settings) — never for an unchanged block, so
+        the no-op reload stays a single equality check end to end (R3).
+        The owning interface compares it against the stamp taken when its
+        delivery loop started; different: re-assert the loop from the
+        current handle (start — was disabled, stop — now disabled with
+        pending rows intact, restart — new settings took effect). Startup
+        with an enabled block counts too, so ``start()`` and the sync
+        share one mechanism.
+        """
+        return self._reminders_invalidated
 
     def _wire_plan_resolver(self, config: SpectreConfig) -> None:
         """Build the PlanResolver and the active_frame_provider SR2 gets.
@@ -305,11 +343,53 @@ class Runtime:
         self._rescan_skills_if_changed(config)
 
         previous = self.config
+
+        # Reminders (spc-139, FR6, spc-143): the same switch feeds the tool
+        # AND the delivery loop, so a changed block re-runs the exact
+        # construction __init__ does — register plus rebuild the handle, or
+        # unregister plus clear it — and re-stamps, so the owning interface
+        # starts, stops or restarts its delivery loop on the next message
+        # without restarting the interface. An unchanged block costs one
+        # equality check — no re-registration, and the interface stops at
+        # one int compare. Checked BEFORE the unchanged-config early return
+        # below: a reload whose only edit is the reminders block must still
+        # re-seat, and a broken enabled block must keep raising instead of
+        # being swallowed as "no change" there.
+        reminders_changed = config.agent.reminders != previous.agent.reminders
+        if reminders_changed:
+            # A raise here (enabled with an empty timezone — the startup
+            # contract) aborts the reload; the config source keeps serving
+            # last-good config, so a broken edit retries (and keeps
+            # raising) until the file is fixed.
+            self._reminders_for(config)
+            # The seat moved: re-stamp so the owning interface re-checks
+            # its delivery loop on the next message. NOT stamped when the
+            # block is unchanged — a no-op reload must not restart a live
+            # loop (R3).
+            self._reminders_invalidated += 1
+
         if config == previous:
+            # Nothing but the reload itself happened (the reminders branch
+            # above already re-seated if the block moved).
+            if reminders_changed:
+                logger.info("Applied config reload: agent.reminders")
+                return ["agent.reminders"]
             return []
 
         self.config = config
         applied: list[str] = []
+        if reminders_changed:
+            applied.append("agent.reminders")
+            # Align the comparison base for everything below: the reminders
+            # branch already re-seated, and the remaining branches and the
+            # late early-return judge the REST of the config.
+            previous = previous.model_copy(
+                update={
+                    "agent": previous.agent.model_copy(
+                        update={"reminders": config.agent.reminders}
+                    )
+                }
+            )
 
         # Models and endpoints. The LiveLLM swap reaches sessions that are
         # already open, which is the whole point of the indirection.

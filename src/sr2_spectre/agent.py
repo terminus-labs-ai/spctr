@@ -130,6 +130,22 @@ class Agent:
         """
         return self._runtime.reminders
 
+    @property
+    def reminders_seq(self) -> int:
+        """The Runtime's reseat counter (spc-143). See Runtime.reminders_seq."""
+        return self._runtime.reminders_seq
+
+    @property
+    def reminders_stamped(self) -> int:
+        """The Runtime's reload stamp (spc-143).
+
+        The owning interface compares it against the stamp recorded when
+        its delivery loop started; when they differ, a reload happened and
+        the loop re-asserts from the current handle (start, stop, or
+        restart on fresh settings).
+        """
+        return self._runtime.reminders_stamped
+
     # ---- Run context delegation ----
 
     @property
