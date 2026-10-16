@@ -492,15 +492,20 @@ class ZulipInterface:
         message: dict[str, Any],
         batch_ids: set[int] | None = None,
         config: ZulipConfig | None = None,
+        reload: bool = True,
     ) -> None:
         """Route one eligible event without changing its batch order.
 
         ``config`` is the resolved config this message arrived on (the poll
-        loop re-reads once per batch); a direct caller that passes none
-        reloads here, so every routed message reads exactly one config.
+        loop re-reads once per batch). A direct caller that passes neither
+        *config* nor ``reload=False`` reads one here, so every routed
+        message reads exactly one config; ``reload=False`` routes against
+        the config in force (the accepted pre-routing call convention).
         """
-        if config is None:
+        if config is None and reload:
             config = self._reload_config()
+        elif config is None:
+            config = self._config
         if not self._is_allowed_message(message, config):
             return
         channel_id = message["stream_id"]
