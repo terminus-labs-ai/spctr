@@ -14,6 +14,7 @@ The tool reads it at call time, inside the turn that owns it.
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -71,6 +72,27 @@ class ChannelMatch:
 
     channel_id: int
     channel_name: str
+
+
+@dataclass(frozen=True)
+class TurnScope:
+    """What the owning interface carries for one turn (spc-141)."""
+
+    origin: ReminderOrigin
+    guild_id: int | None = None  # Discord only: the guild to resolve inside
+
+
+# This turn's reminder scope (spc-141, spec Delivery seam). The owning
+# interface sets it around its turn and the tool reads it at call time.
+# A task is the unit of isolation: concurrent tasks never share a
+# context, so two turns in different channels cannot record each other's
+# origin, with or without a lock. The interface's own setter/reset pair
+# is the only writer; the tool never writes it. Outside a turn the
+# default None leaves the tool on its origin_getter (single-session and
+# non-Discord interfaces unchanged).
+turn_scope: ContextVar[TurnScope | None] = ContextVar(
+    "spectre_reminders_turn_scope", default=None
+)
 
 
 def _match_has_channels(matches: Any) -> bool:
@@ -185,8 +207,11 @@ class ReminderTool:
         id: str | None = None,
     ) -> str:
         # FR21: without a chat turn there is no origin, and every action
-        # refuses (checked before anything else).
-        origin = self._origin_getter()
+        # refuses (checked before anything else). This turn's scope (set
+        # by the owning interface) wins over the shared getter, so an
+        # overlapping turn can never supply another channel's origin.
+        scoped = turn_scope.get()
+        origin = scoped.origin if scoped is not None else self._origin_getter()
         if origin is None:
             return NO_INTERFACE_ERROR
         if action == "create":
@@ -213,7 +238,16 @@ class ReminderTool:
             name = rest.strip()
         if self._channel_resolver is None:
             return NO_RESOLVER_SENTINEL
-        matches = await self._channel_resolver(origin.platform, name)
+        # FR10: a Discord resolver scopes its match to the origin guild;
+        # it is the only resolver that takes a scope, and the owning
+        # interface's seam names it. Others are called exactly as before.
+        if getattr(self._channel_resolver, "spectre_platform", None) == "discord":
+            scope = turn_scope.get()
+            matches = await self._channel_resolver(
+                origin.platform, name, scope
+            )
+        else:
+            matches = await self._channel_resolver(origin.platform, name)
         # Guard: a resolver returning anything but the documented match
         # shape (e.g. raw stream dicts) is a tool error, not an exception.
         if matches and not _match_has_channels(matches):

@@ -408,9 +408,31 @@ class DiscordBotAdapter:
         Returns the discord.Message object, or None if the channel
         couldn't be resolved.
         """
+        message, error = await self.try_send_message(channel_id, content)
+        if error is not None:
+            logger.error(
+                "Failed to send message to channel %d: %s", channel_id, error
+            )
+        return message
+
+    async def try_send_message(
+        self,
+        channel_id: int,
+        content: str,
+    ) -> tuple[Any, Exception | None]:
+        """Send a message and report the failure instead of swallowing it.
+
+        ``send_message`` is the chat reply path and answers None so a reply
+        failure never breaks a turn. A caller that must know whether the
+        platform accepted the send — the reminder delivery loop, which may
+        only mark a row delivered once it did (FR17) — uses this and raises
+        on the error.
+
+        Returns:
+            (message, None) on success, (None, error) on failure.
+        """
         if self._bot is None:
-            logger.error("Bot not initialized — cannot send message")
-            return None
+            return None, RuntimeError("Bot not initialized — cannot send message")
 
         channel = self._bot.get_channel(channel_id)
         if channel is None:
@@ -418,15 +440,12 @@ class DiscordBotAdapter:
             try:
                 channel = await self._bot.fetch_channel(channel_id)
             except Exception as exc:
-                logger.error("Could not fetch channel %d: %s", channel_id, exc)
-                return None
+                return None, exc
 
         try:
-            message = await channel.send(content)
-            return message
+            return await channel.send(content), None
         except Exception as exc:
-            logger.error("Failed to send message to channel %d: %s", channel_id, exc)
-            return None
+            return None, exc
 
     async def edit_message(
         self,
@@ -665,3 +684,30 @@ class DiscordBotAdapter:
             return None, None
 
         return getattr(channel, "id", None), name
+
+    def is_sendable_text_channel(self, channel: Any) -> bool:
+        """Whether a reminder may be posted to this channel object.
+
+        Threads are excluded on purpose: a reminder's destination is always a
+        text channel (FR9/AC15). The guild cache a resolver walks holds
+        threads too, so this is also what keeps a thread name out of a
+        named-channel match. A channel whose type cannot be read (discord.py
+        absent, a fake object) is refused rather than guessed at.
+        """
+        discord = _import_discord()
+        return isinstance(channel, discord.TextChannel)
+
+    def guild_channels(self, guild_id: int | None) -> list[Any]:
+        """Every cached text-channel object of one guild, or an empty list.
+
+        ``guild_id`` is the origin guild recorded on a turn (spc-141, FR10).
+        The bot is not connected, or the guild is not in its cache, answers
+        empty: a named-channel lookup then finds no match, so the tool errors
+        and stores nothing.
+        """
+        if self._bot is None or guild_id is None:
+            return []
+        for guild in getattr(self._bot, "guilds", []):
+            if getattr(guild, "id", None) == guild_id:
+                return list(getattr(guild, "text_channels", []))
+        return []
