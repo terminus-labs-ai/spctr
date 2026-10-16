@@ -41,7 +41,6 @@ from sr2_spectre.reminders import (
   ChannelMatch,
   DeliveryLoop,
   ReminderOrigin,
-  ReminderTool,
 )
 from sr2_spectre.reminders import tool as reminders_tool
 from sr2_spectre.interfaces.discord.handler import (
@@ -155,8 +154,8 @@ class DiscordInterface:
 
     await self._adapter.start()
     # Reminders (spc-141, FR6): the resolver goes on the Runtime seam at
-    # start, and reaches the tool already seated through its public
-    # attach hand-off — see _wire_reminder_channel_lookup.
+    # start, which rebuilds the tool already seated so it carries the
+    # resolver — see _wire_reminder_channel_lookup.
     self._wire_reminder_channel_lookup(agent)
     self._start_reminders(agent)
 
@@ -181,19 +180,15 @@ class DiscordInterface:
     """Hand this interface's named-channel resolver to the Runtime (spc-159).
 
     Registered once, at start, through the Runtime's public seam, which
-    passes it into every ReminderTool it builds afterwards (a live-reload
-    re-seat is born with it). The seat that already exists takes it through
-    the tool's own public attach method. The Zulip interface wires the same
+    passes it into every ReminderTool it builds (a live-reload re-seat is
+    born with it) and rebuilds the seat that already exists through that
+    same construction site (spc-166). The Zulip interface wires the same
     way, for the same reason: the Runtime builds its tool before any
     interface exists to register a resolver.
     """
     registrar = getattr(agent, "set_reminders_channel_resolver", None)
     if registrar is not None:
       registrar(self._resolve_channel)
-    reminders = getattr(agent, "reminders", None)
-    tool = getattr(reminders, "tool", None)
-    if isinstance(tool, ReminderTool):
-      tool.attach_channel_resolver(self._resolve_channel)
 
   async def _resolve_channel(
     self, platform: str, name: str, scope: Any = None

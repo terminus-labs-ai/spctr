@@ -364,7 +364,7 @@ class TestAC14NamedChannel:
         seen.append((platform, name, scope))
         return await interface._resolve_channel(platform, name, scope)
 
-    agent.reminders.tool.attach_channel_resolver(ResolverSpy())
+    agent.set_reminders_channel_resolver(ResolverSpy())
     _create_turn(agent, "#General")
     await _drive_turn(interface, _message(_thread(THREAD_ID, parent)))
     platform, name, scope = seen[0]

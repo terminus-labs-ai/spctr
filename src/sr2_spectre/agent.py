@@ -135,7 +135,9 @@ class Agent:
 
         Delegates to ``Runtime.set_reminders_channel_resolver``: the
         interface supplies its resolver once, and the Runtime passes it
-        into every ReminderTool it builds (construction and re-seat).
+        into every ReminderTool it builds (construction and re-seat),
+        rebuilding a tool that is already seated so it carries the
+        resolver too (spc-166).
         """
         self._runtime.set_reminders_channel_resolver(resolver)
 

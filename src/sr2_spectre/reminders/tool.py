@@ -110,11 +110,11 @@ def format_local_due(due_utc: datetime, tz: ZoneInfo) -> str:
 class ReminderTool:
     """The ``reminder`` tool callable, registered on the agent's registry.
 
-    spc-159 resolver ownership: the only ways a resolver reaches the
-    tool are the constructor's ``channel_resolver`` argument and the
-    public :meth:`attach_channel_resolver` landing point. Both live in
-    this class; no code outside ``reminders/`` reads or writes the
-    resolver state.
+    spc-159/spc-166 resolver ownership: the constructor's
+    ``channel_resolver`` argument is the only way a resolver reaches the
+    tool; no code outside ``reminders/`` reads or writes the resolver
+    state. A tool already seated when an interface registers its resolver
+    is rebuilt by the Runtime through its single construction site.
     """
 
     name = "reminder"
@@ -177,20 +177,6 @@ class ReminderTool:
         self._clock = clock or (lambda: datetime.now(tz=ZoneInfo("UTC")))
         self._topic = topic
         self._channel_resolver = channel_resolver
-
-    def attach_channel_resolver(self, resolver: Any) -> None:
-        """Give THIS built tool the owning interface's resolver.
-
-        The constructor is the single way a resolver is *built into* a
-        ReminderTool (spc-159); this public landing point exists because
-        the Runtime registers its tool before any interface exists to
-        register a resolver (FR6 ordering), and the registration must
-        still reach an already-built tool. Both paths write the same
-        field through ReminderTool's own code — no outside reader or
-        writer of the resolver exists, and every built tool ends with
-        the same hand-off the constructor takes.
-        """
-        self._channel_resolver = resolver
 
     def _now(self) -> datetime:
         return self._clock()

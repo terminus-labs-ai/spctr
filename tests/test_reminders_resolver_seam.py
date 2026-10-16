@@ -1,14 +1,14 @@
-"""spc-159 — one hand-off for the reminder channel resolver.
+"""spc-159/spc-166 — one hand-off for the reminder channel resolver.
 
-The resolver reaches ``ReminderTool`` through its constructor, and lands
-on an already-built tool only through the tool's own public
-``attach_channel_resolver`` — both live inside ``reminders/``. The
-owning interface registers its resolver once on the Runtime through the
-public seam (``Runtime.set_reminders_channel_resolver``, mirrored on the
-Agent facade); the Runtime passes it into every ReminderTool it builds,
-including the one rebuilt when a live reload re-seats reminders
-(spc-143). No code outside ``reminders/`` reads or assigns a private
-ReminderTool attribute.
+The resolver reaches ``ReminderTool`` through its constructor and through
+nothing else: the owning interface registers its resolver once on the
+Runtime through the public seam (``Runtime.set_reminders_channel_resolver``,
+mirrored on the Agent facade), the Runtime passes it into every
+ReminderTool it builds, including the one rebuilt when a live reload
+re-seats reminders (spc-143) — and, since spc-166, including the tool
+already seated when the resolver arrives, which the seam rebuilds through
+that same construction site. No code outside ``reminders/`` reads or
+assigns a private ReminderTool attribute.
 
 The same fakes as the other reminder tests: a recording fake Zulip
 client (no server, no credentials, no network), injected clocks, and a
@@ -352,25 +352,29 @@ class TestR1SingleConstructionPath:
         assert row_for(store_file, result)
 
         # Order B: seat first (startup with an enabled block), hand off
-        # when the interface starts — start() lands the resolver on the
-        # built tool through the public attach point; from here on every
-        # construction (re-seats included) takes the constructor path.
+        # when the interface starts — spc-166: registering the resolver
+        # rebuilds the seated tool through the Runtime's single
+        # construction site, so the current tool carries it from its
+        # constructor, and every later construction (re-seats included)
+        # takes the same path.
         store_b = tmp_path / "order-b.sqlite"
         runtime_b = _runtime(_enabled(store_b, poll_seconds=30))
         tool_b = runtime_b.reminders.tool
         assert isinstance(tool_b, ReminderTool)
-        tool_b._origin_getter = lambda: _origin()  # READBACK
         interface_b = _make_interface(tmp_path)
         await interface_b.start(FakeAgent(runtime_b))
         try:
-            result = await tool_b(
+            seated = runtime_b.reminders.tool
+            assert seated is not tool_b  # rebuilt through the seam
+            seated._origin_getter = lambda: _origin()  # READBACK
+            result = await seated(
                 action="create", text="t", in_minutes=60, channel="general"
             )
             assert row_for(store_b, result)
             # And the re-seat after registration builds WITH it too.
             runtime_b.apply_config(_enabled(store_b, poll_seconds=45))
             rebuilt = runtime_b.reminders.tool
-            assert rebuilt is not tool_b
+            assert rebuilt is not seated
         finally:
             await interface_b.stop()
 
@@ -410,9 +414,10 @@ class TestR2InterfaceRegistersViaSeam:
         self, tmp_path
     ):
         """R2: ZulipInterface.start registers its resolver on the seam
-        (never touching the tool): the already-built tool — built before
-        any resolver existed — resolves #General through the interface's
-        real resolver and the fake client, and stores the destination."""
+        (never touching the tool): the tool the seam seats in its place —
+        the startup one having been built with no resolver — resolves
+        #General through the interface's real resolver and the fake
+        client, and stores the destination."""
         store_file = tmp_path / "r.sqlite"
         runtime = _runtime(_enabled(store_file, poll_seconds=30))
         agent = FakeAgent(runtime)
@@ -427,7 +432,12 @@ class TestR2InterfaceRegistersViaSeam:
 
         await interface.start(agent)  # the seam registration under test
 
-        result = await tool(
+        # spc-166: registration seats a rebuilt tool in the old one's
+        # place; read the handle again instead of the pre-start object.
+        seated = runtime.reminders.tool
+        assert seated is not tool
+        seated._origin_getter = lambda: _origin()  # READBACK
+        result = await seated(
             action="create", text="t", in_minutes=60, channel="#General"
         )
         assert result.startswith("Reminder r1 set for"), result
@@ -576,3 +586,141 @@ class TestR4NoResolverUnchanged:
             action="create", text="t", in_minutes=60, channel="general"
         )
         assert result == "Error: named channels are not available in this build"
+
+
+# ---------------------------------------------------------------------------
+# R1/R2 (spc-166) — registering a resolver rebuilds the seated tool
+# ---------------------------------------------------------------------------
+
+
+class TestR1RegistrationRebuildsTheSeatedTool:
+    async def test_r1_registration_rebuilds_through_the_construction_site(
+        self, tmp_path
+    ):
+        """R1: with reminders enabled and the tool seated, registering a
+        resolver rebuilds it through Runtime._reminders_for — the existing
+        single construction site — and the handle's ``tool`` and the tool
+        registered under ``reminder`` in the registry both point at the
+        new one (the registry re-registration by name replaces the old
+        callable, so the next lookup — the next model turn — runs it)."""
+        store_file = tmp_path / "rebuild.sqlite"
+        runtime = _runtime(_enabled(store_file, poll_seconds=30))
+        seated = runtime.reminders.tool
+        handle_before = runtime.reminders
+        seq_before = runtime.reminders_seq
+        resolver = _resolver({"general": [(7, "general")]})
+
+        seen: list[Any] = []
+        real_for = runtime._reminders_for
+
+        def spy(config: Any) -> None:
+            seen.append(config)
+            real_for(config)
+
+        runtime._reminders_for = spy  # type: ignore[method-assign]
+        runtime.set_reminders_channel_resolver(resolver)
+
+        assert seen == [runtime.config]  # rebuilt through that one site
+        rebuilt = runtime.reminders.tool
+        assert rebuilt is not seated
+        assert runtime.reminders_seq == seq_before + 1
+        # A rebuilt handle; the store is a fresh connection on the SAME
+        # path, so the row the new tool writes is the loop's own table.
+        assert runtime.reminders.store is not handle_before.store
+        assert runtime.reminders.poll_seconds == handle_before.poll_seconds
+        assert runtime.reminders.agent_name == handle_before.agent_name
+        # The registry entry is the rebuilt tool too: registration by name
+        # replaced the old callable, so the next lookup — the next model
+        # turn — executes the tool that carries the resolver.
+        assert runtime.registry._tools["reminder"].fn.__self__ is rebuilt
+        rebuilt._origin_getter = lambda: _origin()  # READBACK
+        result = await rebuilt(
+            action="create", text="t", in_minutes=60, channel="general"
+        )
+        assert row_for(store_file, result)
+
+    async def test_r1_registered_tool_carries_the_resolver_from_the_ctor(
+        self, tmp_path
+    ):
+        """R1: the rebuild hands the resolver over through the ctor alone
+        — the old seat stays resolverless, and calling the tool registered
+        under ``reminder`` (what a model turn executes) resolves."""
+        store_file = tmp_path / "ctor.sqlite"
+        runtime = _runtime(_enabled(store_file, poll_seconds=30))
+        seated = runtime.reminders.tool
+        resolver = _resolver({"general": [(7, "general")]})
+        runtime.set_reminders_channel_resolver(resolver)
+
+        # The old tool was never touched: it still has no resolver.
+        seated._origin_getter = lambda: _origin()  # READBACK
+        assert await seated(
+            action="create", text="t", in_minutes=60, channel="general"
+        ) == "Error: named channels are not available in this build"
+
+        spec = runtime.registry._tools["reminder"]
+        tool = spec.fn.__self__  # READBACK
+        assert tool is not seated
+        tool._origin_getter = lambda: _origin()  # READBACK
+        assert row_for(store_file, await tool(action="create", text="t", in_minutes=60, channel="general"))
+
+
+class TestR2RegistrationEdges:
+    def test_r2_registration_does_not_restart_the_delivery_loop(self, tmp_path):
+        """R2: registering a resolver moves the tool but does NOT bump
+        ``reminders_stamped`` (``reminders_seq`` is the only thing that
+        moves), so an owning interface's per-message sync sees no reason
+        to restart a running delivery loop."""
+        store_file = tmp_path / "stamp.sqlite"
+        runtime = _runtime(_enabled(store_file, poll_seconds=30))
+        stamp_before = runtime.reminders_stamped
+        runtime.set_reminders_channel_resolver(_resolver({}))
+        assert runtime.reminders_stamped == stamp_before
+        # The interface's steady-state check compares exactly this int.
+        agent = FakeAgent(runtime)
+        assert agent.reminders_stamped == stamp_before
+
+    async def test_r2_no_seated_tool_builds_nothing(self, tmp_path):
+        """R2: with reminders disabled there is no tool to rebuild —
+        registration only stores the resolver and builds nothing."""
+        store_file = tmp_path / "disabled.sqlite"
+        runtime = _runtime(_config(store_file))  # disabled: nothing seated
+        assert runtime.reminders is None
+        seq_before = runtime.reminders_seq
+        resolver = _resolver({"general": [(7, "general")]})
+        runtime.set_reminders_channel_resolver(resolver)
+        assert runtime.reminders is None  # still nothing built
+        assert runtime.reminders_seq == seq_before
+        assert runtime._reminders_channel_resolver is resolver  # READBACK
+        # And the seat that arrives later is born with it.
+        runtime.apply_config(_enabled(store_file, poll_seconds=30))
+        tool = runtime.reminders.tool
+        tool._origin_getter = lambda: _origin()  # READBACK
+        assert row_for(store_file, await tool(action="create", text="t", in_minutes=60, channel="general"))
+
+    def test_r2_unknown_platform_is_ignored_without_a_rebuild(self, tmp_path, caplog):
+        """R2 (FR11): a resolver from an unknown platform is still ignored
+        with the existing warning, and the seated tool is left alone."""
+        store_file = tmp_path / "unknown.sqlite"
+        runtime = _runtime(_enabled(store_file, poll_seconds=30))
+        seated = runtime.reminders.tool
+        seq_before = runtime.reminders_seq
+
+        async def foreign(platform: str, name: str):  # no seam marker
+            return []
+
+        with caplog.at_level("WARNING"):
+            runtime.set_reminders_channel_resolver(foreign)
+
+        assert "Ignored a reminders channel resolver from unknown platform" in (
+            caplog.text
+        )
+        assert runtime.reminders.tool is seated  # not rebuilt
+        assert runtime.reminders_seq == seq_before
+        assert runtime._reminders_channel_resolver is None  # READBACK
+
+        class Unmarked:
+            pass
+
+        runtime.set_reminders_channel_resolver(Unmarked())
+        assert runtime.reminders.tool is seated
+        assert runtime._reminders_channel_resolver is None  # READBACK

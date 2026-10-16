@@ -18,7 +18,6 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -692,42 +691,53 @@ class TestAC6NamedChannel:
         finally:
             await interface.stop()
 
-    async def test_seam_named_channel_through_the_real_resolver(self, tmp_path, store):
-        """AC6 seam: start() wires the real interface resolver into the
-        tool, so a create with channel='general' stores the resolved
-        destination instead of crashing (the acceptor-repro regression)."""
-        interface = _make_interface(tmp_path)
-        tool = ReminderTool(
-            store=store,
-            timezone="America/Phoenix",
-            agent_name="miranda",
-            origin_getter=lambda: _origin(),
-            clock=_clock_at(NOW),
-        )
-        # enabled-looking stub, as probe3's real rt.reminders, so the
-        # resolver wiring under test actually runs.
-        stub = SimpleNamespace(
-            tool=tool,
-            enabled=True,
-            store=store,
-            poll_seconds=30,
-            tz=ZoneInfo("America/Phoenix"),
-            agent_name="miranda",
-        )
-        agent = SimpleNamespace(
-            reminders=stub, reminders_stamped=0, _runtime=None
-        )
-        await interface.start(agent)
-        try:
-            result = await tool(
-                action="create", text="t", in_minutes=60, channel="general"
+    async def test_seam_named_channel_through_the_real_resolver(self, tmp_path):
+        """AC6 seam (spc-166): start() registers the real interface
+        resolver on the agent's Runtime seam, which seats a tool built
+        with it in the startup tool's place — so a named-channel create
+        through the CURRENT handle stores the resolved destination
+        instead of crashing (the acceptor-repro regression).
+
+        The agent is a real Agent over a real Runtime (as ``FakeAgent``
+        in tests/test_reminders_resolver_seam.py mirrors), so the tool
+        under test is the Runtime's own seat and the resolver can only
+        have arrived through the seam and its constructor. The store file
+        is the assertions' store; the clock is pinned by READBACK so the
+        reply text is exact (the Runtime seat runs the real clock).
+        """
+        store_file = tmp_path / "r-seam.sqlite"
+        agent = _make_agent(
+            _agent_config(
+                reminders={
+                    "enabled": True,
+                    "timezone": "America/Phoenix",
+                    "store_path": str(store_file),
+                    "poll_seconds": 30,
+                }
             )
-            assert result == "Reminder r1 set for Thu 2026-10-15 16:00 MST in #general"
-            row = store.get("r1")
-            assert row.dest_channel_id == "7"
-            assert row.dest_channel_name == "general"
+        )
+        try:
+            interface = _make_interface(tmp_path)
+            tool_before = agent.reminders.tool
+            await interface.start(agent)
+            try:
+                # spc-166: registration rebuilt the seat through the
+                # Runtime's single construction site.
+                tool = agent.reminders.tool
+                assert tool is not tool_before
+                tool._origin_getter = lambda: _origin()  # READBACK
+                tool._clock = _clock_at(NOW)  # READBACK
+                result = await tool(
+                    action="create", text="t", in_minutes=60, channel="general"
+                )
+                assert result == "Reminder r1 set for Thu 2026-10-15 16:00 MST in #general"
+                row = ReminderStore(store_file).get("r1")
+                assert row.dest_channel_id == "7"
+                assert row.dest_channel_name == "general"
+            finally:
+                await interface.stop()
         finally:
-            await interface.stop()
+            await agent.aclose()
 
     async def test_malformed_resolver_result_is_a_tool_error(self, store):
         """A resolver yielding raw dicts returns the guard error, stores

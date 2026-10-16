@@ -52,7 +52,6 @@ from sr2_spectre.reminders import (
     ChannelMatch,
     DeliveryLoop,
     ReminderOrigin,
-    ReminderTool,
 )
 
 logger = logging.getLogger(__name__)
@@ -208,23 +207,18 @@ class ZulipInterface:
         platform lookup is interface knowledge, so the owning Zulip
         interface registers its resolver here once at start (spc-140,
         FR10/FR11) through the Runtime's public seam
-        (``set_reminders_channel_resolver``); the Runtime passes it into
-        every ReminderTool it constructs — the startup seat and each
-        live-reload re-seat (spc-143) alike.
+        (``set_reminders_channel_resolver``). The seam is the only
+        hand-off: the Runtime passes the resolver into every ReminderTool
+        it constructs — the startup seat and each live-reload re-seat
+        (spc-143) alike — and rebuilds the tool already seated through
+        that same construction site (spc-166).
 
         The interface never reads or writes ReminderTool state (spc-159):
-        an already-built tool — the Runtime seats one before any
-        interface exists, or a test stub agent carries no seam — takes
-        the resolver through the tool's own public attach method, the
-        single landing point that mirrors the constructor argument.
+        the constructor is a resolver's only way into a tool.
         """
         registrar = getattr(agent, "set_reminders_channel_resolver", None)
         if registrar is not None:
             registrar(self._resolve_channel)
-        reminders = getattr(agent, "reminders", None)
-        tool = getattr(reminders, "tool", None)
-        if isinstance(tool, ReminderTool):
-            tool.attach_channel_resolver(self._resolve_channel)
 
     async def _resolve_channel(self, platform: str, name: str) -> list[Any]:
         """FR10: exact case-insensitive Zulip channel match by name.
