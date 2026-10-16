@@ -82,14 +82,12 @@ class TurnScope:
     guild_id: int | None = None  # Discord only: the guild to resolve inside
 
 
-# This turn's reminder scope (spc-141, spec Delivery seam). The owning
-# interface sets it around its turn and the tool reads it at call time.
-# A task is the unit of isolation: concurrent tasks never share a
-# context, so two turns in different channels cannot record each other's
-# origin, with or without a lock. The interface's own setter/reset pair
-# is the only writer; the tool never writes it. Outside a turn the
-# default None leaves the tool on its origin_getter (single-session and
-# non-Discord interfaces unchanged).
+# This turn's reminder scope (spc-141, spec Delivery seam): set by the
+# owning interface around its turn, read by the tool at call time. A task
+# is the unit of isolation — concurrent tasks never share a context — so
+# two turns in different channels cannot record each other's origin, with
+# or without a lock. Outside a turn the default None leaves the tool on its
+# origin_getter, so every other interface is unchanged.
 turn_scope: ContextVar[TurnScope | None] = ContextVar(
     "spectre_reminders_turn_scope", default=None
 )
@@ -207,9 +205,9 @@ class ReminderTool:
         id: str | None = None,
     ) -> str:
         # FR21: without a chat turn there is no origin, and every action
-        # refuses (checked before anything else). This turn's scope (set
-        # by the owning interface) wins over the shared getter, so an
-        # overlapping turn can never supply another channel's origin.
+        # refuses (checked before anything else). This turn's scope wins
+        # over the shared getter, so an overlapping turn can never supply
+        # another channel's origin.
         scoped = turn_scope.get()
         origin = scoped.origin if scoped is not None else self._origin_getter()
         if origin is None:

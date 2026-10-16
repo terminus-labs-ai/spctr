@@ -420,13 +420,12 @@ class DiscordBotAdapter:
         channel_id: int,
         content: str,
     ) -> tuple[Any, Exception | None]:
-        """Send a message and report the failure instead of swallowing it.
+        """Send a message, reporting a failure instead of swallowing it.
 
-        ``send_message`` is the chat reply path and answers None so a reply
-        failure never breaks a turn. A caller that must know whether the
-        platform accepted the send — the reminder delivery loop, which may
-        only mark a row delivered once it did (FR17) — uses this and raises
-        on the error.
+        ``send_message`` answers None so a reply failure never breaks a
+        turn; a caller that must know whether the platform accepted the
+        send — the reminder loop, which may only mark a row delivered once
+        it did (FR17) — uses this.
 
         Returns:
             (message, None) on success, (None, error) on failure.
@@ -688,11 +687,10 @@ class DiscordBotAdapter:
     def is_sendable_text_channel(self, channel: Any) -> bool:
         """Whether a reminder may be posted to this channel object.
 
-        Threads are excluded on purpose: a reminder's destination is always a
-        text channel (FR9/AC15). The guild cache a resolver walks holds
-        threads too, so this is also what keeps a thread name out of a
-        named-channel match. A channel whose type cannot be read (discord.py
-        absent, a fake object) is refused rather than guessed at.
+        Threads are excluded on purpose: a reminder's destination is always
+        a text channel (FR9/AC15), and the guild cache a resolver walks
+        holds threads too. A channel whose type cannot be read is refused
+        rather than guessed at.
         """
         discord = _import_discord()
         return isinstance(channel, discord.TextChannel)
@@ -700,10 +698,8 @@ class DiscordBotAdapter:
     def guild_channels(self, guild_id: int | None) -> list[Any]:
         """Every cached text-channel object of one guild, or an empty list.
 
-        ``guild_id`` is the origin guild recorded on a turn (spc-141, FR10).
-        The bot is not connected, or the guild is not in its cache, answers
-        empty: a named-channel lookup then finds no match, so the tool errors
-        and stores nothing.
+        Not connected, or the guild is not in the cache, answers empty: a
+        named-channel lookup then finds no match (FR10).
         """
         if self._bot is None or guild_id is None:
             return []

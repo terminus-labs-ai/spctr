@@ -180,16 +180,12 @@ class DiscordInterface:
   def _wire_reminder_channel_lookup(self, agent: Any) -> None:
     """Hand this interface's named-channel resolver to the Runtime (spc-159).
 
-    The Runtime builds the tool before any interface exists (FR6); which
-    guild's channels to search, and which of them are postable, is Discord
-    knowledge — so the owning interface registers its resolver here, once,
-    at start, through the Runtime's public seam
-    (``set_reminders_channel_resolver``). The Runtime passes it into every
-    ReminderTool it constructs afterwards: each live-reload re-seat
-    (spc-143) is born with it. The seat that already exists — the Runtime
-    built it before this registration — takes the resolver through the
-    tool's own public attach method, the single landing point mirroring
-    the constructor argument (the Zulip interface wires the same way).
+    Registered once, at start, through the Runtime's public seam, which
+    passes it into every ReminderTool it builds afterwards (a live-reload
+    re-seat is born with it). The seat that already exists takes it through
+    the tool's own public attach method. The Zulip interface wires the same
+    way, for the same reason: the Runtime builds its tool before any
+    interface exists to register a resolver.
     """
     registrar = getattr(agent, "set_reminders_channel_resolver", None)
     if registrar is not None:
@@ -204,16 +200,14 @@ class DiscordInterface:
   ) -> list[Any]:
     """FR10: exact case-insensitive match among the ORIGIN guild's channels.
 
-    Only postable text channels match — never a thread, whose name would
-    otherwise pass for a channel and which a reminder must never be posted
-    to (AC15). ``scope`` is this turn's reminder scope, handed to every
-    Discord resolver by the tool; its guild is what scopes the search (the
-    origin alone names no guild). No guild, or no postable match, answers
-    "no match": the tool reports the name not found and stores nothing.
+    Only postable text channels match — never a thread, which a reminder
+    must never be posted to (AC15). ``scope`` is this turn's reminder scope,
+    handed to every Discord resolver by the tool; its guild scopes the
+    search, since the origin alone names no guild. No guild or no match
+    answers "no match": the tool errors and stores nothing.
 
-    ``spectre_platform`` marks this callable as Discord's resolver for the
-    Runtime seam (spc-159): the seam only accepts a resolver that names
-    the platform it resolves on (FR11).
+    ``spectre_platform`` is the seam's marker that this resolver resolves
+    Discord names (spc-159, FR11).
     """
     if platform != "discord" or self._adapter is None or scope is None:
       return []
@@ -244,20 +238,17 @@ class DiscordInterface:
   ) -> ReminderOrigin:
     """The origin of THIS turn, built from this message alone.
 
-    Two concurrent turns in different channels must never record each
-    other's origin (spec, Delivery seam): everything here is read from the
-    message being handled — its own channel object, its own author, the
-    area derived from its own channel — and held for exactly this turn.
-    The turn lock is deliberately not relied on for that isolation.
+    Everything is read from the message being handled — its own channel
+    object, its own author, the area derived from its own channel — so two
+    concurrent turns cannot read each other's (spec, Delivery seam).
 
     FR9: the destination defaults to the origin's channel ROOT — for a
     message in a thread, that thread's parent channel — so the reminder
     lands where the conversation lives, not in a thread.
     """
     channel_id, channel_name = area
-    # Root of the destination: the area-bearing channel — for a thread,
-    # its parent. The fallbacks address a channel with no area (a DM) by
-    # its own ID rather than by an empty string.
+    # The area-bearing channel — a thread's parent. The fallbacks address a
+    # channel with no area (a DM) by its own ID rather than an empty string.
     root_id = channel_id if channel_id is not None else getattr(channel_obj, "id", None)
     root_name = (
       channel_name
@@ -279,12 +270,10 @@ class DiscordInterface:
       topic="",
     )
 
-  # Opening and closing the scope happen in these two helpers, never
-  # inline: a ``ContextVar.set`` in a function's own frame makes that
-  # function a coroutine whose context is attached to whoever awaits it
-  # (PEP 550), which would run the turn against the caller's context
-  # instead of the task's. Set here, unawaited, the scope belongs to the
-  # task — and to no other.
+  # The scope is set and reset in these two helpers, never inline: a
+  # ``ContextVar.set`` in a function's own frame makes that function a
+  # coroutine whose context attaches to whoever awaits it (PEP 550), which
+  # would run a turn against the caller's context instead of the task's.
   def _reminders_scope_open(self, message: Any, channel_obj: Any, area: Any) -> None:
     reminders_tool.turn_scope.set(
       reminders_tool.TurnScope(
@@ -317,7 +306,7 @@ class DiscordInterface:
     return "open"
 
   def _reminders_turn_close(self, token: Any) -> None:
-    """Undo one turn's reminder scope (paired with _reminders_turn_open)."""
+    """Undo the scope _reminders_turn_open set, in this task only."""
     if token is None:
       return
     self._reminders_scope_close()
@@ -325,12 +314,10 @@ class DiscordInterface:
   def _start_reminders(self, agent: Any) -> None:
     """Start the delivery loop when this agent has a reminders handle.
 
-    The handle is what the Runtime seats when ``agent.reminders.enabled``
-    is on (store plus settings); disabled is None and no loop is built
-    (FR6). The loop claims due rows from that store and posts them through
-    this interface's adapter, so a reminder travels the same Discord send
-    path as a reply. The reload stamp recorded here is what
-    ``_sync_reminders`` compares against afterwards.
+    Disabled is None and no loop is built (FR6). The loop claims due rows
+    from the Runtime's store and posts them through this interface's
+    adapter, so a reminder travels the same send path as a reply. The stamp
+    recorded here is what ``_sync_reminders`` compares against afterwards.
     """
     reminders = getattr(agent, "reminders", None)
     if reminders is None:
@@ -338,9 +325,8 @@ class DiscordInterface:
     if not asyncio.iscoroutinefunction(
       getattr(reminders.store, "reset_sending_to_pending_async", None)
     ):
-      # The store is what the loop runs on: a stand-in agent (tests) or a
-      # handle without one is not a reminders store, and building a loop
-      # on it would fail unseen, inside the loop's own task.
+      # A handle without a usable store is not a reminders handle (a test
+      # stand-in): building a loop on it would fail inside the loop's task.
       return
 
     async def send(channel_id: str, topic: str, content: str) -> None:
@@ -379,13 +365,11 @@ class DiscordInterface:
   async def _sync_reminders(self) -> None:
     """Re-seat the delivery loop after a live config reload (spc-143).
 
-    Runs once per message, after ``_apply_agent_config`` (so a tool this
-    turn's model calls is the re-seated one). Steady state costs one int
-    compare: no reload since the loop started leaves everything untouched.
-    Once the Runtime's stamp moves, re-assert from the current handle —
-    stop any running loop and start again only if the handle exists — so
-    enable starts, disable stops with pending rows intact, and a settings
-    change restarts on the fresh settings.
+    Runs once per message, after ``_apply_agent_config``, so the tool this
+    turn's model calls is the re-seated one. Steady state costs one int
+    compare. Once the Runtime's stamp moves, re-assert from the current
+    handle: enable starts, disable stops with pending rows intact, a
+    settings change restarts on the fresh settings.
     """
     runtime = self._runtime_of(self._agent)
     stamp = getattr(runtime, "reminders_stamped", None) if runtime else None
@@ -588,10 +572,8 @@ class DiscordInterface:
 
     self._stamp_area(channel_obj)
 
-    # Reminders (spc-141): carry this turn's origin and guild for exactly
-    # this turn, and follow a live-reload re-seat (spc-143) before the
-    # turn's tool could create a row. A task runs one message, so the
-    # scope this opens is this message's alone — see _reminders_turn_open.
+    # Reminders (spc-141): carry this turn's origin and guild, and follow a
+    # live-reload re-seat (spc-143) before this turn's tool can create a row.
     reminders_token = self._reminders_turn_open(
       message, channel_obj, self._adapter.area_channel(channel_obj)
     )
