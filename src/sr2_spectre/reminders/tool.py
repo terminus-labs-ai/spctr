@@ -1,8 +1,9 @@
-"""The ``reminder`` tool (spc-139; FR7 in this slice: ``create`` only).
+"""The ``reminder`` tool (spc-139 create/deliver; spc-140 completes FR7).
 
 One tool with an ``action`` field rather than three tools (NFR Tool schema
-economy). ``list`` and ``cancel`` arrive in spc-140 alongside named-channel
-resolution (FR10/FR11); until then they return explicit tool errors.
+economy). ``create`` optionally resolves a same-platform named channel
+(FR10/FR11) through an injected resolver; ``list`` and ``cancel`` follow
+FR19/FR20.
 
 Origin plumbing: the owning interface records each turn's origin —
 platform, channel, requester and mention — on its ``Agent`` under
@@ -14,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sr2_spectre.reminders.store import Reminder, ReminderStore
@@ -23,6 +24,24 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger(__name__)
 
 LATE_SUFFIX_THRESHOLD = timedelta(minutes=5)  # FR15
+
+# FR11: a channel naming the other platform is refused outright.
+CROSS_PLATFORM_ERROR = "Error: Cross-platform reminders are not supported"
+
+# FR21: no chat origin (an interface that is neither Discord nor Zulip).
+NO_INTERFACE_ERROR = "Error: Reminders need the Discord or Zulip interface"
+
+# FR11: the platform a channel name may prefix ("discord#x", "zulip#x").
+_PLATFORM_PREFIXES = ("discord", "zulip")
+
+# FR19: list shows pending rows plus failed ones within this window.
+FAILED_LIST_WINDOW = timedelta(days=7)
+LIST_TEXT_LIMIT = 80
+
+
+def _ts(value: datetime) -> str:
+    """Timestamp in the store's UTC ISO text form (window compares only)."""
+    return value.astimezone(timezone.utc).isoformat()
 
 
 @dataclass(frozen=True)
@@ -79,6 +98,7 @@ class ReminderTool:
         origin_getter: Any,
         clock: Any = None,
         topic: str = "reminders",
+        channel_resolver: Any = None,
     ) -> None:
         """
         Args:
@@ -92,6 +112,10 @@ class ReminderTool:
                 for tests; defaults to the real clock.
             topic: The Zulip topic reminders are posted to
                 (``reminders.zulip_topic``, default ``reminders`` — FR9).
+            channel_resolver: ``async (platform, name) -> list`` of matches,
+                each with ``channel_id`` and ``channel_name`` attributes
+                (FR10). Supplied by the owning interface; None rejects
+                every named-channel create.
         """
         self._store = store
         self._tz = ZoneInfo(timezone)
@@ -99,6 +123,7 @@ class ReminderTool:
         self._origin_getter = origin_getter
         self._clock = clock or (lambda: datetime.now(tz=ZoneInfo("UTC")))
         self._topic = topic
+        self._channel_resolver = channel_resolver
 
     def _now(self) -> datetime:
         return self._clock()
@@ -112,13 +137,41 @@ class ReminderTool:
         channel: str | None = None,
         id: str | None = None,
     ) -> str:
-        if action != "create":
-            # spc-140 ships list/cancel; spc-140 also ships named channels.
-            return (
-                "Error: only the 'create' action is available in this build. "
-                "Named channels are not supported yet."
-            )
-        return await self._create(text, in_minutes, at, channel)
+        # FR21: without a chat turn there is no origin, and every action
+        # refuses (checked before anything else).
+        origin = self._origin_getter()
+        if origin is None:
+            return NO_INTERFACE_ERROR
+        if action == "create":
+            return await self._create(text, in_minutes, at, channel, origin)
+        if action == "list":
+            return await self._list(origin)
+        if action == "cancel":
+            return await self._cancel(id, origin)
+        return f"Error: unknown action '{action}'"
+
+    async def _resolve_channel(
+        self, channel: str, origin: ReminderOrigin
+    ) -> Any:
+        """FR10/FR11: resolve a named destination. Returns an error string
+        or the single match."""
+        name = channel.strip()
+        if name.startswith("#"):
+            name = name[1:].strip()
+        prefix, sep, rest = name.partition("#")
+        if sep and prefix.lower() in _PLATFORM_PREFIXES:
+            # FR11: naming the other platform is refused before lookup.
+            if prefix.lower() != origin.platform:
+                return CROSS_PLATFORM_ERROR
+            name = rest.strip()
+        if self._channel_resolver is None:
+            return "Error: named channels are not available in this build"
+        matches = await self._channel_resolver(origin.platform, name)
+        if not matches:
+            return f"Error: channel '{channel}' not found on this platform"
+        if len(matches) > 1:
+            return f"Error: channel '{channel}' is ambiguous on this platform"
+        return matches[0]
 
     async def _create(
         self,
@@ -126,11 +179,8 @@ class ReminderTool:
         in_minutes: int | None,
         at: str | None,
         channel: str | None,
+        origin: ReminderOrigin,
     ) -> str:
-        if channel is not None:
-            # spc-140: named channels. Error text per the spc-139 contract.
-            return "Error: Named channels are not supported yet"
-
         # FR8 validation — each failure returns a tool error, stores nothing.
         if text is None or not text.strip():
             return "Error: 'text' is required and must not be empty"
@@ -159,9 +209,15 @@ class ReminderTool:
         if due <= now + timedelta(minutes=1):
             return "Error: the due time must be at least one minute ahead"
 
-        origin = self._origin_getter()
-        if origin is None:
-            return "Error: Reminders need the Discord or Zulip interface"
+        # FR10: resolve a named destination after validation; nothing is
+        # stored when the name does not resolve to exactly one channel.
+        dest_channel_id, dest_channel_name = origin.channel_id, origin.channel_name
+        if channel is not None:
+            resolved = await self._resolve_channel(channel, origin)
+            if isinstance(resolved, str):
+                return resolved
+            dest_channel_id = str(resolved.channel_id)
+            dest_channel_name = str(resolved.channel_name)
 
         row = Reminder(
             id="r0",  # placeholder; the store assigns the real r<N>
@@ -170,8 +226,8 @@ class ReminderTool:
             requester_id=origin.requester_id,
             requester_mention=origin.requester_mention,
             origin_channel_id=origin.channel_id,
-            dest_channel_id=origin.channel_id,
-            dest_channel_name=origin.channel_name,
+            dest_channel_id=dest_channel_id,
+            dest_channel_name=dest_channel_name,
             dest_topic=self._topic,
             text=text,
             due_at=due,
@@ -188,5 +244,55 @@ class ReminderTool:
         # FR12: ID, local due time (weekday, date, time, zone), destination.
         return (
             f"Reminder {new_id} set for "
-            f"{format_local_due(due, self._tz)} in #{origin.channel_name}"
+            f"{format_local_due(due, self._tz)} in #{dest_channel_name}"
         )
+
+    async def _list(self, origin: ReminderOrigin) -> str:
+        """FR19: this agent's pending reminders plus failed ones within
+        FAILED_LIST_WINDOW, sorted by due time.
+
+        The failed-row window is dated by ``due_at``: the FR18 retries
+        leave it at the row's final attempt time, so no separate
+        failed_at column is needed.
+        """
+        now = self._now()
+        cutoff = _ts(now - FAILED_LIST_WINDOW)
+        with self._store._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM reminders "
+                "WHERE agent = ? AND (status = 'pending' "
+                "       OR (status = 'failed' AND due_at >= ?)) "
+                "ORDER BY due_at, id",
+                (origin.agent, cutoff),
+            ).fetchall()
+        if not rows:
+            return "No reminders."
+        lines = []
+        for r in rows:
+            reminder = self._store._row_to_reminder(r)
+            text = reminder.text
+            if len(text) > LIST_TEXT_LIMIT:
+                text = text[: LIST_TEXT_LIMIT - 1] + "…"
+            lines.append(
+                f"{reminder.id} {format_local_due(reminder.due_at, self._tz)} "
+                f"#{reminder.dest_channel_name} {reminder.status} {text}"
+            )
+        return "\n".join(lines)
+
+    async def _cancel(self, id: str | None, origin: ReminderOrigin) -> str:
+        """FR20: a pending reminder becomes cancelled and is never sent."""
+        if not id:
+            return "Error: 'id' is required for cancel"
+        row = await self._store.get_async(id)
+        if row is None or row.agent != origin.agent:
+            return f"Error: reminder '{id}' not found"
+        if row.status == "sending":
+            # The claim is in flight; the send completes (FR20).
+            return f"Reminder {id} is already being delivered"
+        if not await self._store.cancel_async(id):
+            return (
+                f"Error: reminder {id} is {row.status}, only pending "
+                "reminders can be cancelled"
+            )
+        logger.info("reminder cancel: agent=%s id=%s", self._agent_name, id)
+        return f"Cancelled reminder {id}"

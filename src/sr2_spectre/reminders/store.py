@@ -218,6 +218,57 @@ class ReminderStore:
                 (error, reminder_id),
             )
 
+    def due_with_retry(
+        self,
+        reminder_id: str,
+        error: str,
+        next_due: datetime,
+        max_attempts: int = 3,
+    ) -> str:
+        """One failed send with the bounded retry policy (FR18, spc-140).
+
+        Until the attempt budget runs out the row returns to ``pending``
+        with its due time moved to ``next_due``; once this failure
+        reaches ``max_attempts`` it is terminal ``failed``. Returns the
+        new status.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE reminders SET attempts = attempts + 1, last_error = ? "
+                "WHERE id = ?",
+                (error, reminder_id),
+            )
+            row = conn.execute(
+                "SELECT attempts FROM reminders WHERE id = ?", (reminder_id,)
+            ).fetchone()
+            attempts = row["attempts"] if row else max_attempts
+            if attempts >= max_attempts:
+                conn.execute(
+                    "UPDATE reminders SET status = 'failed' WHERE id = ?",
+                    (reminder_id,),
+                )
+                return "failed"
+            conn.execute(
+                "UPDATE reminders SET status = 'pending', due_at = ? WHERE id = ?",
+                (_ts(next_due), reminder_id),
+            )
+            return "pending"
+
+    def cancel(self, reminder_id: str) -> bool:
+        """Atomically move one row ``pending`` → ``cancelled`` (FR20).
+
+        Returns True only if this call won before a sender claimed it;
+        any other status (sending, delivered, failed, cancelled) is left
+        untouched.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE reminders SET status = 'cancelled' "
+                "WHERE id = ? AND status = 'pending'",
+                (reminder_id,),
+            )
+            return cursor.rowcount == 1
+
     def reset_sending_to_pending(self) -> int:
         """On start, return every ``sending`` row to ``pending`` (FR17/FR22)."""
         with self._connect() as conn:
@@ -267,11 +318,25 @@ class ReminderStore:
     async def claim_async(self, reminder_id: str) -> bool:
         return await asyncio.to_thread(self.claim, reminder_id)
 
+    async def get_async(self, reminder_id: str) -> Reminder | None:
+        return await asyncio.to_thread(self.get, reminder_id)
+
     async def mark_delivered_async(self, reminder_id: str, at: datetime) -> None:
         await asyncio.to_thread(self.mark_delivered, reminder_id, at)
 
     async def mark_failed_attempt_async(self, reminder_id: str, error: str) -> None:
         await asyncio.to_thread(self.mark_failed_attempt, reminder_id, error)
+
+    async def due_with_retry_async(
+        self, reminder_id: str, error: str, next_due: datetime,
+        max_attempts: int = 3,
+    ) -> str:
+        return await asyncio.to_thread(
+            self.due_with_retry, reminder_id, error, next_due, max_attempts
+        )
+
+    async def cancel_async(self, reminder_id: str) -> bool:
+        return await asyncio.to_thread(self.cancel, reminder_id)
 
     async def reset_sending_to_pending_async(self) -> int:
         return await asyncio.to_thread(self.reset_sending_to_pending)

@@ -48,7 +48,7 @@ from sr2_spectre.interfaces.zulip.config import (
     is_configured_no_area_channel,
     validate_no_area_only_routing,
 )
-from sr2_spectre.reminders import DeliveryLoop, ReminderOrigin
+from sr2_spectre.reminders import DeliveryLoop, ReminderOrigin, ReminderTool
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +109,10 @@ class ZulipInterface:
         # stops or restarts the loop when the Runtime's stamp differs.
         self._reminders_stamp: int | None = None
         self._reminders_start_task: Any = None
+        # Channel name → ID from the latest registration snapshot
+        # (spc-140, FR10); empty when the snapshot is unavailable or
+        # malformed, and a name then lives only in a later refresh.
+        self._channel_names: dict[str, int] = {}
         self._running = False
 
     # ---- Interface protocol --------------------------------------------------
@@ -130,6 +134,8 @@ class ZulipInterface:
         self._queue_id: str = str(registration["queue_id"])
         self._last_event_id: int = int(registration["last_event_id"])
         self._bot_ids = self._read_bot_ids(registration)
+        self._channel_names = self._read_channel_names(registration)
+        self._wire_reminder_channel_lookup(agent)
         self._start_reminders(agent)
         self._running = True
         logger.info(
@@ -171,6 +177,71 @@ class ZulipInterface:
             self._client = None
 
     # ---- reminders (spc-139, FR6/FR22) --------------------------------------
+
+    def _read_channel_names(self, registration: dict[str, Any]) -> dict[str, int]:
+        """Name → channel ID from the registration snapshot (spc-140, FR10).
+
+        Per the register-queue contract the snapshot is complete and
+        authoritative at startup: ``streams`` carries every public channel.
+        A missing or malformed array is tolerated — named-channel
+        resolution then finds no match and the tool errors, which stores
+        nothing.
+        """
+        names: dict[str, int] = {}
+        for entry in registration.get("streams") or []:
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                channel_id = entry.get("stream_id")
+                if isinstance(name, str) and isinstance(channel_id, int):
+                    names[name.lower()] = channel_id
+        return names
+
+    def _wire_reminder_channel_lookup(self, agent: Any) -> None:
+        """Give the reminder tool this interface's named-channel resolver.
+
+        The Runtime builds the tool before any interface exists (FR6); the
+        platform lookup is interface knowledge, so the owning Zulip
+        interface supplies it here at start (spc-140, FR10/FR11).
+        """
+        reminders = getattr(agent, "reminders", None)
+        if reminders is None:
+            return
+        tool = getattr(reminders, "tool", None)
+        if isinstance(tool, ReminderTool):
+            tool._channel_resolver = self._resolve_channel
+
+    async def _resolve_channel(self, platform: str, name: str) -> list[Any]:
+        """FR10: exact case-insensitive Zulip channel match by name.
+
+        ``can_send`` (the server's per-channel post permission) filters
+        channels the bot cannot post to. A failed lookup answers "no
+        match": the tool reports not found and stores nothing.
+        """
+        if platform != "zulip" or self._client is None:
+            return []
+        try:
+            response = await self._client.get_streams()
+        except ZulipError as exc:
+            logger.error("Zulip channel lookup failed: %s", exc)
+            return []
+        matches = []
+        for entry in response.get("streams") or []:
+            if (
+                isinstance(entry, dict)
+                and isinstance(entry.get("name"), str)
+                and isinstance(entry.get("stream_id"), int)
+                and entry["name"].lower() == name.lower()
+                and entry.get("can_send", True)
+            ):
+                matches.append(entry)
+        return matches
+
+    def _channel_display_name(self, channel_id: int) -> str:
+        """Human name for an ID (origin plumbing, FR12); ID if unknown."""
+        for name, cid in self._channel_names.items():
+            if cid == channel_id:
+                return name
+        return str(channel_id)
 
     def _start_reminders(self, agent: Any) -> None:
         """Start the delivery loop when ``agent.reminders.enabled`` is on.
@@ -440,7 +511,7 @@ class ZulipInterface:
             requester_id=str(sender_id) if sender_id is not None else "",
             requester_mention=f"@{sender_id}" if sender_id is not None else "@user",
             channel_id=str(channel_id),
-            channel_name=str(channel_id),
+            channel_name=self._channel_display_name(channel_id),
             topic=topic,
         )
 

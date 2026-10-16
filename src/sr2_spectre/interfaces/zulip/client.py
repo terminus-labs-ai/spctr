@@ -215,6 +215,15 @@ class ZulipClient:
             },
         )
 
+    async def get_streams(self) -> dict[str, Any]:
+        """List the realm's streams (GET /api/v1/streams).
+
+        Returns the protocol dict; the answer's ``streams`` key holds the
+        stream list. Reminder channel-name resolution (FR10) is the first
+        consumer.
+        """
+        return await self._request("GET", "/streams")
+
     async def send_message(
         self,
         *,

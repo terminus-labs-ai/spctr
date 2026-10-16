@@ -4,9 +4,10 @@ Polls the store every ``poll_seconds``, claims each due row
 (``pending`` → ``sending`` in one transaction, so one reminder is sent by
 one sender only), sends it through the owning interface's send callable,
 and marks it delivered only after the platform accepts the send. A send
-that raises leaves the row ``pending`` with ``attempts`` incremented and a
-WARNING log (the bounded retry policy arrives in spc-140); other due rows
-in the same poll are still processed.
+that raises follows the FR18 bounded retry policy: the due time moves to
++1 minute, then +5 minutes, and the third failure marks the row
+``failed`` with an ERROR log (spc-140); other due rows in the same poll
+are still processed.
 
 ``start()`` first returns every ``sending`` row to ``pending`` (a crash
 between send and mark must not lose the reminder — FR17) and the first
@@ -19,7 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
@@ -29,6 +30,11 @@ from sr2_spectre.reminders.store import Reminder, ReminderStore
 logger = logging.getLogger(__name__)
 
 LATE_SUFFIX = "(due {due}, sent late)"
+
+# FR18: a failed send is retried at +1 and +5 minutes; the third failure
+# marks the reminder failed.
+RETRY_DELAYS = (timedelta(minutes=1), timedelta(minutes=5))
+MAX_SEND_ATTEMPTS = len(RETRY_DELAYS) + 1
 
 
 def format_reminder_message(reminder: Reminder, tz: ZoneInfo, now: datetime) -> str:
@@ -111,15 +117,28 @@ class DeliveryLoop:
                     reminder.dest_channel_id, reminder.dest_topic, content
                 )
             except Exception as exc:  # noqa: BLE001 — any send failure is retried
-                # spc-139 policy: leave pending, count the attempt, warn.
-                await self._store.mark_failed_attempt_async(
-                    reminder.id, str(exc)
+                # FR18 policy (spc-140): due +1 min, then +5 min; the third
+                # failure marks the row failed with an ERROR log naming the
+                # ID and the error.
+                status = await self._store.due_with_retry_async(
+                    reminder.id,
+                    str(exc),
+                    reminder.due_at
+                    + RETRY_DELAYS[min(reminder.attempts, len(RETRY_DELAYS) - 1)],
+                    max_attempts=MAX_SEND_ATTEMPTS,
                 )
-                logger.warning(
-                    "reminder send failed (will retry next poll): "
-                    "agent=%s id=%s error=%s",
-                    self._agent_name, reminder.id, exc,
-                )
+                if status == "failed":
+                    logger.error(
+                        "reminder failed after %d attempts: "
+                        "agent=%s id=%s error=%s",
+                        MAX_SEND_ATTEMPTS, self._agent_name, reminder.id, exc,
+                    )
+                else:
+                    logger.warning(
+                        "reminder send failed (retrying later): "
+                        "agent=%s id=%s error=%s",
+                        self._agent_name, reminder.id, exc,
+                    )
                 continue
             late = now - reminder.due_at > LATE_SUFFIX_THRESHOLD
             await self._store.mark_delivered_async(reminder.id, self._now())
