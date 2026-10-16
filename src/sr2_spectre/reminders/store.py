@@ -21,6 +21,35 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
+# The reminder column set, named once (spc-144). ``_SCHEMA``, the SELECTs
+# (``due``, ``get``) and the INSERT (``create``) all derive from this
+# single definition, and rows map back to ``Reminder`` by column name via
+# ``sqlite3.Row`` — adding a column means editing one tuple (plus its
+# CREATE TABLE clause).
+_COLUMNS = (
+    "id",
+    "agent",
+    "platform",
+    "requester_id",
+    "requester_mention",
+    "origin_channel_id",
+    "dest_channel_id",
+    "dest_channel_name",
+    "dest_topic",
+    "text",
+    "due_at",
+    "created_at",
+    "delivered_at",
+    "status",
+    "attempts",
+    "last_error",
+)
+
+# Columns ``create`` inserts: the whole set except ``delivered_at``.
+# ``status`` and ``attempts`` carry the fixed 'pending'/0 of the
+# pre-spc-144 INSERT and ``last_error`` starts NULL.
+_INSERT_COLUMNS = tuple(c for c in _COLUMNS if c != "delivered_at")
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS reminders (
   id TEXT PRIMARY KEY,
@@ -90,6 +119,8 @@ class ReminderStore:
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path, timeout=10.0)
+        # Map rows to Reminder by column name, never by position (spc-144).
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 10000")
         conn.execute(_SCHEMA)
         conn.commit()
@@ -116,11 +147,8 @@ class ReminderStore:
                         continue
             new_id = f"r{next_n}"
             conn.execute(
-                """INSERT INTO reminders (
-                    id, agent, platform, requester_id, requester_mention,
-                    origin_channel_id, dest_channel_id, dest_channel_name,
-                    dest_topic, text, due_at, created_at, status, attempts
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0)""",
+                f"""INSERT INTO reminders ({", ".join(_INSERT_COLUMNS)})
+                    VALUES ({", ".join(['?'] * len(_INSERT_COLUMNS))})""",
                 (
                     new_id,
                     row.agent,
@@ -134,6 +162,9 @@ class ReminderStore:
                     row.text,
                     _ts(row.due_at),
                     _ts(row.created_at),
+                    "pending",
+                    0,
+                    None,
                 ),
             )
         return new_id
@@ -144,10 +175,7 @@ class ReminderStore:
         placeholders = ", ".join("?" for _ in statuses)
         with self._connect() as conn:
             rows = conn.execute(
-                f"""SELECT id, agent, platform, requester_id, requester_mention,
-                        origin_channel_id, dest_channel_id, dest_channel_name,
-                        dest_topic, text, due_at, created_at, delivered_at,
-                        status, attempts, last_error
+                f"""SELECT {", ".join(_COLUMNS)}
                     FROM reminders
                     WHERE status IN ({placeholders}) AND due_at <= ?
                     ORDER BY due_at, id""",
@@ -201,10 +229,7 @@ class ReminderStore:
     def get(self, reminder_id: str) -> Reminder | None:
         with self._connect() as conn:
             row = conn.execute(
-                """SELECT id, agent, platform, requester_id, requester_mention,
-                        origin_channel_id, dest_channel_id, dest_channel_name,
-                        dest_topic, text, due_at, created_at, delivered_at,
-                        status, attempts, last_error
+                f"""SELECT {", ".join(_COLUMNS)}
                     FROM reminders WHERE id = ?""",
                 (reminder_id,),
             ).fetchone()
@@ -218,25 +243,17 @@ class ReminderStore:
         return {status: n for status, n in rows}
 
     @staticmethod
-    def _row_to_reminder(row: tuple) -> Reminder:
-        return Reminder(
-            id=row[0],
-            agent=row[1],
-            platform=row[2],
-            requester_id=row[3],
-            requester_mention=row[4],
-            origin_channel_id=row[5],
-            dest_channel_id=row[6],
-            dest_channel_name=row[7],
-            dest_topic=row[8],
-            text=row[9],
-            due_at=datetime.fromisoformat(row[10]),
-            created_at=datetime.fromisoformat(row[11]),
-            delivered_at=None if row[12] is None else datetime.fromisoformat(row[12]),
-            status=row[13],
-            attempts=row[14],
-            last_error=row[15],
-        )
+    def _row_to_reminder(row: sqlite3.Row) -> Reminder:
+        """Build a ``Reminder`` from a row, keyed by column name (spc-144).
+
+        Timestamp columns parse from their stored ISO text; every other
+        column maps straight onto the field of the same name.
+        """
+        values = dict(row)
+        for ts_field in ("due_at", "created_at", "delivered_at"):
+            raw = values[ts_field]
+            values[ts_field] = None if raw is None else datetime.fromisoformat(raw)
+        return Reminder(**values)
 
     # ---- async facades (run the sync core off the event loop) --------------
 
