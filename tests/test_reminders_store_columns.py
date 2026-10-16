@@ -112,10 +112,10 @@ def test_r1_queries_derive_from_columns(store):
     inside = insert_sqls[0].split("INSERT INTO reminders", 1)[1]
     inside = inside.split("VALUES")[0]
     listed = [c.strip() for c in inside.strip().strip("()").split(",")]
-    assert listed == [c for c in _COLUMNS if c != "delivered_at"]
+    assert listed == [c for c in _COLUMNS if c not in ("delivered_at", "next_attempt_at")]
     # One bound placeholder per listed column.
     values_part = insert_sqls[0].split("VALUES", 1)[1]
-    assert values_part.count("?") == len(_COLUMNS) - 1
+    assert values_part.count("?") == len(_COLUMNS) - 2
 
 
 # ---------------------------------------------------------------------------

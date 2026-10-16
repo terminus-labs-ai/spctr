@@ -765,11 +765,11 @@ class TestAC9RetryPolicy:
 
         def stored_due():
             with store._connect() as conn:
-                return conn.execute(
-                    "SELECT due_at FROM reminders WHERE id = 'r1'"
-                ).fetchone()[0]
+                return tuple(conn.execute(
+                    "SELECT due_at, next_attempt_at FROM reminders WHERE id = 'r1'"
+                ).fetchone())
 
-        original_due = stored_due()
+        original_due, original_next = stored_due()
         dues = []
         with caplog.at_level(logging.INFO, logger="sr2_spectre.reminders.loop"):
             for offset in range(14):  # NOW .. NOW + 6.5 min
@@ -790,12 +790,14 @@ class TestAC9RetryPolicy:
         # the attempt at due+1min, i.e. the poll at NOW+62s; that attempt
         # re-seats to (due+1min)+5min = due+6min — the retry schedule is
         # cumulative, matching "retried 1 minute and then 5 minutes later".
-        assert dues[0] != original_due and dues[1] == dues[0]
-        assert _dt_from(dues[0]) == NOW + timedelta(minutes=1)
-        changed = [d for d in dues if d != dues[0]]
-        assert changed and dues.index(changed[0]) == 2  # poll at NOW+62s
+        assert all(due == original_due for due, _ in dues)  # due_at never moves
+        nexts = [nxt for _, nxt in dues]
+        assert nexts[0] != original_next and nexts[1] == nexts[0]
+        assert _dt_from(nexts[0]) == NOW + timedelta(minutes=1)
+        changed = [n for n in nexts if n != nexts[0]]
+        assert changed and nexts.index(changed[0]) == 2  # poll at NOW+62s
         assert _dt_from(changed[0]) == NOW + timedelta(minutes=6)
-        assert all(d == changed[0] for d in changed)  # terminal: no re-seat
+        assert all(n == changed[0] for n in changed)  # terminal: no re-seat
         errors = [r for r in caplog.records
                   if r.levelno == logging.ERROR and "r1" in r.getMessage()]
         assert errors and "boom" in errors[-1].getMessage()
