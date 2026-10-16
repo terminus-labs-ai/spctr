@@ -178,9 +178,14 @@ def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
 
 
 async def _pending_row(
-    store_path: Path, text: str, reminder_id: str = "r1"
+    store_path: Path, text: str, reminder_id: str = "r1", due_at: datetime | None = None
 ) -> None:
-    """Insert one pending row directly, due 10 minutes before NOW."""
+    """Insert one pending row directly (bypasses tool validation).
+
+    ``due_at`` defaults to 10 minutes before NOW (delivered on the first
+    poll of a loop frozen at NOW); pass an explicit future time for rows
+    that must stay pending.
+    """
     store = ReminderStore(store_path)
     store.create(
         Reminder(
@@ -194,8 +199,8 @@ async def _pending_row(
             dest_channel_name="sr2",
             dest_topic="reminders",
             text=text,
-            due_at=NOW - timedelta(minutes=10),
-            created_at=NOW - timedelta(days=1),
+            due_at=due_at if due_at is not None else NOW - timedelta(minutes=10),
+            created_at=NOW,
             delivered_at=None,
             status="pending",
             attempts=0,
@@ -348,26 +353,8 @@ class TestR2DisableOnReload:
             assert interface._reminders_loop is not None
             # A pending row a year ahead: the running loop must never
             # touch it, and it must survive the disable exactly as saved.
-            store = ReminderStore(store_file)
-            store.create(
-                Reminder(
-                    id="r1",
-                    agent="miranda",
-                    platform="zulip",
-                    requester_id="8",
-                    requester_mention="@8",
-                    origin_channel_id="42",
-                    dest_channel_id="42",
-                    dest_channel_name="sr2",
-                    dest_topic="reminders",
-                    text="survivor",
-                    due_at=NOW + timedelta(days=365),
-                    created_at=NOW,
-                    delivered_at=None,
-                    status="pending",
-                    attempts=0,
-                    last_error=None,
-                )
+            await _pending_row(
+                store_file, "survivor", due_at=NOW + timedelta(days=365)
             )
             before = _statuses(store_file)
             assert before == {"r1": "pending"}
