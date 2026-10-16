@@ -202,18 +202,29 @@ class ZulipInterface:
         return names
 
     def _wire_reminder_channel_lookup(self, agent: Any) -> None:
-        """Give the reminder tool this interface's named-channel resolver.
+        """Hand this interface's named-channel resolver to the Runtime.
 
         The Runtime builds the tool before any interface exists (FR6); the
         platform lookup is interface knowledge, so the owning Zulip
-        interface supplies it here at start (spc-140, FR10/FR11).
+        interface registers its resolver here once at start (spc-140,
+        FR10/FR11) through the Runtime's public seam
+        (``set_reminders_channel_resolver``); the Runtime passes it into
+        every ReminderTool it constructs — the startup seat and each
+        live-reload re-seat (spc-143) alike.
+
+        The interface never reads or writes ReminderTool state (spc-159):
+        an already-built tool — the Runtime seats one before any
+        interface exists, or a test stub agent carries no seam — takes
+        the resolver through the tool's own public attach method, the
+        single landing point that mirrors the constructor argument.
         """
+        registrar = getattr(agent, "set_reminders_channel_resolver", None)
+        if registrar is not None:
+            registrar(self._resolve_channel)
         reminders = getattr(agent, "reminders", None)
-        if reminders is None:
-            return
         tool = getattr(reminders, "tool", None)
         if isinstance(tool, ReminderTool):
-            tool._channel_resolver = self._resolve_channel
+            tool.attach_channel_resolver(self._resolve_channel)
 
     async def _resolve_channel(self, platform: str, name: str) -> list[Any]:
         """FR10: exact case-insensitive Zulip channel match by name.
@@ -221,6 +232,10 @@ class ZulipInterface:
         ``can_send`` (the server's per-channel post permission) filters
         channels the bot cannot post to. A failed lookup answers "no
         match": the tool reports not found and stores nothing.
+
+        ``spectre_platform`` marks this callable as the Zulip platform's
+        resolver for the Runtime seam (spc-159): the seam only accepts a
+        resolver that names the platform it resolves on (FR11).
         """
         if platform != "zulip" or self._client is None:
             return []
@@ -245,6 +260,10 @@ class ZulipInterface:
                     )
                 )
         return matches
+
+    # The seam's platform marker (spc-159): set on the underlying
+    # function, so every bound ``interface._resolve_channel`` carries it.
+    _resolve_channel.spectre_platform = "zulip"
 
     def _channel_display_name(self, channel_id: int) -> str:
         """Human name for an ID (origin plumbing, FR12); ID if unknown."""

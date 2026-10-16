@@ -37,6 +37,11 @@ _PLATFORM_PREFIXES = ("discord", "zulip")
 # FR10: the guard message when a resolver yields an unusable match.
 MALFORMED_RESOLVER_ERROR = "Error: channel lookup returned an unusable result"
 
+# FR10/FR21: the tool's answer to a named-channel create when this build
+# has no resolver (no owning interface registered one). Extracted for the
+# tests to pin the exact text; behavior unchanged.
+NO_RESOLVER_SENTINEL = "Error: named channels are not available in this build"
+
 # FR19: list shows pending rows plus failed ones within this window.
 FAILED_LIST_WINDOW = timedelta(days=7)
 LIST_TEXT_LIMIT = 80
@@ -83,7 +88,14 @@ def format_local_due(due_utc: datetime, tz: ZoneInfo) -> str:
 
 
 class ReminderTool:
-    """The ``reminder`` tool callable, registered on the agent's registry."""
+    """The ``reminder`` tool callable, registered on the agent's registry.
+
+    spc-159 resolver ownership: the only ways a resolver reaches the
+    tool are the constructor's ``channel_resolver`` argument and the
+    public :meth:`attach_channel_resolver` landing point. Both live in
+    this class; no code outside ``reminders/`` reads or writes the
+    resolver state.
+    """
 
     name = "reminder"
     description = (
@@ -133,7 +145,9 @@ class ReminderTool:
                 (``reminders.zulip_topic``, default ``reminders`` — FR9).
             channel_resolver: ``async (platform, name) -> list`` of matches,
                 each with ``channel_id`` and ``channel_name`` attributes
-                (FR10). Supplied by the owning interface; None rejects
+                (FR10). The constructor is the only construction path for
+                the resolver (spc-159): the owning interface registers it
+                on the Runtime, which passes it in here. None rejects
                 every named-channel create.
         """
         self._store = store
@@ -143,6 +157,20 @@ class ReminderTool:
         self._clock = clock or (lambda: datetime.now(tz=ZoneInfo("UTC")))
         self._topic = topic
         self._channel_resolver = channel_resolver
+
+    def attach_channel_resolver(self, resolver: Any) -> None:
+        """Give THIS built tool the owning interface's resolver.
+
+        The constructor is the single way a resolver is *built into* a
+        ReminderTool (spc-159); this public landing point exists because
+        the Runtime registers its tool before any interface exists to
+        register a resolver (FR6 ordering), and the registration must
+        still reach an already-built tool. Both paths write the same
+        field through ReminderTool's own code — no outside reader or
+        writer of the resolver exists, and every built tool ends with
+        the same hand-off the constructor takes.
+        """
+        self._channel_resolver = resolver
 
     def _now(self) -> datetime:
         return self._clock()
@@ -184,7 +212,7 @@ class ReminderTool:
                 return CROSS_PLATFORM_ERROR
             name = rest.strip()
         if self._channel_resolver is None:
-            return "Error: named channels are not available in this build"
+            return NO_RESOLVER_SENTINEL
         matches = await self._channel_resolver(origin.platform, name)
         # Guard: a resolver returning anything but the documented match
         # shape (e.g. raw stream dicts) is a tool error, not an exception.

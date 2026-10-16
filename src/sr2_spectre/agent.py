@@ -130,6 +130,15 @@ class Agent:
         """
         return self._runtime.reminders
 
+    def set_reminders_channel_resolver(self, resolver: Any) -> None:
+        """Register the owning interface's named-channel resolver (spc-159).
+
+        Delegates to ``Runtime.set_reminders_channel_resolver``: the
+        interface supplies its resolver once, and the Runtime passes it
+        into every ReminderTool it builds (construction and re-seat).
+        """
+        self._runtime.set_reminders_channel_resolver(resolver)
+
     @property
     def reminders_seq(self) -> int:
         """The Runtime's reseat counter (spc-143). See Runtime.reminders_seq."""

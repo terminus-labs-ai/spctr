@@ -163,6 +163,14 @@ class Runtime:
         # interface must react to (spc-143, apply_config only).
         self.reminders_enabled: bool = False
         self.reminders: Any = None
+        # spc-159: the owning interface's named-channel resolver (FR10),
+        # supplied once through set_reminders_channel_resolver. Every
+        # ReminderTool construction (startup and live-reload re-seat,
+        # spc-143) passes it through the constructor; a tool already
+        # built when the resolver arrives gets it through the tool's
+        # own public attach method. None until an owning interface
+        # registers one.
+        self._reminders_channel_resolver: Any = None
         self._reminders_origin: Any = None
         self._reminders_seq: int = 0
         self._reminders_invalidated: int = 0
@@ -204,6 +212,11 @@ class Runtime:
             agent_name=agent_name,
             origin_getter=self._reminders_origin_getter,
             topic=block.zulip_topic,
+            # spc-159: the constructor is the resolver's only
+            # construction path; the Runtime passes the seam's resolver
+            # (or None, until an owning interface registers one) here —
+            # every re-seat rebuild carries it too.
+            channel_resolver=self._reminders_channel_resolver,
         )
         self.registry.register(
             name=ReminderTool.name,
@@ -226,6 +239,36 @@ class Runtime:
         # sequence, so an interface holding a stale loop notices the handle
         # behind it was rebuilt even when enabled stays true.
         self._reminders_seq += 1
+
+    def set_reminders_channel_resolver(self, resolver: Callable) -> None:
+        """Register the owning interface's named-channel resolver (spc-159).
+
+        The single construction path for the FR10 resolver: the interface
+        that owns the platform calls this once (at start), and every
+        ReminderTool this Runtime builds — the startup one and each
+        live-reload re-seat (spc-143) — receives it through its
+        constructor. ``resolver`` is ``async (platform, name) -> list``
+        of matches, each carrying ``channel_id`` and ``channel_name``
+        (the FR10 match shape).
+
+        Platform-gated per FR11: only a chat platform's resolver is
+        kept; any other interface's is ignored, so a non-Discord/
+        non-Zulip interface behaves exactly as with no resolver at all.
+        A tool built before this call (the Runtime seats its tool at
+        startup, before any interface exists) takes the resolver via the
+        owning interface's single public attach hand-off; every tool
+        built from here on — re-seats included — gets it from the
+        constructor.
+        """
+        platform = getattr(resolver, "spectre_platform", None)
+        if platform not in ("discord", "zulip"):
+            logger.warning(
+                "Ignored a reminders channel resolver from unknown platform "
+                "%r (expected 'discord' or 'zulip')",
+                platform,
+            )
+            return
+        self._reminders_channel_resolver = resolver
 
     def _reminders_origin_getter(self) -> Any:
         """The current turn's reminder origin, or None outside one.
