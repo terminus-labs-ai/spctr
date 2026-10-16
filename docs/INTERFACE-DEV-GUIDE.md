@@ -275,7 +275,10 @@ class MyBotInterface:
 ```
 
 Build the source with `cli.build_spectre_config_source(config_path, cwd,
-initial)`, which re-runs the same 4-tier resolution as startup.
+initial)`, which re-runs the same 4-tier resolution as startup. The Zulip
+front door does exactly that: `cli.run_async` hands a
+`ZulipConfigView(build_spectre_config_source(...))` to `ZulipInterface`,
+which reloads once per inbound event batch.
 
 ### Rules
 

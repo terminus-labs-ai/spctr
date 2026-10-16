@@ -461,9 +461,16 @@ class ZulipInterface:
         return pinned
 
     def _is_allowed_message(
-        self, message: dict[str, Any], config: ZulipConfig
+        self, message: dict[str, Any], config: ZulipConfig | None = None
     ) -> bool:
-        """Recognize a human trigger in a configured channel on this read."""
+        """Recognize a human trigger in a configured channel on this read.
+
+        ``config`` is the resolved config the batch arrived on; a caller
+        that passes none (an existing single-caller convention) reads the
+        config in force.
+        """
+        if config is None:
+            config = self._config
         if message.get("type") != "stream":
             return False
         channel_id = message.get("stream_id")
@@ -520,7 +527,7 @@ class ZulipInterface:
                 entry = await self._ensure_session(
                     frame_id, channel_id, topic, message_id,
                     self._admitted_ids | {message_id} | (batch_ids or set()),
-                    area,
+                    area=area,
                 )
                 if entry is not None:
                     self._admitted_ids.add(message_id)
@@ -537,7 +544,7 @@ class ZulipInterface:
         topic: str,
         trigger_id: int,
         candidate_ids: set[int],
-        area: str | None,
+        area: str | None = None,
     ) -> tuple[Any, list[Any]] | None:
         """Probe cold-topic history and create the Session for a new topic.
 
@@ -557,7 +564,8 @@ class ZulipInterface:
         ``area`` is the channel's mapped area on this message's config read:
         a name is carried into the Session's RunContext for the existing
         resolvers, and ``""`` is the explicit no-area — never collapsed,
-        never inferred from the working directory.
+        never inferred from the working directory. Omitted (``None``) by a
+        caller with no routing read, which behaves as the explicit no-area.
         """
         try:
             response = await self._client.get_topic_messages(channel_id, topic)

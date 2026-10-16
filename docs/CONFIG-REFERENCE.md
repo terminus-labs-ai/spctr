@@ -515,7 +515,8 @@ queue — it fetches no history and makes no model request.
 - Only allowed human users in configured channels trigger turns;
   bots (identified by the registration realm metadata, since message
   events carry no bot flag) and unconfigured channels are ignored without
-  model work.
+  model work. A channel added to `channels` on disk admits its next
+  message without a restart; removing one stops admission the same way.
 - A configured channel routes to its mapped area through the existing
   resolvers; `""` stays the explicit no-area. An unmapped channel is never
   admitted, and routing never consults the channel name or the working
@@ -524,7 +525,9 @@ queue — it fetches no history and makes no model request.
 - Each (channel, exact topic) owns one Session; the frame identity carries
   the agent, the resolved server origin, the channel ID and the escaped
   topic. The Session's run context carries the area from the config read
-  the trigger arrived on.
+  the trigger arrived on; a Session created earlier keeps the area it was
+  created with (the mapping governs each topic when it is created, not
+  retroactively).
 - Model turns are serialized globally; concurrent messages in the same
   topic share one Session and keep ordered history, and distinct topics
   stay isolated.
