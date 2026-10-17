@@ -481,7 +481,7 @@ zulip:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `zuliprc` | str | required | Path to the bot zuliprc (`[zulip]`: `email`, `key`, `site`) |
+| `zuliprc` | str | required | Path to the bot zuliprc (`[api]`: `email`, `key`, `site` — the standard format Zulip downloads; the historical `[zulip]` section is also accepted, with `[api]` preferred when both are present) |
 | `api_url` | str or null | `null` | Optional API origin override (loopback/testing); the zuliprc `site` stays canonical |
 | `allowed_user_ids` | list[int] | `[]` | Human user IDs that may trigger a turn (empty = nobody; bot messages never trigger) |
 | `channels` | dict[int, str] | `{}` | Channel ID to area identity; `""` means explicitly no area. Keys are **integer** IDs — a quoted `"42"` is rejected |

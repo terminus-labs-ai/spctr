@@ -66,14 +66,23 @@ class ZulipCredentials:
     site: str
 
 
-def load_zulip_credentials(path: str) -> ZulipCredentials:
-    """Read a bot zuliprc (``[zulip]`` section: email, key, site).
+# Accepted zuliprc sections, in priority order (spc-177): ``[api]`` is the
+# standard format Zulip itself downloads; ``[zulip]`` is the historical
+# workaround. When both are present, ``[api]`` wins.
+_ACCEPTED_SECTIONS = ("api", "zulip")
 
-    Failures are explicit and carry no file contents, so a partial secret
-    can never leak through an exception message or log line. The file is
-    opened directly rather than through ``ConfigParser.read`` because that
-    helper swallows unreadable files (a missing file and a file you cannot
-    read both come back as an empty result).
+
+def load_zulip_credentials(path: str) -> ZulipCredentials:
+    """Read a bot zuliprc (``[api]`` or ``[zulip]`` section: email, key, site).
+
+    Zulip's own downloaded zuliprcs use an ``[api]`` section; the historical
+    workaround used ``[zulip]``. Both are accepted, with ``[api]`` preferred
+    when both are present. Failures are explicit and carry no file contents,
+    so a partial secret can never leak through an exception message or log
+    line. The file is opened directly rather than through
+    ``ConfigParser.read`` because that helper swallows unreadable files (a
+    missing file and a file you cannot read both come back as an empty
+    result).
     """
     try:
         with open(path, "rb") as handle:
@@ -98,24 +107,29 @@ def load_zulip_credentials(path: str) -> ZulipCredentials:
         raise ZulipCredentialError(
             f"Malformed zuliprc file: {path}"
         ) from None
-    if not parser.has_section("zulip"):
+    section = next(
+        (name for name in _ACCEPTED_SECTIONS if parser.has_section(name)),
+        None,
+    )
+    if section is None:
         raise ZulipCredentialError(
-            f"zuliprc {path} has no [zulip] section"
+            f"zuliprc {path} has no accepted section "
+            f"({', '.join(f'[{name}]' for name in _ACCEPTED_SECTIONS)})"
         )
     missing = [
         field
         for field in _REQUIRED_FIELDS
-        if not parser.get("zulip", field, fallback="").strip()
+        if not parser.get(section, field, fallback="").strip()
     ]
     if missing:
         raise ZulipCredentialError(
-            f"zuliprc {path} is missing required field(s): "
-            f"{', '.join(missing)}"
+            f"zuliprc {path} is missing required field(s) in "
+            f"[{section}]: {', '.join(missing)}"
         )
     return ZulipCredentials(
-        email=parser.get("zulip", "email").strip(),
-        api_key=parser.get("zulip", "key").strip(),
-        site=parser.get("zulip", "site").strip().rstrip("/"),
+        email=parser.get(section, "email").strip(),
+        api_key=parser.get(section, "key").strip(),
+        site=parser.get(section, "site").strip().rstrip("/"),
     )
 
 
