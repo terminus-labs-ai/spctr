@@ -15,12 +15,16 @@ work exactly like a normal shell session:
 Slash commands (identical semantics to the TUI):
   /quit /exit /reset /help /tools /history /save [path] /load <path>
 
+Ctrl-C during a turn stops the turn (twice in quick succession force-quits);
+Ctrl-C at the prompt abandons the half-typed input.
+
 Usage: sr2-spectre config.yaml --interface repl
 """
 from __future__ import annotations
 
 import asyncio
 import os
+import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
@@ -67,7 +71,9 @@ Commands:
 Multiline input: Enter sends the message, Shift+Enter (or Alt+Enter) adds a
 newline.  Shift+Enter only reaches the REPL if your terminal is set to send a
 distinct sequence for it; Alt+Enter always works.
-Ctrl-D or /quit exits.  History is persisted between runs.
+Ctrl-C during a turn stops the turn (press twice to force quit).  Ctrl-C at
+the prompt abandons the current input.  Ctrl-D or /quit exits.  History is
+persisted between runs.
 """
 
 _COMMANDS = ["/quit", "/exit", "/reset", "/help", "/tools", "/history", "/save", "/load"]
@@ -269,8 +275,14 @@ class REPLInterface:
             # wrap in asyncio.to_thread: that would freeze Ctrl-C handling.)
             try:
                 text = await session.prompt_async()
-            except (EOFError, KeyboardInterrupt):
+            except EOFError:
                 break
+            except KeyboardInterrupt:
+                # Ctrl-C at the prompt only abandons the half-typed input;
+                # /quit or Ctrl-D exits.  (prompt_toolkit consumes Ctrl-C as
+                # a key while prompting, so no SIGINT reaches the loop here.)
+                self.console.print("[dim]^C[/dim]")
+                continue
 
             if not text or not text.strip():
                 continue
@@ -284,9 +296,79 @@ class REPLInterface:
                 if not self._running:
                     break
             else:
-                await self._stream_turn(agent, text)
+                await self._run_turn(agent, text)
 
         self.console.print("[dim]Bye.[/dim]")
+
+    # ------------------------------------------------------------------
+    # Cancellable turn
+    # ------------------------------------------------------------------
+
+    async def _run_turn(self, agent: "Agent", text: str) -> None:
+        """Run one streamed turn as a task cancellable with Ctrl-C.
+
+        prompt_toolkit only owns the keyboard while prompting, so there is
+        no way to type a /stop command mid-turn.  While the prompt is idle
+        the terminal sends Ctrl-C as SIGINT instead, which is handled here:
+        the first press cancels the agent turn and returns to the prompt; a
+        second press restores Python's default Ctrl-C handling and re-raises,
+        tearing the process down — the escape hatch for a wedged tool call.
+
+        ``loop.add_signal_handler`` is POSIX-only.  Where it is unavailable
+        (Windows), the handler install is skipped and a KeyboardInterrupt
+        escaping the await still cancels the turn; if it escapes the loop
+        entirely, Ctrl-C behaves as it always did there: hard exit.
+        """
+        turn = asyncio.create_task(self._stream_turn(agent, text))
+        loop = asyncio.get_running_loop()
+        previous_handler = signal.getsignal(signal.SIGINT)
+        stop_requested = False
+
+        def _on_sigint() -> None:
+            nonlocal stop_requested
+            if stop_requested:
+                # Second press: force quit.  Restore the default interrupt
+                # handler *before* re-raising so asyncio.run still cancels
+                # and drains pending tasks instead of dying on SIG_DFL.
+                signal.signal(signal.SIGINT, signal.default_int_handler)
+                signal.raise_signal(signal.SIGINT)
+                return
+            stop_requested = True
+            self.console.print(
+                "[yellow]⏹ Stopping turn…[/yellow] "
+                "[dim](Ctrl-C again to force quit)[/dim]"
+            )
+            turn.cancel()
+
+        installed = False
+        try:
+            loop.add_signal_handler(signal.SIGINT, _on_sigint)
+            installed = True
+        except (NotImplementedError, RuntimeError, ValueError):
+            pass
+
+        try:
+            await turn
+        except asyncio.CancelledError:
+            # _stream_turn already committed the partial text.
+            self.console.print("[yellow]Turn stopped.[/yellow]")
+        except KeyboardInterrupt:
+            # Fallback for when the loop signal handler could not be
+            # installed and the interrupt landed in this coroutine instead.
+            if not turn.done():
+                turn.cancel()
+                try:
+                    await turn
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    pass
+            self.console.print("[yellow]Turn stopped.[/yellow]")
+        finally:
+            if installed:
+                loop.remove_signal_handler(signal.SIGINT)
+                # remove_signal_handler restores SIG_DFL; put back whatever
+                # disposition the process had before the turn (normally
+                # Python's default KeyboardInterrupt handler).
+                signal.signal(signal.SIGINT, previous_handler)
 
     # ------------------------------------------------------------------
     # Streaming turn
@@ -387,6 +469,12 @@ class REPLInterface:
                             self.console.print(f"[green]✓ {ev.name} done[/green]")
                     elif isinstance(ev, AgentDone):
                         total_tool_calls = ev.tool_calls_executed
+            except asyncio.CancelledError:
+                # Ctrl-C stopped this turn (see _run_turn): commit whatever
+                # already streamed so scrollback keeps the partial answer,
+                # then unwind.
+                _commit(live)
+                raise
             except Exception as exc:
                 stream_exc = exc
                 self.console.print(f"[red]Stream error: {exc}[/red]")

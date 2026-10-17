@@ -398,3 +398,138 @@ async def test_run_loop_processes_commands_and_text(make_mock_agent, monkeypatch
     out = _output(sink)
     assert "Available tools" in out          # /tools ran
     assert 'say "hi"' in agent._stream_call_log  # text turn dispatched with quotes
+
+
+# ---------------------------------------------------------------------------
+# Ctrl-C turn cancellation (_run_turn) — spc: REPL stop
+# ---------------------------------------------------------------------------
+
+def _blocking_agent(stall_s: float = 0.3):
+    """Mock agent whose stream yields one delta, signals *started*, then blocks.
+
+    A second signal *release* event is unused; the stream stalls inside an
+    except-CancelledError handler for *stall_s* so tests can act while the
+    turn is mid-cancellation (e.g. land a second Ctrl-C before the handler
+    in _run_turn is torn down).
+    """
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from sr2_spectre.events import AgentTextDelta
+
+    started = asyncio.Event()
+
+    async def _stream(_text: str):
+        yield AgentTextDelta(text="Partial answer")
+        started.set()
+        try:
+            await asyncio.sleep(60)
+        except asyncio.CancelledError:
+            await asyncio.sleep(stall_s)
+            raise
+
+    agent = MagicMock()
+    agent.stream_message = _stream
+    return agent, started
+
+
+@pytest.mark.asyncio
+async def test_stream_turn_cancellation_commits_partial_text() -> None:
+    """A cancelled _stream_turn keeps already-streamed text in scrollback."""
+    import asyncio
+
+    agent, started = _blocking_agent(stall_s=0.0)
+    iface, sink = _make_repl_with_sink()
+
+    task = asyncio.create_task(iface._stream_turn(agent, "hi"))
+    await asyncio.wait_for(started.wait(), timeout=2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert "Partial answer" in _output(sink)
+
+
+@pytest.mark.asyncio
+async def test_run_turn_ctrl_c_stops_turn_and_restores_handler() -> None:
+    """SIGINT during a turn cancels it, prints a notice, and returns cleanly."""
+    import asyncio
+    import os
+    import signal
+
+    previous = signal.getsignal(signal.SIGINT)
+    agent, started = _blocking_agent(stall_s=0.0)
+    iface, sink = _make_repl_with_sink()
+
+    task = asyncio.create_task(iface._run_turn(agent, "hi"))
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    os.kill(os.getpid(), signal.SIGINT)
+    await asyncio.wait_for(task, timeout=5)
+
+    out = _output(sink)
+    assert "Stopping turn" in out
+    assert "Turn stopped." in out
+    assert "Partial answer" in out  # partial text committed, not wiped
+    # The signal disposition is exactly what it was before the turn.
+    assert signal.getsignal(signal.SIGINT) is previous
+
+
+@pytest.mark.asyncio
+async def test_run_turn_second_ctrl_c_forces_quit(monkeypatch) -> None:
+    """A second SIGINT restores the default handler and re-raises immediately.
+
+    ``signal.raise_signal`` is patched so the test survives the forced quit;
+    what we assert is that the force-raise actually happens while the turn
+    is still unwinding from the first press.
+    """
+    import asyncio
+    import os
+    import signal
+
+    raised: list[int] = []
+    monkeypatch.setattr(signal, "raise_signal", lambda sig: raised.append(sig))
+
+    previous = signal.getsignal(signal.SIGINT)
+    agent, started = _blocking_agent(stall_s=0.3)
+    iface, sink = _make_repl_with_sink()
+
+    task = asyncio.create_task(iface._run_turn(agent, "hi"))
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    os.kill(os.getpid(), signal.SIGINT)
+    await asyncio.sleep(0.05)
+    os.kill(os.getpid(), signal.SIGINT)
+    await asyncio.wait_for(task, timeout=5)
+
+    assert raised == [int(signal.SIGINT)]
+    assert "Stopping turn" in _output(sink)
+    assert signal.getsignal(signal.SIGINT) is previous
+
+
+@pytest.mark.asyncio
+async def test_run_loop_ctrl_c_at_prompt_reprompts(make_mock_agent, monkeypatch) -> None:
+    """Ctrl-C at the prompt abandons the input and re-prompts; Ctrl-D exits."""
+    agent = make_mock_agent()
+    iface, sink = _make_repl_with_sink()
+
+    calls = {"n": 0}
+
+    class FakeSession:
+        async def prompt_async(self):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise KeyboardInterrupt
+            raise EOFError
+
+    monkeypatch.setattr(
+        "sr2_spectre.interfaces.repl._make_prompt_session",
+        lambda completer: FakeSession(),
+    )
+
+    await iface.run(agent)
+
+    assert calls["n"] == 2  # KeyboardInterrupt re-prompted instead of exiting
+    out = _output(sink)
+    assert "^C" in out
+    assert "Bye." in out
