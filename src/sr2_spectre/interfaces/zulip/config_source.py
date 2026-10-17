@@ -16,15 +16,14 @@ module supplies the Zulip-shaped way of reaching it, mirroring
   out of that same single load rather than parsing the file a second time;
   ``Agent.apply_config`` consumes the rest of that same read.
 
-The ``zuliprc`` credential path and any ``api_url`` override are pinned by
-the interface itself: the transport, the registered event queue and the
-Session identities were built from them at startup, so they carry the
-startup values for the life of the process regardless of what a reload
-returns. Everything else in the slice — ``channels`` and
-``allowed_user_ids`` above all — is hot and applies to the next inbound
-message. A malformed edit keeps the last known-good slice in force
-(``LiveConfigSource.reload`` absorbs the failure); it never takes the
-process down.
+Everything in the slice — ``channels``, ``allowed_user_ids``, the
+``zuliprc`` path and the ``api_url`` override above all — is hot: each
+reload reports the newly loaded slice and applies to the next inbound
+message. The interface separately keeps its *own* startup block for the
+transport, the registered event queue and the Session identities, which
+were built from it and are rebound to it on every reload. A malformed
+edit keeps the last known-good slice in force (``LiveConfigSource.reload``
+absorbs the failure); it never takes the process down.
 """
 from __future__ import annotations
 
@@ -48,8 +47,6 @@ class ZulipConfigView:
 
     def __init__(self, source: "SpectreConfigSource") -> None:
         self._source = source
-        # Optional adapter-set slice in force (see ``pin_effective``).
-        self._pinned: ZulipConfig | None = None
 
     @property
     def source(self) -> "SpectreConfigSource":
@@ -58,28 +55,22 @@ class ZulipConfigView:
 
     @property
     def current(self) -> ZulipConfig:
-        """The Zulip config in force, as of the last reload.
+        """The Zulip config in force — the slice of the last successful load.
 
         A whole-config load without a ``zulip`` block reads as an
         explicitly empty slice (nobody admitted, nothing routed) rather
         than an error — startup already refused that configuration, and a
         mid-run reload must not crash on it.
         """
-        if self._pinned is not None:
-            return self._pinned
         return self._source.current.zulip or ZulipConfig(zuliprc="")
 
     def reload(self) -> ZulipConfig:
-        """Reload the whole Spectre config; return the Zulip slice of it."""
+        """Reload the whole Spectre config; return the Zulip slice of it.
+
+        Every reload reports the newly loaded slice: on loader failure
+        ``LiveConfigSource.reload`` keeps the last known-good whole config
+        in force, so the slice returned is that config's slice, never a
+        stale per-view copy.
+        """
         self._source.reload()
         return self.current
-
-    def pin_effective(self, config: ZulipConfig | None) -> None:
-        """Set the slice this view reports, or None to report the raw slice.
-
-        The Zulip adapter uses this to keep its pinned fields (``zuliprc``,
-        ``api_url`` — the transport and Session identities are built from
-        them at startup) visible through the view, so the adapter reads
-        exactly one effective config per message.
-        """
-        self._pinned = config

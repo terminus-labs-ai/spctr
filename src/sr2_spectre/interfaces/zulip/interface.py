@@ -438,23 +438,25 @@ class ZulipInterface:
         ``Agent.apply_config``), and a malformed edit keeps the last
         known-good config in force (``LiveConfigSource.reload`` absorbs the
         failure — never wrap it in a crash). The ``zuliprc`` path and
-        ``api_url`` override are pinned here for the process's life: the
-        transport, the registered queue and the Session identities were
-        built from the startup values, so the reloaded slice is rebound to
-        them. Without a live source (a fixed config) this is a no-op.
+        ``api_url`` override are the adapter's own pinned fields, rebound
+        to the startup block on every read: the transport, the registered
+        queue and the Session identities were built from those values.
+        Without a live source (a fixed config) this is a no-op.
         """
         if self._view is None:
             return self._config
-        config = self._view.reload()
-        pinned = config.model_copy(
+        loaded = self._view.reload()
+        # The transport, the registered queue and the Session identities
+        # were built from the startup block, so the slice routed against
+        # rebinds those two fields to it on every read — the adapter's own
+        # pinning, kept out of the view so each reload stays the newly
+        # loaded slice (or, on a malformed edit, the source's last-good).
+        pinned = loaded.model_copy(
             update={
                 "zuliprc": self._startup_config.zuliprc,
                 "api_url": self._startup_config.api_url,
             }
         )
-        # Keep the view's own slice answering as the pinned effective slice
-        # (the no-op case: an unchanged whole load must not rebuild it).
-        self._view.pin_effective(pinned)
         self._config = pinned
         if self._agent is not None:
             self._agent.apply_config(self._view.source.current)

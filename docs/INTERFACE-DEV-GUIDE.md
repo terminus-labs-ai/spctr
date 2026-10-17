@@ -310,10 +310,11 @@ the full hot-versus-restart breakdown, and
 `interfaces/discord/config_source.py` for a worked example — `DiscordConfigView`
 shows how one read per message can serve both the interface's own settings and
 the agent's. `interfaces/zulip/config_source.py` (`ZulipConfigView`) is the
-same pattern for a channel→area routing slice; where one of the slice's own
-fields cannot change under the live process (the Zulip adapter pins
-`zuliprc`/`api_url` because the transport and Session identities are built
-from them), re-apply the startup values to the reloaded slice at the reload
+same pattern for a channel→area routing slice: it reports the newly
+loaded slice on every reload. Where one of the slice's own fields cannot
+change under the live process (the Zulip adapter pins `zuliprc`/`api_url`
+because the transport and Session identities are built from them), the
+adapter re-applies the startup values to the reloaded slice at the reload
 point rather than letting a half-applied edit reach the transport.
 
 ## Session log (automatic, no interface code)
