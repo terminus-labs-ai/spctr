@@ -1,10 +1,12 @@
 """Tests for the --agent <name> CLI shorthand (spc-25).
 
 The --agent flag resolves <name> to <agents_dir>/<name>.yaml, where
-agents_dir defaults to ~/.sr2/agents/.
+agents_dir defaults to $SR2_HOME/agents/ (~/.sr2/agents/ when SR2_HOME is
+unset).
 
 Acceptance criteria:
-1. --agent edi resolves to ~/.sr2/agents/edi.yaml
+1. --agent edi resolves to $SR2_HOME/agents/edi.yaml (or ~/.sr2/agents/edi.yaml
+   when SR2_HOME is unset)
 2. --agents-dir override changes the base directory
 3. Positonal config still works without --agent
 4. --agent with a non-existent file raises FileNotFoundError
@@ -33,11 +35,22 @@ def _fake_interface_cls(instance):
 class TestResolveAgentConfigPath:
     """Tests for the pure-function agent path resolution."""
 
-    def test_default_agents_dir(self, tmp_path: Path) -> None:
-        """--agent name resolves to ~/.sr2/agents/<name>.yaml by default."""
+    def test_default_agents_dir_follows_sr2_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--agent name resolves to $SR2_HOME/agents/<name>.yaml when SR2_HOME is set."""
+        monkeypatch.setenv("SR2_HOME", str(tmp_path))
         path = resolve_agent_config_path("edi")
-        assert path.name == "edi.yaml"
-        assert str(path).endswith(".sr2/agents/edi.yaml")
+        assert path == tmp_path / "agents" / "edi.yaml"
+
+    def test_default_agents_dir_falls_back_to_home(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With SR2_HOME unset, the default is ~/.sr2/agents/<name>.yaml."""
+        monkeypatch.delenv("SR2_HOME", raising=False)
+        monkeypatch.setenv("HOME", str(tmp_path))
+        path = resolve_agent_config_path("edi")
+        assert path == tmp_path / ".sr2" / "agents" / "edi.yaml"
 
     def test_custom_agents_dir(self, tmp_path: Path) -> None:
         """--agents-dir override changes the base directory."""
@@ -169,13 +182,15 @@ class TestRunAsyncWithAgent:
 
     @pytest.mark.asyncio
     async def test_agent_flag_with_default_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """--agent without --agents-dir uses ~/.sr2/agents/."""
+        """--agent without --agents-dir uses the default agents dir ($SR2_HOME/agents/)."""
         from unittest.mock import AsyncMock, MagicMock
         from sr2_spectre.core import TurnResult
 
-        # Fake home directory
+        # Fake home directory; SR2_HOME points at its .sr2 so the default
+        # agents dir is the one below (not conftest's per-test temp dir).
         fake_home = tmp_path / "home"
         fake_home.mkdir()
+        monkeypatch.setenv("SR2_HOME", str(fake_home / ".sr2"))
         agents_dir = fake_home / ".sr2" / "agents"
         agents_dir.mkdir(parents=True)
         agent_yaml = agents_dir / "liara.yaml"

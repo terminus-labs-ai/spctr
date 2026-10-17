@@ -125,7 +125,7 @@ def resolve_agent_config_path(
     Args:
         agent_name: Short agent name (e.g. "edi", "liara").
         agents_dir: Directory containing agent YAML files. Defaults to
-            ``~/.sr2/agents/``.
+            ``$SR2_HOME/agents/`` (``~/.sr2/agents/`` when SR2_HOME is unset).
 
     Returns:
         Absolute resolved Path to the agent's YAML config file.
@@ -134,7 +134,7 @@ def resolve_agent_config_path(
         FileNotFoundError: If the resolved YAML file does not exist.
     """
     if agents_dir is None:
-        agents_dir = Path.home() / ".sr2" / "agents"
+        agents_dir = Path(os.environ.get("SR2_HOME", str(Path.home() / ".sr2"))) / "agents"
     else:
         agents_dir = Path(agents_dir).expanduser().resolve()
 
@@ -174,7 +174,8 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--agents-dir",
         type=str,
         default=None,
-        help="Directory containing agent YAML files (default: ~/.sr2/agents/)",
+        help="Directory containing agent YAML files "
+             "(default: $SR2_HOME/agents/, or ~/.sr2/agents/)",
     )
     parser.add_argument(
         "--interface",
@@ -449,13 +450,19 @@ async def run_async(argv: list[str] | None = None) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Entry point. Dispatches 'config show' before agent startup."""
+    """Entry point. Dispatches 'config show' and 'dispatch' before agent startup."""
     args = argv if argv is not None else sys.argv[1:]
 
     # Dispatch 'config show' subcommand before agent startup
     if len(args) >= 2 and args[0] == "config" and args[1] == "show":
         exit_code = _run_config_show(args[2:])
         sys.exit(exit_code)
+
+    # Dispatch the headless 'dispatch' subcommand (own argv surface; the
+    # lazy import avoids a cli <-> dispatch import cycle).
+    if len(args) >= 1 and args[0] == "dispatch":
+        from sr2_spectre.dispatch import run_dispatch
+        sys.exit(run_dispatch(args[1:]))
 
     try:
         asyncio.run(run_async(argv))
