@@ -29,6 +29,15 @@ from sr2_spectre.interfaces.zulip.config import ZulipConfig
 _REQUIRED_FIELDS = ("email", "key", "site")
 _API_PREFIX = "/api/v1"
 _DEFAULT_REQUEST_TIMEOUT = 30.0
+# GET /api/v1/events is a LONG POLL: the server holds the connection open
+# until an event or a heartbeat, roughly every 90 s
+# (https://zulip.com/api/get-events). The poll is therefore bounded by its
+# own timeout above the heartbeat interval, so an idle poll never trips the
+# 30 s request timeout and logs a spurious transport failure (spc-178).
+# 300 s (5 min) stays finite — a genuinely stuck poll still fails and the
+# interface's log-and-back-off path re-arms — while covering five heartbeat
+# intervals of server silence. Every other request keeps ``request_timeout``.
+_DEFAULT_EVENT_POLL_TIMEOUT = 300.0
 
 
 class ZulipError(Exception):
@@ -152,7 +161,13 @@ class ZulipClient:
     Args:
         credentials: The bot identity from :func:`load_zulip_credentials`.
         config: The ``zulip`` config block; only ``api_url`` matters here.
-        request_timeout: Seconds that bound EACH request.
+        request_timeout: Seconds that bound each NON-event request.
+        event_poll_timeout: Seconds that bound the events long poll
+            (GET /api/v1/events). Defaults to
+            :data:`_DEFAULT_EVENT_POLL_TIMEOUT`, above Zulip's ~90 s
+            heartbeat interval (https://zulip.com/api/get-events) so an
+            idle poll is never cut off; every other request keeps
+            ``request_timeout``.
     """
 
     def __init__(
@@ -161,11 +176,23 @@ class ZulipClient:
         credentials: ZulipCredentials,
         config: ZulipConfig,
         request_timeout: float | None = None,
+        event_poll_timeout: float | None = None,
     ) -> None:
         self._origin = (config.api_url or credentials.site).rstrip("/")
         self._timeout = (
             _DEFAULT_REQUEST_TIMEOUT if request_timeout is None else request_timeout
         )
+        # The events long poll gets its own bound. When the caller explicitly
+        # sets request_timeout (e.g. a test shrinking every timeout), the poll
+        # follows it so no call can hang longer than the test expects. When
+        # neither timeout is set, the poll gets the longer default so an idle
+        # poll never trips the 30 s request timeout (spc-178).
+        if event_poll_timeout is not None:
+            self._event_poll_timeout = event_poll_timeout
+        elif request_timeout is not None:
+            self._event_poll_timeout = request_timeout
+        else:
+            self._event_poll_timeout = _DEFAULT_EVENT_POLL_TIMEOUT
         self._auth_header = "Basic " + base64.b64encode(
             f"{credentials.email}:{credentials.api_key}".encode("utf-8")
         ).decode("ascii")
@@ -197,11 +224,19 @@ class ZulipClient:
 
         ``queue_id`` travels byte-for-byte as given; the answer's ``events``
         key holds the event array.
+
+        The server holds this request open until an event or a heartbeat
+        (about every 90 s, https://zulip.com/api/get-events), so it is
+        bounded by the longer ``event_poll_timeout`` rather than the
+        per-request ``request_timeout``; exceeding the poll timeout still
+        raises :class:`ZulipTransportError` like any other transport
+        failure.
         """
         return await self._request(
             "GET",
             "/events",
             query={"queue_id": queue_id, "last_event_id": last_event_id},
+            timeout=self._event_poll_timeout,
         )
 
     async def get_topic_messages(
@@ -266,6 +301,7 @@ class ZulipClient:
         *,
         query: dict[str, Any] | None = None,
         data: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         url = f"{self._origin}{_API_PREFIX}{path}"
         if query:
@@ -275,7 +311,11 @@ class ZulipClient:
                 method,
                 url,
                 data=data,
-                timeout=aiohttp.ClientTimeout(total=self._timeout),
+                # The events long poll passes its own bound; everything
+                # else keeps the per-request timeout (spc-178).
+                timeout=aiohttp.ClientTimeout(
+                    total=self._timeout if timeout is None else timeout
+                ),
                 max_redirects=0,
                 allow_redirects=False,
             ) as resp:
