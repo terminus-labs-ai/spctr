@@ -849,6 +849,8 @@ def test_supported_area_starts_and_routes(tmp_path):
                        f"compiled request"))
         assert text.count(f"{AREA_MARKER} AGENTS") == 1, (
             _fail(run, "mapped-area AGENTS injected more than once"))
+        assert text.count(f"{AREA_MARKER} NOW") == 1, (
+            _fail(run, "mapped-area NOW injected more than once"))
 
         # No accidental inheritance and no multi-area bleed.
         assert CWD_MARKER not in text, (

@@ -26,6 +26,10 @@ How the assertions reject wrong behavior:
 - reload a no-op or frozen after the first message: the re-pointed channel
   keeps ALPHA, the newly mapped channel stays inert, the document edit never
   shows, and the endpoint edits never move requests between model servers;
+- user filter pinned to startup or only growing: OTHER_ID stays inert after
+  being added, or keeps getting turns after being removed;
+- channels merged over the startup set or accumulated: a removed startup
+  channel (45) or removed late channel (47) still gets a turn;
 - no last-good: the malformed file kills the child, fails the turn, or applies
   its routing edit; no recovery: the repaired file's routing never applies.
 """
@@ -86,16 +90,13 @@ def _topics(root: Path) -> None:
     topic("misc", MISC_AREA, MISC_AREA, MISC_MARKER)
 
 
-def _launch(tmp_path: Path, name: str) -> tuple[Harness, ZulipCliRun]:
-    harness = Harness(
+def _harness(tmp_path: Path, name: str) -> Harness:
+    return Harness(
         workdir=tmp_path / name,
         channels={ALPHA_CHANNEL: ALPHA_AREA, BETA_CHANNEL: BETA_AREA,
                   NOAREA_CHANNEL: "", STALE_CHANNEL: STALE_AREA},
         topic_docs=_topics,
     )
-    run, cwd, env = harness.build()
-    harness.launch(run, cwd, env)
-    return harness, run
 
 
 def _fail(run: ZulipCliRun, message: str) -> str:
@@ -111,11 +112,11 @@ def _text(request: dict) -> str:
 
 
 def _turn(run: ZulipCliRun, channel: int, topic: str, text: str,
-          model: ModelServer | None = None) -> str:
+          model: ModelServer | None = None, sender: int = DIEGO_ID) -> str:
     """Send one allowed message; return its single compiled model request."""
     model = model or run.model
     sends, requests = len(run.zulip.sends), len(model.requests)
-    run.zulip.push_message(channel, topic, DIEGO_ID, text)
+    run.zulip.push_message(channel, topic, sender, text)
     assert run.wait_idle(expected_replies=sends + 1), _fail(
         run, f"no reply to {text!r} in {channel}/{topic}")
     assert len(model.requests) == requests + 1, _fail(
@@ -166,8 +167,10 @@ def test_area_routing_and_isolation(tmp_path):
     explicit no-area channel and an area without an eligible topic get none
     (never the cwd area); topics keep separate histories; bot, disallowed-user
     and unmapped-channel events do no model work."""
-    harness, run = _launch(tmp_path, "j1c-route")
+    harness = _harness(tmp_path, "j1c-route")
+    run, cwd, env = harness.build()   # stops its own endpoints if it fails
     try:
+        harness.launch(run, cwd, env)
         assert run.wait_started(), _fail(run, "CLI never started")
         assert run.zulip.history_calls == [], _fail(run, "startup replayed history")
 
@@ -221,11 +224,13 @@ def test_live_reload_and_last_good(tmp_path):
     runs apply on the next message, every time (not only the first); document
     and endpoint edits reach existing topics; a malformed file keeps the
     last-good config and the process alive; the repaired file then applies."""
-    harness, run = _launch(tmp_path, "j1c-reload")
-    beta_doc = run.workdir / "topics" / "beta" / "AGENTS.md"
+    harness = _harness(tmp_path, "j1c-reload")
+    run, cwd, env = harness.build()   # stops its own endpoints if it fails
     model2 = ModelServer(answer=RELOAD_ANSWER)
-    model2.start()
     try:
+        model2.start()
+        harness.launch(run, cwd, env)
+        beta_doc = run.workdir / "topics" / "beta" / "AGENTS.md"
         assert run.wait_started(), _fail(run, "CLI never started")
         _assert_area(run, _turn(run, ALPHA_CHANNEL, "r1", "BASE"), ALPHA_MARKER)
         _assert_area(run, _turn(run, ALPHA_CHANNEL, "r1", "BASE TWO"),
@@ -257,6 +262,31 @@ def test_live_reload_and_last_good(tmp_path):
         beta_doc.write_text(original_doc, encoding="utf-8")
         assert EDITED_LINE not in _turn(run, ALPHA_CHANNEL, "r2", "DOC OFF"), (
             _fail(run, "removed document line is still compiled"))
+
+        # (3b) User allowlist reloads too: OTHER_ID is inert on a mapped
+        # channel, gets a turn once added on disk, and is inert again once
+        # removed.  A filter pinned to the startup block fails the middle
+        # step; one that only ever grows fails the last.
+        allow = f"  allowed_user_ids: [{DIEGO_ID}, {BOT_ID}]\n"
+        allow_other = f"  allowed_user_ids: [{DIEGO_ID}, {BOT_ID}, {OTHER_ID}]\n"
+        run.zulip.push_message(ALPHA_CHANNEL, "u1", OTHER_ID, "USER INERT")
+        _assert_no_work(run, ALPHA_CHANNEL, "u1")
+        harness.edit_config({allow: allow_other})
+        _assert_area(run, _turn(run, ALPHA_CHANNEL, "u2", "USER ADDED",
+                                sender=OTHER_ID), BETA_MARKER)
+        harness.edit_config({allow_other: allow})
+        run.zulip.push_message(ALPHA_CHANNEL, "u3", OTHER_ID, "USER REMOVED")
+        _assert_no_work(run, ALPHA_CHANNEL, "u3")
+
+        # (3c) Channel removal reloads: drop a startup mapping (no-area 45)
+        # and the late one (47).  Merging loaded channels over the startup
+        # set keeps 45; accumulating every channel ever loaded keeps 47.
+        harness.edit_config({f"    {NOAREA_CHANNEL}: ''\n": "",
+                             f"    {LATE_CHANNEL}: {ALPHA_AREA!r}\n": ""})
+        run.zulip.push_message(NOAREA_CHANNEL, "gone45", DIEGO_ID, "GONE 45")
+        _assert_no_work(run, NOAREA_CHANNEL, "gone45")
+        run.zulip.push_message(LATE_CHANNEL, "gone47", DIEGO_ID, "GONE 47")
+        _assert_no_work(run, LATE_CHANNEL, "gone47")
 
         # (4) Whole-config edit: the model endpoint moves to model2 for an
         # existing topic's next turn.
@@ -294,6 +324,6 @@ def test_live_reload_and_last_good(tmp_path):
         assert run.proc.poll() is None, _fail(run, "CLI died during reload")
     finally:
         try:
-            harness.close(run)
+            harness.close(run)   # kill+reap the child, stop its endpoints
         finally:
-            model2.stop()
+            model2.stop()        # safe even if it never came up

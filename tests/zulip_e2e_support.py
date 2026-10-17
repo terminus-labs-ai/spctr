@@ -930,6 +930,20 @@ class Harness:
 
         zulip = ZulipServer(bot_id=BOT_ID, user_ids=[DIEGO_ID, OTHER_ID])
         model = ModelServer(answer=REPLY_MARKER)
+        try:
+            return self._build_started(workdir, sr2_home, cwd, zulip, model)
+        except BaseException:
+            # spc-120: a failed build never leaks a started endpoint (stop()
+            # is safe on a server that never came up).
+            try:
+                zulip.stop()
+            finally:
+                model.stop()
+            raise
+
+    def _build_started(self, workdir: Path, sr2_home: Path, cwd: Path,
+                       zulip: "ZulipServer", model: "ModelServer",
+                       ) -> tuple[ZulipCliRun, Path, dict[str, str]]:
         zulip.start()
         model.start()
 
@@ -983,15 +997,17 @@ class Harness:
         run.stderr_path = run.workdir / "child-stderr.txt"
         out = open(run.stdout_path, "w", encoding="utf-8")
         err = open(run.stderr_path, "w", encoding="utf-8")
-        run.proc = subprocess.Popen(
-            [str(REPO_ROOT / ".venv" / "bin" / "python"), "-m", "sr2_spectre.cli",
-             str(run.config_path), "--interface", "zulip",
-             "--log-file", str(run.workdir / "cli.log")],
-            stdout=out, stderr=err, text=True,
-            env=env, cwd=str(cwd),
-        )
-        out.close()
-        err.close()
+        try:
+            run.proc = subprocess.Popen(
+                [str(REPO_ROOT / ".venv" / "bin" / "python"), "-m",
+                 "sr2_spectre.cli", str(run.config_path), "--interface", "zulip",
+                 "--log-file", str(run.workdir / "cli.log")],
+                stdout=out, stderr=err, text=True,
+                env=env, cwd=str(cwd),
+            )
+        finally:
+            out.close()
+            err.close()
 
     def close(self, run: ZulipCliRun) -> None:
         # Stop the CHILD first (SIGTERM, bounded wait, kill, reap — already
