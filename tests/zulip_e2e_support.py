@@ -28,6 +28,7 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -904,6 +905,20 @@ class Harness:
     workdir: Path
     nonempty_area: bool = False
     channels: dict[int, str] | None = None
+    # spc-120 J1C: a journey's own topic documents (default _write_topic_docs)
+    # and the rendered config file, which edit_config rewrites in place.
+    topic_docs: Callable[[Path], None] | None = None
+    config_file: Path | None = None
+
+    def edit_config(self, edits: dict[str, str]) -> None:
+        """Replace literal segments of the running CLI's config file; each
+        source segment must occur exactly once."""
+        assert self.config_file is not None, "harness not built yet"
+        text = self.config_file.read_text(encoding="utf-8")
+        for old, new in edits.items():
+            assert text.count(old) == 1, f"config edit source not unique: {old!r}"
+            text = text.replace(old, new)
+        self.config_file.write_text(text, encoding="utf-8")
 
     def build(self) -> tuple[ZulipCliRun, Path, dict[str, str]]:
         """Return (run, child cwd, child env). The caller must launch+close."""
@@ -932,7 +947,7 @@ class Harness:
 
         topics_root = workdir / "topics"
         topics_root.mkdir(parents=True, exist_ok=True)
-        _write_topic_docs(topics_root)
+        (self.topic_docs or _write_topic_docs)(topics_root)
 
         channels = self.channels
         if channels is None:
@@ -950,6 +965,7 @@ class Harness:
         )
         config_path = workdir / "config.yaml"
         config_path.write_text(config_text, encoding="utf-8")
+        self.config_file = config_path
 
         env = _child_env(sr2_home, pointer)
         env["PATH"] = str(REPO_ROOT / ".venv" / "bin") + os.pathsep + env.get("PATH", "")

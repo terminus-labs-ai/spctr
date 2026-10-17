@@ -12,7 +12,8 @@ Journeys / AC:
 - test_same_topic_two_configured_channels → AC16 (per-channel identity/isolation)
 - test_existing_topic_refusal             → AC14
 - test_existing_topic_probe_failure_blocks_turn → AC14 (probe failure)
-- test_nonempty_area_rejected             → AC16 (startup failure)
+- test_supported_area_starts_and_routes  → AC2/16 (supported-area proof,
+  replacing the temporary nonempty-area refusal of the pre-routing cut)
 
 Model-request inspection goes through ``ZulipCliRun.model_messages()``, the
 ``messages`` arrays of the actual OpenAI-compatible request bodies.
@@ -813,34 +814,56 @@ def test_existing_topic_probe_failure_blocks_turn(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# AC16 — nonempty area mapping fails startup
+# AC2/16 — a mapped nonempty area is supported: it starts and routes
+# (upgraded in place from the temporary pre-routing refusal proof — the gate
+# lifted by spc-120; the admission and history-refusal proofs above stand
+# unchanged)
 # ---------------------------------------------------------------------------
 
 
-def test_nonempty_area_rejected(tmp_path):
-    """AC16: nonempty area mapping fails startup explicitly, zero model calls."""
+def test_supported_area_starts_and_routes(tmp_path):
+    """AC2/16: a mapped nonempty area is valid configuration.  The CLI that
+    the pre-routing cut refused to start now starts, answers in the topic,
+    and compiles its mapped area's documents — while the cwd-area and other
+    areas' documents stay out (no fallback, no duplication) and the
+    channel's own history stays isolated."""
     harness = Harness(workdir=tmp_path / "j1b-area", nonempty_area=True)
     run, cwd, env = harness.build()
     try:
         harness.launch(run, cwd, env)
+        assert run.wait_started(), _startup_failure(run)
 
-        # The process must fail (nonzero exit) within a bounded time.
-        _wait_exited(run)
-        assert run.proc is not None and run.proc.returncode is not None, (
-            "CLI did not exit within the bound with a nonempty area mapping; "
-            f"child_output={run.child_output()[-1500:]!r}")
-        assert run.proc.returncode != 0, (
-            f"CLI exited 0 with a nonempty area mapping; it must fail "
-            f"startup explicitly. child_output="
-            f"{run.child_output()[-1500:]!r}")
-        # Zero model work and the event queue was never registered/serviced.
-        assert len(run.model.requests) == 0, (
-            "model was called despite the nonempty-area startup failure")
-        assert run.zulip.register_calls == 0, (
-            "event queue registered despite the nonempty-area startup failure")
-        # The failure names the routing problem, not a generic crash.
-        all_text = run.child_output() + run.log_text
-        assert "area" in all_text.lower(), (
-            f"startup failure did not name the area problem: {all_text[-1500:]!r}")
+        # The mapped channel admits Diego and answers in the exact topic.
+        run.zulip.push_message(CONFIGURED_CHANNEL, "area-topic", DIEGO_ID,
+                               "hello mapped area")
+        assert run.wait_idle(expected_replies=1), _fail(
+            run, "the supported mapped-area channel never got a reply")
+        replies = _reply_for(run, CONFIGURED_CHANNEL, "area-topic")
+        assert len(replies) == 1 and REPLY_MARKER in replies[0]["content"]
+
+        # The mapped area reached the resolvers: its AGENTS.md and source
+        # NOW.md are in the compiled request, each exactly once.
+        text = "\n".join(_request_texts(run.model_messages()))
+        assert f"{AREA_MARKER} AGENTS" in text and f"{AREA_MARKER} NOW" in text, (
+            _fail(run, f"mapped area sr2-spectre's documents missing from the "
+                       f"compiled request"))
+        assert text.count(f"{AREA_MARKER} AGENTS") == 1, (
+            _fail(run, "mapped-area AGENTS injected more than once"))
+
+        # No accidental inheritance and no multi-area bleed.
+        assert CWD_MARKER not in text, (
+            _fail(run, "cwd area leaked into a mapped-area turn"))
+        assert DECOY_MARKER not in text, (
+            _fail(run, "an unmapped area's documents leaked into the turn"))
+
+        # The filters and isolation the pilot relies on survived the gate
+        # lift: a bot event on the mapped channel does no model work, and an
+        # unconfigured channel still triggers nothing.
+        run.zulip.push_message(CONFIGURED_CHANNEL, "bot-topic", BOT_ID,
+                               "bot chatter")
+        _assert_fresh_no_work(run, CONFIGURED_CHANNEL, "bot-topic", 1, 1)
+        run.zulip.push_message(UNCONFIGURED_CHANNEL, "offch", DIEGO_ID,
+                               "off-channel")
+        _assert_fresh_no_work(run, UNCONFIGURED_CHANNEL, "offch", 1, 1)
     finally:
         harness.close(run)
