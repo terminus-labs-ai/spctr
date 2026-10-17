@@ -554,6 +554,40 @@ restart.
 
 ---
 
+## Reminders (agent.reminders)
+
+```yaml
+agent:
+  reminders:
+    enabled: true
+    timezone: America/Phoenix
+    poll_seconds: 30.0
+    zulip_topic: reminders
+    # store_path: ~/.sr2/state/{agent}/reminders.sqlite   # default
+```
+
+One switch enables BOTH the `reminder` tool and the delivery loop; disabled
+(the default) registers neither. `timezone` is required (nonempty) when
+enabled and renders all reminder times. `store_path` supports `~` and
+`${VAR}`; `{agent}` is substituted with the agent name at wiring time.
+
+### Delivery is per platform (spc-176)
+
+An agent's reminders live in ONE store shared by every interface of that
+agent. Each interface (Discord, Zulip) runs its own delivery loop, and each
+loop serves **exactly one platform**: due selection, claim, and the startup
+recovery of interrupted `sending` rows only ever touch rows created on that
+platform. Running Miranda on Discord and Zulip at once is safe — a Discord
+loop can never claim, send, or reset a Zulip-origin reminder, or the reverse.
+
+**Two processes of the SAME platform for one agent remain unsupported.** They
+share one store and one platform scope, so they can still claim and deliver
+each other's rows for that platform (at best a race for the claim, at worst a
+double delivery when one process's startup recovery resets the other's
+mid-send row). Run one process per platform per agent.
+
+---
+
 ## Live reload
 
 A long-running interface re-reads the **whole resolved config on every inbound

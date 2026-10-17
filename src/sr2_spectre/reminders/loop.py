@@ -71,6 +71,12 @@ class DeliveryLoop:
         poll_seconds: Seconds between polls (``reminders.poll_seconds``).
         tz: IANA zone for rendering local times in messages and logs.
         agent_name: Agent name for log lines (never the text).
+        platform: The platform this loop serves (spc-176). One agent on
+            two interfaces shares one store; a loop due-selects, claims
+            and recovers only rows whose ``platform`` matches, so a
+            Discord loop never sends (or resets) a Zulip-origin row.
+            ``None`` (the default) serves every platform — the single-
+            interface behavior of every pre-spc-176 caller.
         clock: Callable returning the current UTC datetime. Injected for
             tests; defaults to the real clock.
     """
@@ -83,6 +89,7 @@ class DeliveryLoop:
         poll_seconds: float,
         tz: ZoneInfo,
         agent_name: str,
+        platform: str | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._store = store
@@ -90,6 +97,7 @@ class DeliveryLoop:
         self._poll_seconds = poll_seconds
         self._tz = tz
         self._agent_name = agent_name
+        self._platform = platform
         self._clock = clock or (lambda: datetime.now(ZoneInfo("UTC")))
         self._task: asyncio.Task | None = None
 
@@ -98,7 +106,7 @@ class DeliveryLoop:
 
     async def start(self) -> None:
         """Reset interrupted sends and start the polling task."""
-        await self._store.reset_sending_to_pending_async()
+        await self._store.reset_sending_to_pending_async(self._platform)
         self._task = asyncio.ensure_future(self._run())
 
     async def stop(self) -> None:
@@ -119,9 +127,9 @@ class DeliveryLoop:
 
     async def _poll_once(self) -> None:
         now = self._now()
-        due = await self._store.due_async(now)
+        due = await self._store.due_async(now, platform=self._platform)
         for reminder in due:
-            if not await self._store.claim_async(reminder.id):
+            if not await self._store.claim_async(reminder.id, self._platform):
                 # Someone else already claimed it (single-loop in practice,
                 # but the claim is the only thing that guarantees it).
                 continue

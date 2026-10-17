@@ -213,38 +213,57 @@ class ReminderStore:
             )
         return new_id
 
-    def due(self, now: datetime, statuses: Iterable[str] = ("pending",)) -> list[Reminder]:
+    def due(
+        self,
+        now: datetime,
+        statuses: Iterable[str] = ("pending",),
+        platform: str | None = None,
+    ) -> list[Reminder]:
         """Rows whose next attempt is at or before ``now``, in due order.
 
         A row that has never been retried attempts at its ``due_at``; a
         retried row attempts at ``next_attempt_at`` while ``due_at``
         stays the time the user asked for (spc-157). Ordering and the
         ``ORDER BY due_at, id`` the FR19 list relies on are unchanged.
+
+        ``platform`` (spc-176): when set, only rows of that platform are
+        due — one agent's Discord loop must never see its Zulip rows.
+        ``None`` (the default) keeps the old all-platforms behavior.
         """
         statuses = tuple(statuses)
         placeholders = ", ".join("?" for _ in statuses)
+        # spc-176: an empty clause keeps the old all-platforms SQL exactly.
+        platform_clause = "AND platform = ?" if platform is not None else ""
+        params = [*(statuses), _ts(now)]
+        if platform is not None:
+            params.append(platform)
         with self._connect() as conn:
             rows = conn.execute(
                 f"""SELECT {", ".join(_COLUMNS)}
                     FROM reminders
                     WHERE status IN ({placeholders})
                       AND COALESCE(next_attempt_at, due_at) <= ?
+                      {platform_clause}
                     ORDER BY due_at, id""",
-                (*statuses, _ts(now)),
+                params,
             ).fetchall()
         return [self._row_to_reminder(r) for r in rows]
 
-    def claim(self, reminder_id: str) -> bool:
+    def claim(self, reminder_id: str, platform: str | None = None) -> bool:
         """Atomically move one row ``pending`` → ``sending`` (FR17 claim).
 
         Returns True only if this call won the claim; a row that is not
         ``pending`` (already claimed/delivered/...) is left untouched.
+        With ``platform`` set (spc-176) a row of another platform is not
+        claimable at all — the claim doubles as the cross-loop guard.
         """
+        platform_clause = " AND platform = ?" if platform is not None else ""
+        params = (reminder_id, platform) if platform is not None else (reminder_id,)
         with self._connect() as conn:
             cursor = conn.execute(
                 "UPDATE reminders SET status = 'sending' "
-                "WHERE id = ? AND status = 'pending'",
-                (reminder_id,),
+                "WHERE id = ? AND status = 'pending'" + platform_clause,
+                params,
             )
             return cursor.rowcount == 1
 
@@ -324,11 +343,21 @@ class ReminderStore:
             )
             return cursor.rowcount == 1
 
-    def reset_sending_to_pending(self) -> int:
-        """On start, return every ``sending`` row to ``pending`` (FR17/FR22)."""
+    def reset_sending_to_pending(self, platform: str | None = None) -> int:
+        """On start, return every ``sending`` row to ``pending`` (FR17/FR22).
+
+        ``platform`` (spc-176): when set, only that platform's rows are
+        reset — one interface's startup must not reset the other's
+        mid-send row and cause a double delivery. ``None`` (the default)
+        keeps the old all-platforms behavior.
+        """
+        platform_clause = " AND platform = ?" if platform is not None else ""
+        params = (platform,) if platform is not None else ()
         with self._connect() as conn:
             cursor = conn.execute(
                 "UPDATE reminders SET status = 'pending' WHERE status = 'sending'"
+                + platform_clause,
+                params,
             )
             return cursor.rowcount
 
@@ -366,12 +395,16 @@ class ReminderStore:
     async def create_async(self, row: Reminder) -> str:
         return await asyncio.to_thread(self.create, row)
 
-    async def due_async(self, now: datetime,
-                        statuses: Iterable[str] = ("pending",)) -> list[Reminder]:
-        return await asyncio.to_thread(self.due, now, statuses)
+    async def due_async(
+        self,
+        now: datetime,
+        statuses: Iterable[str] = ("pending",),
+        platform: str | None = None,
+    ) -> list[Reminder]:
+        return await asyncio.to_thread(self.due, now, statuses, platform)
 
-    async def claim_async(self, reminder_id: str) -> bool:
-        return await asyncio.to_thread(self.claim, reminder_id)
+    async def claim_async(self, reminder_id: str, platform: str | None = None) -> bool:
+        return await asyncio.to_thread(self.claim, reminder_id, platform)
 
     async def get_async(self, reminder_id: str) -> Reminder | None:
         return await asyncio.to_thread(self.get, reminder_id)
@@ -393,5 +426,7 @@ class ReminderStore:
     async def cancel_async(self, reminder_id: str) -> bool:
         return await asyncio.to_thread(self.cancel, reminder_id)
 
-    async def reset_sending_to_pending_async(self) -> int:
-        return await asyncio.to_thread(self.reset_sending_to_pending)
+    async def reset_sending_to_pending_async(
+        self, platform: str | None = None
+    ) -> int:
+        return await asyncio.to_thread(self.reset_sending_to_pending, platform)

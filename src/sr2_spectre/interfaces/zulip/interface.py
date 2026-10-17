@@ -340,6 +340,9 @@ class ZulipInterface:
             poll_seconds=reminders.poll_seconds,
             tz=reminders.tz,
             agent_name=reminders.agent_name,
+            # spc-176: this loop serves only Zulip — one agent's Discord
+            # loop shares the store and must not touch these rows.
+            platform="zulip",
         )
         self._reminders_loop = loop
         self._reminders_stamp = getattr(agent, "reminders_stamped", 0)
