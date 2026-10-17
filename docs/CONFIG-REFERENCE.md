@@ -303,8 +303,10 @@ For example, area `henrique` can select `family/henrique (pai)` by its
 ineligible. Hidden directories are excluded, and metadata and selected
 documents must resolve inside `topics_root`.
 
-Selection, metadata and content are reread on every turn. Missing or duplicate
-eligible topics and missing or escaping documents skip with a WARNING.
+Selection, metadata and content are reread on every turn. Duplicate
+eligible identities, an absent `topics_root`, and missing or escaping
+selected documents skip with a WARNING. An area that matches no eligible
+topic skips at DEBUG.
 No provider or no nonempty area skips at DEBUG. There is no basename/path/glob
 fallback, and no `path` or `on_missing` setting.
 

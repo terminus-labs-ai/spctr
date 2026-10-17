@@ -78,7 +78,9 @@ async def test_ineligible_metadata_never_injects(tmp_path, caplog, filename, doc
     (topic / document).write_text(f"---\n{metadata}\n---\nExcluded content")
     with caplog.at_level(logging.DEBUG):
         assert await _text(_build(tmp_path, filename)) == ""
-    assert any(record.levelno == logging.WARNING for record in caplog.records)
+    # An ineligible identity means "no eligible topic" (0 matches), which is a
+    # normal no-injection state, not an error: it skips quietly at debug level.
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
 
 @pytest.mark.parametrize("document", ["README.md", "NOW.md"])
@@ -124,14 +126,26 @@ async def test_duplicate_eligible_identities_skip_with_warning(tmp_path, caplog,
 
 
 @pytest.mark.parametrize("filename,missing", [
-    ("AGENTS.md", "README.md"), ("AGENTS.md", "NOW.md"), ("AGENTS.md", "AGENTS.md"),
+    ("AGENTS.md", "README.md"), ("AGENTS.md", "NOW.md"),
     ("README.md", "README.md"), ("README.md", "NOW.md"),
 ])
-async def test_missing_documents_skip_with_warning(tmp_path, caplog, filename, missing):
+async def test_missing_identity_docs_skip_quietly(tmp_path, caplog, filename, missing):
+    # A missing README.md or NOW.md makes the topic ineligible (0 matches),
+    # which is a benign no-injection state: it skips at debug, not warning.
     topic = _topic(tmp_path / "topic")
     (topic / missing).unlink()
     with caplog.at_level(logging.DEBUG):
         assert await _text(_build(tmp_path, filename)) == ""
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+
+async def test_missing_target_doc_warns(tmp_path, caplog):
+    # An eligible topic whose *target* document is absent is a real mismatch
+    # (you asked for this doc from a valid topic but it isn't there): warn.
+    topic = _topic(tmp_path / "topic")
+    (topic / "AGENTS.md").unlink()
+    with caplog.at_level(logging.DEBUG):
+        assert await _text(_build(tmp_path, "AGENTS.md")) == ""
     assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
@@ -139,6 +153,8 @@ async def test_absent_root_is_valid_configuration_and_skips(tmp_path, caplog):
     resolver = _build(tmp_path / "absent")
     with caplog.at_level(logging.DEBUG):
         assert await _text(resolver) == ""
+    # An absent topics_root means all topic context is silently lost, which is
+    # a deployment failure: it skips without crashing but still warns.
     assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
@@ -179,7 +195,13 @@ async def test_escaping_symlinks_never_inject(tmp_path, caplog, escaping):
         (topic / escaping).symlink_to(outside / escaping)
     with caplog.at_level(logging.DEBUG):
         assert await _text(_build(root)) == ""
-    assert any(record.levelno == logging.WARNING for record in caplog.records)
+    # An escaped identity (README/NOW) or a linked directory makes the topic
+    # ineligible, so it skips quietly. Only an eligible topic whose target
+    # document escapes the root is still a warning.
+    if escaping == "AGENTS.md":
+        assert any(record.levelno == logging.WARNING for record in caplog.records)
+    else:
+        assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
 
 @pytest.mark.parametrize("filename", ["AGENTS.md", "NOW.md", "README.md"])
