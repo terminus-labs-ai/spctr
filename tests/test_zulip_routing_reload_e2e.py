@@ -23,6 +23,8 @@ How the assertions reject wrong behavior:
 - every area compiled: MISC_MARKER (eligible, mapped to no channel) appears;
 - shared history across topics: another topic's trigger text appears, while a
   topic's own follow-up must still carry its earlier trigger;
+- area pinned to a Session's creation: existing topic r1 keeps ALPHA after
+  its channel is re-pointed (to BETA, then to "");
 - reload a no-op or frozen after the first message: the re-pointed channel
   keeps ALPHA, the newly mapped channel stays inert, the document edit never
   shows, and the endpoint edits never move requests between model servers;
@@ -237,11 +239,27 @@ def test_live_reload_and_last_good(tmp_path):
                      ALPHA_MARKER)
 
         # (1) Re-point channel 42 to BETA: the next new topic follows it.
-        # Routing probes use topics created under the mapping they assert;
-        # whether an older topic is re-routed is left open by the spec.
         harness.edit_config(_route(ALPHA_CHANNEL, ALPHA_AREA, BETA_AREA))
         _assert_area(run, _turn(run, ALPHA_CHANNEL, "r2", "ROUTED NEW"),
                      BETA_MARKER)
+
+        # (1b) Spec ruling: every turn uses the channel's current area, so the
+        # existing topic r1 (Session created under ALPHA) is re-routed too,
+        # keeping its Session and history; re-pointing to "" gives it no area
+        # and no cwd fallback.  Then restore BETA for the steps below.
+        for area, marker, text in ((BETA_AREA, BETA_MARKER, "OLD TOPIC BETA"),
+                                   ("", None, "OLD TOPIC NOAREA")):
+            if area == "":
+                harness.edit_config(_route(ALPHA_CHANNEL, BETA_AREA, ""))
+            rerouted = _turn(run, ALPHA_CHANNEL, "r1", text)
+            _assert_area(run, rerouted, marker)
+            # Both earlier ALPHA-era turns ("BASE", "BASE TWO") and the BETA one.
+            assert rerouted.count("BASE") >= 2 and "BASE TWO" in rerouted and (
+                "OLD TOPIC BETA" in rerouted), _fail(
+                run, f"re-routed topic r1 lost its history: {rerouted[:900]!r}")
+            assert run.count_identities("miranda", "r1") == 1, _fail(
+                run, "re-routed topic r1 does not keep exactly one Session")
+        harness.edit_config(_route(ALPHA_CHANNEL, "", BETA_AREA))
 
         # (2) A channel mapped while running: inert before, admitted after.
         run.zulip.push_message(LATE_CHANNEL, "late", DIEGO_ID, "LATE INERT")
