@@ -403,8 +403,9 @@ class ZulipInterface:
             # One whole-config reload per inbound batch — the single entry
             # point for inbound traffic (docs/INTERFACE-DEV-GUIDE.md § Live
             # config reload): every message in this batch is admitted and
-            # routed against this one read, and existing Sessions keep the
-            # area they were created with.
+            # routed against this one read, and each topic's Session runs
+            # its turn under this read's mapped area — existing Sessions
+            # included (spec ruling 2026-10-16).
             config = self._reload_config()
             # Snapshot eligible triggers before processing the batch: the history
             # probe can already see later siblings from this same response.
@@ -542,6 +543,18 @@ class ZulipInterface:
             if entry is None:
                 return  # refused or probe-failed; reply already sent
             session = entry[0]
+            # A routing edit applies to EVERY topic in the channel on its
+            # next message, including a topic whose Session already exists
+            # (spec ruling 2026-10-16): re-stamp the run context from this
+            # batch's own read through the public Session seam — the mapped
+            # area, or the explicit no-area "" — never the area the topic
+            # was created with, and never a working-directory fallback.
+            session.set_run_context(RunContext(
+                interface="zulip",
+                mode=RunMode.INTERACTIVE,
+                source=f"zulip:{channel_id}:{topic}",
+                area=area if area is not None else "",
+            ))
             await self._run_turn(session, channel_id, topic, message)
 
     async def _ensure_session(

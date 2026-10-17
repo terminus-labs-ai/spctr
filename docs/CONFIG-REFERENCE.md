@@ -524,10 +524,10 @@ queue — it fetches no history and makes no model request.
   area.
 - Each (channel, exact topic) owns one Session; the frame identity carries
   the agent, the resolved server origin, the channel ID and the escaped
-  topic. The Session's run context carries the area from the config read
-  the trigger arrived on; a Session created earlier keeps the area it was
-  created with (the mapping governs each topic when it is created, not
-  retroactively).
+  topic. Every turn runs under the channel's current mapped area from the
+  config read that trigger arrived on — a routing edit applies to every
+  topic in that channel on its next message, including topics whose
+  Session already exists — and never falls back to the working directory.
 - Model turns are serialized globally; concurrent messages in the same
   topic share one Session and keep ordered history, and distinct topics
   stay isolated.
