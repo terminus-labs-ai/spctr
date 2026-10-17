@@ -156,8 +156,25 @@ class TopicAreaResolver:
       )
       return ""
     selected = matches[0] / self._filename
+    try:
+      target = selected.resolve()
+    except (OSError, RuntimeError):
+      target = None
+    if target is None or not target.is_relative_to(root):
+      logger.warning(
+        "TopicAreaResolver: selected document %s resolves outside topics_root.",
+        selected,
+      )
+      return ""
+    if not target.is_file():
+      logger.debug(
+        "TopicAreaResolver: topic %r has no %s; nothing to inject.",
+        area,
+        self._filename,
+      )
+      return ""
     text = self._read(selected, root)
     if text is None:
-      logger.warning("TopicAreaResolver: missing or escaping document %s.", selected)
+      logger.warning("TopicAreaResolver: cannot read document %s.", selected)
       return ""
     return text

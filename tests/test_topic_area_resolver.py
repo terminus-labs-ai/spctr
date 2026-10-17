@@ -139,14 +139,35 @@ async def test_missing_identity_docs_skip_quietly(tmp_path, caplog, filename, mi
     assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
 
-async def test_missing_target_doc_warns(tmp_path, caplog):
-    # An eligible topic whose *target* document is absent is a real mismatch
-    # (you asked for this doc from a valid topic but it isn't there): warn.
+async def test_missing_target_doc_skips_quietly(tmp_path, caplog):
+    # An eligible topic without the requested target document is a normal vault
+    # state (plain README+NOW topics have no AGENTS.md): skip at debug, not
+    # warning, so a real misconfiguration stays visible.
     topic = _topic(tmp_path / "topic")
     (topic / "AGENTS.md").unlink()
     with caplog.at_level(logging.DEBUG):
         assert await _text(_build(tmp_path, "AGENTS.md")) == ""
+    assert any(record.levelno == logging.DEBUG for record in caplog.records)
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+
+
+async def test_unreadable_target_doc_warns(tmp_path, caplog):
+    # A target document that exists but cannot be decoded is not a normal vault
+    # state: it warns, unlike an absent document.
+    topic = _topic(tmp_path / "topic")
+    (topic / "AGENTS.md").write_bytes(b"Selected AGENTS \xff\xfe\n")
+    with caplog.at_level(logging.DEBUG):
+        assert await _text(_build(tmp_path, "AGENTS.md")) == ""
     assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+async def test_directory_at_target_path_skips_quietly(tmp_path, caplog):
+    topic = _topic(tmp_path / "topic")
+    (topic / "AGENTS.md").unlink()
+    (topic / "AGENTS.md").mkdir()
+    with caplog.at_level(logging.DEBUG):
+        assert await _text(_build(tmp_path, "AGENTS.md")) == ""
+    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
 
 async def test_absent_root_is_valid_configuration_and_skips(tmp_path, caplog):

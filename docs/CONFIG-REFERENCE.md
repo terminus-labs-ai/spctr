@@ -304,9 +304,11 @@ ineligible. Hidden directories are excluded, and metadata and selected
 documents must resolve inside `topics_root`.
 
 Selection, metadata and content are reread on every turn. Duplicate
-eligible identities, an absent `topics_root`, and missing or escaping
-selected documents skip with a WARNING. An area that matches no eligible
-topic skips at DEBUG.
+eligible identities, an absent `topics_root`, a selected document that
+escapes `topics_root`, and an existing selected document that cannot be read
+skip with a WARNING. An eligible topic with no selected document (a plain
+README/NOW topic with no AGENTS.md) and an area that matches no eligible
+topic skip at DEBUG.
 No provider or no nonempty area skips at DEBUG. There is no basename/path/glob
 fallback, and no `path` or `on_missing` setting.
 
