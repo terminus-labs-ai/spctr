@@ -12,8 +12,10 @@ exit code.  The envelope goes to ``--out`` (a file) or to stdout.
 
 The intended response contract (embedded by the dispatcher in the prompt)
 is: end with one block, first line ``VERDICT: <DONE|FAILED|NEEDS-INPUT|
-ESCALATION>``, optional ``WROTE <absolute-path>`` lines for artifacts.
-A clean run without a VERDICT line is classified ``done`` (lenient).
+ESCALATION>`` (trailing reason text on the same line is allowed, and the
+keyword is case-insensitive), optional ``WROTE <absolute-path>`` lines for
+artifacts. A clean run without a VERDICT line is classified ``done``
+(lenient).
 
 Exit codes: 0 done, 1 failed, 2 needs-input, 3 escalation, 4 timeout,
 5 error (crash / bad usage / config failure).
@@ -43,7 +45,14 @@ logger = logging.getLogger(__name__)
 # final message).  Cap it so the envelope stays small on chatty runs.
 _RAW_STDOUT_CAP = 100_000
 
-_VERDICT_RE = re.compile(r"^\s*VERDICT:\s*([A-Za-z][A-Za-z-]*)\s*$", re.MULTILINE)
+# Trailing text on the VERDICT line (e.g. "VERDICT: ESCALATION: tests need a
+# DB") is a reason, not part of the keyword: capture only the keyword and let
+# the rest of the line fall through. The prefix is case-insensitive per the
+# response contract; unknown keywords still classify as no verdict.
+_VERDICT_RE = re.compile(
+    r"^\s*VERDICT:\s*([A-Za-z][A-Za-z-]*)",
+    re.MULTILINE | re.IGNORECASE,
+)
 _WROTE_RE = re.compile(r"^\s*WROTE\s+(\S+)\s*$", re.MULTILINE)
 
 # Contract verdict keyword -> envelope status.

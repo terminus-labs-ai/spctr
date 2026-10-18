@@ -77,10 +77,31 @@ def test_final_message_blank_lines_inside_blocks_are_preserved():
         ("VERDICT: SOMETHING-NEW", None),  # unknown keyword is not a verdict
         # A verdict in an EARLIER block is not the final answer.
         ("VERDICT: DONE\n\nlater answer without verdict", None),
+        # spc-947: a trailing reason on the same line classifies by keyword.
+        ("VERDICT: ESCALATION: tests need a DB", "escalation"),
+        ("VERDICT: FAILED — all 12 tests pass", "failed"),
+        ("VERDICT: NEEDS-INPUT: which branch should I use?", "needs-input"),
+        ("VERDICT: DONE — all 12 tests pass", "done"),
+        ("Some preamble\n\nVERDICT: ESCALATION: tests need a DB", "escalation"),
+        # Lowercase keyword prefix (skill contract: case-insensitive).
+        ("verdict: needs-input", "needs-input"),
+        ("verdict: escalation: build broke", "escalation"),
+        # Unknown keyword with trailing text is still not a verdict.
+        ("VERDICT: SOMETHING-NEW: whatever", None),
     ],
 )
 def test_parse_verdict(message, expected):
     assert parse_verdict(message) == expected
+
+
+def test_classify_trailing_reason_and_case():
+    """spc-947: classify() must see through trailing reason text and case."""
+    assert classify("VERDICT: ESCALATION: tests need a DB") == "escalation"
+    assert classify("VERDICT: FAILED — tests broke") == "failed"
+    assert classify("verdict: needs-input") == "needs-input"
+    # Unknown keyword (with or without a reason) keeps the lenient done.
+    assert classify("VERDICT: SOMETHING-NEW: whatever") == "done"
+    assert classify("no verdict line") == "done"
 
 
 def test_extract_wrote():
@@ -168,13 +189,31 @@ pipeline:
 _E2E_PROMPT = "Reply with exactly this one line and nothing else: VERDICT: DONE"
 
 
-def _write_isolated_home(workdir: Path) -> tuple[Path, Path]:
+# Variant of the e2e config with the terminal tool enabled — needed to
+# reproduce a timeout that arrives while a tool subprocess is running.
+_TIMEOUT_CONFIG_TEMPLATE = (
+    _CONFIG_TEMPLATE.replace(
+        "  tools: []\n",
+        "  tools:\n"
+        "    - name: terminal\n"
+        "      class_path: sr2_spectre.tools.builtins.terminal.TerminalTool\n"
+        "      config:\n"
+        "        timeout: 300\n",
+    )
+    # The tools layer must advertise the registry or the model sees no tools.
+    .replace("      tool_providers: []\n", "      tool_providers:\n        - type: spectre_tools\n")
+)
+
+
+def _write_isolated_home(
+    workdir: Path, template: str = _CONFIG_TEMPLATE
+) -> tuple[Path, Path]:
     """Temp SR2_HOME with an agents dir + agent yaml; returns (home, agent yaml)."""
     home = workdir / "sr2-home"
     agents = home / "agents"
     agents.mkdir(parents=True)
     (agents / "e2e-dispatch.yaml").write_text(
-        _CONFIG_TEMPLATE.format(model=LLM_MODEL, base_url=LLM_BASE_URL),
+        template.format(model=LLM_MODEL, base_url=LLM_BASE_URL),
         encoding="utf-8",
     )
     return home, agents
@@ -268,6 +307,57 @@ def test_dispatch_unknown_agent_exits_error(tmp_path):
     )
     assert proc.returncode == STATUS_EXIT_CODES["error"]
     assert "config error" in proc.stderr
+
+
+def _surviving_pids(marker: str) -> list[int]:
+    """PIDs of running processes whose /proc cmdline contains *marker*."""
+    pids = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if marker.encode() in cmdline:
+            pids.append(int(entry.name))
+    return pids
+
+
+def test_dispatch_e2e_timeout_leaves_no_surviving_children(tmp_path):
+    """spc-947 defect 3: a turn timeout while a terminal command is running
+    must leave no surviving child process after dispatch exits.
+
+    The agent is told to write a marker file (its own cwd) before starting
+    a long sleep; the marker proves the command really was running when the
+    timeout fired, and the /proc scan proves nothing from it survived.
+    """
+    home, agents = _write_isolated_home(tmp_path, template=_TIMEOUT_CONFIG_TEMPLATE)
+    env = _child_env(home)
+    marker = tmp_path / "started.txt"
+    prompt = (
+        "Use the terminal tool to run EXACTLY this one command "
+        "(a single terminal tool call):\n"
+        f"echo started > {marker} && sleep 39.7\n"
+        "Wait for it to finish; do not stop early."
+    )
+
+    proc = _run_dispatch_cli(
+        [
+            "--agent", "e2e-dispatch",
+            "--agents-dir", str(agents),
+            "--prompt", prompt,
+            "--timeout", "20",
+        ],
+        env=env,
+        cwd=tmp_path,
+    )
+
+    assert proc.returncode == 4, proc.stderr[-2000:]
+    envelope = json.loads(proc.stdout)
+    assert envelope["status"] == "timeout"
+    assert marker.exists(), "terminal command never started; test is a no-op"
+    assert _surviving_pids("39.7") == []
 
 
 def test_dispatch_prompt_and_prompt_file_are_mutually_exclusive(tmp_path):

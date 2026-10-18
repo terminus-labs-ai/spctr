@@ -6,6 +6,9 @@ rather than mocking asyncio internals like communicate() — that keeps the
 tests grounded in observable behavior and robust to implementation changes
 (e.g. switching from communicate() to incremental stream pumping).
 """
+import asyncio
+from pathlib import Path
+
 import pytest
 
 from sr2_spectre.tools.registry import ToolRegistry
@@ -150,3 +153,59 @@ def test_terminal_custom_timeout_stored() -> None:
 
     tool = TerminalTool(timeout=60)
     assert tool.timeout == 60
+
+
+# ---------------------------------------------------------------------------
+# Process-group cleanup (spc-947): timeout and cancel must not orphan children
+# ---------------------------------------------------------------------------
+
+
+def _surviving_pids(marker: str) -> list[int]:
+    """PIDs of running processes whose /proc cmdline contains *marker*."""
+    pids = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if marker.encode() in cmdline:
+            pids.append(int(entry.name))
+    return pids
+
+
+@pytest.mark.asyncio
+async def test_terminal_timeout_kills_child_processes() -> None:
+    """On the tool's own timeout, children of the shell must die with it.
+
+    `sh -c 'sleep 31.3'` spawns a child sleep; killing only the shell
+    (the pre-fix behavior) left it running until it finished on its own.
+    """
+    from sr2_spectre.tools.builtins.terminal import TerminalTool
+
+    tool = TerminalTool(timeout=1)
+    with pytest.raises(TimeoutError):
+        await tool(command="sh -c 'sleep 31.3'")
+    await asyncio.sleep(0.2)  # give the kernel a moment to reap
+    assert _surviving_pids("31.3") == []
+
+
+@pytest.mark.asyncio
+async def test_terminal_cancel_kills_child_processes() -> None:
+    """An outside cancel (a dispatch turn timeout) must kill the group too.
+
+    CancelledError takes a different path than the tool's timeout: the
+    pre-fix code only killed the shell on TimeoutError, so a cancelled turn
+    orphaned the child (e.g. role C's pytest outliving its dispatch).
+    """
+    from sr2_spectre.tools.builtins.terminal import TerminalTool
+
+    tool = TerminalTool(timeout=60)
+    task = asyncio.create_task(tool(command="sh -c 'sleep 32.9'"))
+    await asyncio.sleep(0.5)  # let the shell and child start
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.2)
+    assert _surviving_pids("32.9") == []

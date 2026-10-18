@@ -2,7 +2,24 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 from pathlib import Path
+
+
+def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Kill the command's whole process group (spawns run in their own
+    session, so its PGID is the shell's PID). Killing only the shell would
+    orphan children (e.g. the ``sleep`` in ``sh -c 'sleep 30'``), which can
+    outlive a timed-out or cancelled turn. Falls back to killing just the
+    shell if the group is already gone."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
 
 
 class TerminalTool:
@@ -50,6 +67,9 @@ class TerminalTool:
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # Own session/process group: on timeout or cancellation we kill
+            # the group so children cannot outlive the command.
+            start_new_session=True,
             **kwargs,
         )
 
@@ -78,8 +98,16 @@ class TerminalTool:
         try:
             await asyncio.wait_for(pumps, timeout=self.timeout)
             await proc.wait()
+        except asyncio.CancelledError:
+            # A cancel from outside (dispatch turn timeout, REPL Ctrl-C)
+            # arrives here, not via the timeout path above: the shell and
+            # its children must not survive the turn. Kill the group, then
+            # let the cancellation propagate unchanged.
+            _kill_process_group(proc)
+            pumps.cancel()
+            raise
         except (asyncio.TimeoutError, TimeoutError):
-            proc.kill()
+            _kill_process_group(proc)
             # Cancel the pumps and reap them; whatever was read before the
             # timeout is already in the buffers.
             pumps.cancel()
