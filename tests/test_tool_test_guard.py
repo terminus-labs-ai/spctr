@@ -1,9 +1,13 @@
 """Tests for GuardTool — phantom coverage detection."""
 from __future__ import annotations
 
+import asyncio
+import os
 from pathlib import Path
 
 import pytest
+
+from tests.conftest import _surviving_pids
 
 from sr2_spectre.tools.builtins.test_guard import (
     GuardResult,
@@ -281,3 +285,72 @@ class TestCall:
 
         assert "UNCOLLECTED" in output
         assert "test_two" in output
+
+
+# ---------------------------------------------------------------------------
+# Process-group cleanup (spc-947 defect class, spc-947 G finding 2):
+# timeout and cancel must not orphan the collect subprocess or its children
+# ---------------------------------------------------------------------------
+
+
+class TestProcessGroupCleanup:
+    @pytest.mark.asyncio
+    async def test_timeout_kills_child_processes(self, tmp_path: Path, monkeypatch):
+        """On the collect timeout, the whole process group must die.
+
+        The pre-fix code returned set() on timeout without killing anything,
+        so `sh -c 'sleep <marker>'` (and any grandchild) outlived the tool.
+        A fake `python` on PATH keeps the test independent of the venv.
+        """
+        # The fake sleeps 1s (more than the 0.2s collect timeout, under
+        # monkeypatch below), then execs the long-sleep child: when the
+        # timeout fires the long sleep is still running, so the group kill
+        # is what must take it down. A fake `python` on PATH keeps the test
+        # independent of the venv (and of the spc-179 baseline failures).
+        fake = tmp_path / "python"
+        fake.write_text(
+            "#!/bin/sh\n"
+            "sleep 1\n"
+            "exec sleep 9941\n"
+        )
+        fake.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+
+        tool = GuardTool(cwd=str(tmp_path))
+        monkeypatch.setattr(GuardTool, "_COLLECT_TIMEOUT", 0.2)
+
+        # set() means the timeout path was taken (nothing collected).
+        assert await tool._collect_tests(tmp_path) == set()
+
+        await asyncio.sleep(0.3)  # give the kernel a moment to reap
+        assert _surviving_pids("9941") == []
+
+    @pytest.mark.asyncio
+    async def test_cancel_kills_child_processes(self, tmp_path: Path, monkeypatch):
+        """An outside cancel must kill the group, not just abandon it.
+
+        CancelledError takes a different path than the tool's timeout: the
+        pre-fix code killed nothing here either, orphaning the collect
+        subprocess when a turn was cancelled mid-guard.
+        """
+        # Same fake as the timeout test: the 1s sleep keeps the child
+        # parked in communicate() so task.cancel() lands while it is
+        # provably running.
+        fake = tmp_path / "python"
+        fake.write_text(
+            "#!/bin/sh\n"
+            "sleep 1\n"
+            "exec sleep 9942\n"
+        )
+        fake.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+
+        tool = GuardTool(cwd=str(tmp_path))
+        task = asyncio.create_task(tool._collect_tests(tmp_path))
+        await asyncio.sleep(0.3)  # the fake is up and mid-sleep
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        await asyncio.sleep(0.3)
+        assert _surviving_pids("9942") == []

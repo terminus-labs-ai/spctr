@@ -11,11 +11,16 @@ Covers:
 """
 from __future__ import annotations
 
+import asyncio
+
 import pytest
+
+from tests.conftest import _surviving_pids
 
 from sr2_spectre.interfaces.discord.handler import (
     CommandContext,
     SlashCommand,
+    _default_runner,
     build_tool_embed,
     chunk_message,
     get_registered_commands,
@@ -580,3 +585,38 @@ class TestTailForStream:
     def test_marks_truncation(self) -> None:
         out = tail_for_stream("x" * 5000, 2000)
         assert out.startswith("[…]")
+
+
+# ---------------------------------------------------------------------------
+# _default_runner — process-group cleanup (spc-947 defect class,
+# spc-947 G finding 2): timeout and cancel must not orphan children
+# ---------------------------------------------------------------------------
+
+
+class TestDefaultRunnerProcessGroupCleanup:
+    async def test_timeout_kills_child_processes(self) -> None:
+        """On timeout, the command's whole process group must die.
+
+        The pre-fix runner called proc.kill() on the direct child only and
+        had no cancel path, so children outlived the probe. Tests the real
+        runner, not an injected fake. sh and sleep share the runner's new
+        process group; killing the group takes both down.
+        """
+        with pytest.raises(TimeoutError):
+            await _default_runner(["sh", "-c", "exec sleep 9945"], 0.5)
+
+        await asyncio.sleep(0.3)  # give the kernel a moment to reap
+        assert _surviving_pids("9945") == []
+
+    async def test_cancel_kills_child_processes(self) -> None:
+        """An outside cancel must kill the group, not just abandon it."""
+        task = asyncio.create_task(
+            _default_runner(["sh", "-c", "exec sleep 9946"], 30.0)
+        )
+        await asyncio.sleep(0.5)  # let the shell and child start
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        await asyncio.sleep(0.3)
+        assert _surviving_pids("9946") == []

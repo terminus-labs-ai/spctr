@@ -7,11 +7,11 @@ tests grounded in observable behavior and robust to implementation changes
 (e.g. switching from communicate() to incremental stream pumping).
 """
 import asyncio
-from pathlib import Path
 
 import pytest
 
 from sr2_spectre.tools.registry import ToolRegistry
+from tests.conftest import _surviving_pids
 
 
 # ---------------------------------------------------------------------------
@@ -158,22 +158,6 @@ def test_terminal_custom_timeout_stored() -> None:
 # ---------------------------------------------------------------------------
 # Process-group cleanup (spc-947): timeout and cancel must not orphan children
 # ---------------------------------------------------------------------------
-
-
-def _surviving_pids(marker: str) -> list[int]:
-    """PIDs of running processes whose /proc cmdline contains *marker*."""
-    pids = []
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            cmdline = (entry / "cmdline").read_bytes()
-        except OSError:
-            continue
-        if marker.encode() in cmdline:
-            pids.append(int(entry.name))
-    return pids
-
 
 @pytest.mark.asyncio
 async def test_terminal_timeout_kills_child_processes() -> None:

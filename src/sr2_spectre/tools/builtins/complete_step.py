@@ -16,7 +16,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
+import signal
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,6 +29,35 @@ from sr2_spectre.planning import TaskFrontmatter, TaskStatus, parse_file, split_
 from sr2_spectre.tools.output import PostExecuteEvent, ToolOutput
 
 logger = logging.getLogger(__name__)
+
+
+def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Kill the subprocess's whole process group (spawns run in their own
+    session, so its PGID is the child's PID). Killing only the direct child
+    would orphan its children, which can outlive a timed-out or cancelled
+    verify (spc-947 defect class). Falls back to killing just the child if
+    the group is already gone."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+
+
+async def _reap(proc: asyncio.subprocess.Process) -> None:
+    """Best-effort reap so the transport is cleaned up. Bounded: a killed
+    shell can leave an orphaned child holding the pipes open, which makes an
+    unbounded wait() hang; the exit status is not needed here.
+    CancelledError must never be swallowed: it re-raises so an outside
+    cancellation keeps propagating."""
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=0.5)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        pass
 
 
 def frame_id(plan_slug: str, task_slug: str) -> str:
@@ -229,18 +260,36 @@ class CompleteStepTool:
                 command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # Own session/process group: on timeout or cancellation the
+                # whole group is killed, so verify children (e.g. a pytest
+                # grandchild) cannot outlive the tool call.
+                start_new_session=True,
             )
+        except Exception as exc:  # noqa: BLE001 — surface any spawn failure as a failed verify
+            return False, f"Verify command error: {exc}"
+
+        try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=self._VERIFY_TIMEOUT
             )
-            output = (
-                stdout.decode(errors="replace") + stderr.decode(errors="replace")
-            ).strip()
-            return proc.returncode == 0, output
+        except asyncio.CancelledError:
+            # A cancel from outside arrives here; the broad `except Exception`
+            # below does not catch CancelledError, and the pre-fix code killed
+            # nothing on this path. Kill the group, then let the cancellation
+            # propagate unchanged.
+            _kill_process_group(proc)
+            await _reap(proc)
+            raise
         except (asyncio.TimeoutError, TimeoutError):
+            _kill_process_group(proc)
+            await _reap(proc)
             return False, f"Verify command timed out: {command}"
         except Exception as exc:  # noqa: BLE001 — surface any spawn failure as a failed verify
             return False, f"Verify command error: {exc}"
+        output = (
+            stdout.decode(errors="replace") + stderr.decode(errors="replace")
+        ).strip()
+        return proc.returncode == 0, output
 
     @staticmethod
     def _flip_status(task_file: Path) -> None:

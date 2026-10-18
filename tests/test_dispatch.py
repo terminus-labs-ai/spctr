@@ -20,6 +20,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import _surviving_pids
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 from sr2_spectre.dispatch import (
@@ -307,21 +309,6 @@ def test_dispatch_unknown_agent_exits_error(tmp_path):
     )
     assert proc.returncode == STATUS_EXIT_CODES["error"]
     assert "config error" in proc.stderr
-
-
-def _surviving_pids(marker: str) -> list[int]:
-    """PIDs of running processes whose /proc cmdline contains *marker*."""
-    pids = []
-    for entry in Path("/proc").iterdir():
-        if not entry.name.isdigit():
-            continue
-        try:
-            cmdline = (entry / "cmdline").read_bytes()
-        except OSError:
-            continue
-        if marker.encode() in cmdline:
-            pids.append(int(entry.name))
-    return pids
 
 
 def test_dispatch_e2e_timeout_leaves_no_surviving_children(tmp_path):

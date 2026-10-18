@@ -13,10 +13,41 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Literal
 
 logger = logging.getLogger("sr2_spectre.discord.handler")
+
+
+def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Kill the subprocess's whole process group (spawns run in their own
+    session, so its PGID is the child's PID). Killing only the direct child
+    would orphan its children, which can outlive a timed-out or cancelled
+    probe (spc-947 defect class). Falls back to killing just the child if
+    the group is already gone."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+
+
+async def _reap(proc: asyncio.subprocess.Process) -> None:
+    """Best-effort reap so the transport is cleaned up. Bounded: a killed
+    process can leave an orphaned child holding the pipes open, which makes
+    an unbounded wait() hang; the exit status is not needed here.
+    CancelledError must never be swallowed: it re-raises so an outside
+    cancellation keeps propagating."""
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=0.5)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        pass
 
 
 def should_respond(
@@ -463,17 +494,29 @@ SubprocessRunner = Callable[[list[str], float], Awaitable[tuple[int, str, str]]]
 
 
 async def _default_runner(cmd: list[str], timeout_s: float) -> tuple[int, str, str]:
-    """Run a command, capturing stdout/stderr. Raises TimeoutError on timeout."""
+    """Run a command, capturing stdout/stderr. Raises TimeoutError on timeout.
+
+    The command runs in its own session/process group so that on timeout or
+    an outside cancel the whole group is killed: killing only the direct
+    child would let its children outlive the turn (spc-947 defect class).
+    """
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
     )
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_s)
+    except asyncio.CancelledError:
+        # Outside cancel (turn aborted while the probe was running): kill
+        # the group so children cannot survive, then propagate unchanged.
+        _kill_process_group(proc)
+        await _reap(proc)
+        raise
     except (asyncio.TimeoutError, TimeoutError):
-        proc.kill()
-        await proc.wait()
+        _kill_process_group(proc)
+        await _reap(proc)
         raise
     return (
         proc.returncode or 0,

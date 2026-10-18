@@ -14,6 +14,7 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import textwrap
 from pathlib import Path
@@ -21,6 +22,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from sr2.models import ToolResultBlock, ToolUseBlock
+
+from tests.conftest import _surviving_pids
 
 from sr2_spectre.tools.builtins.complete_step import (
     CompleteStepResult,
@@ -668,3 +671,47 @@ class TestAgentModuleClean:
         from sr2_spectre.agent import __dict__ as agent_dict
         # The module shouldn't have _is_complete_step_success
         assert "_is_complete_step_success" not in dir(__import__("sr2_spectre.agent", fromlist=[""]))
+
+
+# ---------------------------------------------------------------------------
+# Process-group cleanup (spc-947 defect class, spc-947 G finding 2):
+# verify timeout and cancel must not orphan the command's children
+# ---------------------------------------------------------------------------
+
+
+class TestVerifyProcessGroupCleanup:
+    async def test_timeout_kills_child_processes(
+        self, plans_root: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On the verify timeout, the whole process group must die.
+
+        The pre-fix code returned the failure tuple without killing, so
+        `sh -c 'sleep <marker>'` (and any grandchild) outlived the tool.
+        """
+        tool = CompleteStepTool(plans_root=str(plans_root))
+        monkeypatch.setattr(CompleteStepTool, "_VERIFY_TIMEOUT", 0.5)
+
+        ok, output = await tool._run_verify("sh -c 'exec sleep 9943'")
+        assert ok is False
+        assert "timed out" in output
+
+        await asyncio.sleep(0.3)  # give the kernel a moment to reap
+        assert _surviving_pids("9943") == []
+
+    async def test_cancel_kills_child_processes(
+        self, plans_root: Path
+    ) -> None:
+        """An outside cancel must kill the group, not just abandon it.
+
+        The pre-fix broad `except Exception` did not catch CancelledError,
+        so a cancelled turn left the verify command running.
+        """
+        tool = CompleteStepTool(plans_root=str(plans_root))
+        task = asyncio.create_task(tool._run_verify("sh -c 'exec sleep 9944'"))
+        await asyncio.sleep(0.5)  # let the shell and child start
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        await asyncio.sleep(0.3)
+        assert _surviving_pids("9944") == []

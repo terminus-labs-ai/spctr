@@ -7,6 +7,7 @@ Tests drive the app via Pilot, assert on widget content — never stdout.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Callable
 from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
@@ -121,6 +122,27 @@ def make_mock_agent() -> Callable[..., MagicMock]:
 # ---------------------------------------------------------------------------
 # Helper utilities for test authors
 # ---------------------------------------------------------------------------
+
+def _surviving_pids(marker: str) -> list[int]:
+    """PIDs of running processes whose /proc cmdline contains *marker*.
+
+    Shared by the spc-947 process-group cleanup tests (terminal, dispatch,
+    test_guard, complete_step, discord handler): each test embeds a unique
+    marker in its child command line, then asserts none of those processes
+    survived a timeout or cancel.
+    """
+    pids = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cmdline = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if marker.encode() in cmdline:
+            pids.append(int(entry.name))
+    return pids
+
 
 async def submit_input(pilot, app: SpectreTUI, text: str) -> None:
     """Type text into the prompt input and submit."""

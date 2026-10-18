@@ -12,13 +12,44 @@ confirm the green result is genuine.
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import signal
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 # Matches `def test_<name>` or `async def test_<name>` at any indentation.
 _TEST_FUNC_RE = re.compile(r"^\s*(?:async\s+)?def\s+(test_\w+)\s*\(", re.MULTILINE)
+
+
+def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """Kill the subprocess's whole process group (spawns run in their own
+    session, so its PGID is the child's PID). Killing only the direct child
+    would orphan its children, which can outlive a timed-out or cancelled
+    call (spc-947 defect class). Falls back to killing just the child if the
+    group is already gone."""
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
+
+
+async def _reap(proc: asyncio.subprocess.Process) -> None:
+    """Best-effort reap so the transport is cleaned up. Bounded: a killed
+    shell can leave an orphaned child holding the pipes open, which makes an
+    unbounded wait() hang; the exit status is not needed here.
+    CancelledError must never be swallowed: it re-raises so an outside
+    cancellation keeps propagating."""
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=0.5)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        pass
 
 
 @dataclass(frozen=True)
@@ -103,11 +134,27 @@ class GuardTool:
                 f"cd {test_dir} && python -m pytest --collect-only -q 2>&1",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                # Own session/process group: on timeout or cancellation the
+                # whole group is killed, so a collect subprocess cannot
+                # outlive the tool call (same idiom as the terminal tool).
+                start_new_session=True,
             )
+        except OSError:
+            return set()
+
+        try:
             stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=self._COLLECT_TIMEOUT
             )
+        except asyncio.CancelledError:
+            # Outside cancel (dispatch turn timeout, REPL Ctrl-C): kill the
+            # group — the pre-fix code killed nothing — then propagate.
+            _kill_process_group(proc)
+            await _reap(proc)
+            raise
         except (asyncio.TimeoutError, TimeoutError):
+            _kill_process_group(proc)
+            await _reap(proc)
             return set()
 
         output = (stdout.decode(errors="replace") + stderr.decode(errors="replace"))
