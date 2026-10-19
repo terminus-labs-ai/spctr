@@ -20,11 +20,15 @@ from sr2_spectre.review import (
     DEFAULT_SECRET_PATTERNS,
     PackageInput,
     PackageTooLargeError,
+    QuorumConfigError,
     RelayCompletionClient,
     RelaySchemaRejected,
+    RotationState,
     SecretPathError,
     VOTER_SCHEMA,
     build_package,
+    quorum_report,
+    run_quorum,
     run_voter,
     voter_request_body,
     voter_rows,
@@ -95,11 +99,10 @@ class FakeComplete:
         return self.answer or ""
 
 
-def _good_answer() -> str:
+def _good_answer(rows: list[str] | None = None) -> str:
+    ids = rows if rows is not None else ["AC2-c1", "AC2-c2", "AC2-c3"]
     return json.dumps({"rows": [
-        {"row_id": "AC2-c1", "holds": True, "reason": "ok"},
-        {"row_id": "AC2-c2", "holds": True, "reason": "ok"},
-        {"row_id": "AC2-c3", "holds": True, "reason": "ok"},
+        {"row_id": row_id, "holds": True, "reason": "ok"} for row_id in ids
     ]})
 
 
@@ -592,3 +595,445 @@ def test_ac7_live_relay_returns_schema_valid_answer(tmp_path, model):
     # backend that ignores the "one line" ask fails here loudly).
     for row in data["rows"]:
         assert re.fullmatch(r"[^\n]*", row["reason"])
+
+
+# ---------------------------------------------------------------------------
+# AC3 / AC6 — the quorum runner
+# ---------------------------------------------------------------------------
+
+POOL = ["qwen3.8-flash", "qwen3.8-27b", "gemma-4-31b", "glm-4.7-flash"]
+NODE_OF = {
+    "qwen3.8-flash": "b65",
+    "qwen3.8-27b": "b65",
+    "gemma-4-31b": "xtx",
+    "glm-4.7-flash": "xtx",
+}
+
+
+def _node_of(model: str) -> str:
+    return NODE_OF[model]
+
+
+class QuorumComplete:
+    """Per-voter fake transport: answers each request from its own row order.
+
+    ``denier`` is the ordinal (0-based) of the request that denies one row;
+    ``unparseable`` the ordinal of one whose answer is not JSON; ``missing``
+    the ordinal of one whose answer omits one row. ``codes`` maps a model
+    name to the answer for that model, taking precedence. Records every
+    body in call order.
+    """
+
+    def __init__(self, *, denier: int | None = None,
+                 unparseable: int | None = None,
+                 missing: int | None = None,
+                 codes: dict[str, str] | None = None):
+        self.denier = denier
+        self.unparseable = unparseable
+        self.missing = missing
+        self.codes = codes or {}
+        self.bodies: list[dict] = []
+
+    def _rows_of(self, body: dict) -> list[str]:
+        """The rows this voter must answer, in the order its request
+        demands: the per-voter order block when the quorum appended one,
+        else the case table (rendered last, table order)."""
+        msg = body["messages"][1]["content"]
+        marker = "in exactly the order listed here"
+        if marker in msg:
+            block = msg.split(marker, 1)[1].split(":", 1)[1]
+            ids = []
+            for line in block.splitlines():
+                first = line.strip()
+                if "|" in first or first.lower() in ("row_id", "id"):
+                    break
+                if first:
+                    ids.append(first)
+            assert ids, msg[-200:]
+            return ids
+        table = msg.split("=== case_table.md ===", 1)[1]
+        ids = []
+        for line in table.splitlines():
+            first = line.split("|", 1)[0].strip()
+            if "-" in first and first.lower() not in ("row_id", "id"):
+                ids.append(first)
+        assert ids, table[:200]
+        return ids
+
+    async def __call__(self, body: dict) -> str:
+        n = len(self.bodies)
+        self.bodies.append(body)
+        rows = self._rows_of(body)
+        code = self.codes.get(body["model"])
+        if code is not None:
+            return json.dumps({"rows": [
+                {"row_id": row_id, "holds": holds,
+                 "reason": "ok" if holds else "lenient edit"}
+                for row_id, holds in _apply_code(rows, code)
+            ]})
+        if n == self.unparseable:
+            return "looks fine to me"
+        if n == self.missing:
+            # Drop the row at a per-request position so each fake run
+            # denies exactly one different row.
+            drop = n % len(rows)
+            return _good_answer(
+                [r for i, r in enumerate(rows) if i != drop]
+            )
+        if n == self.denier:
+            return json.dumps({"rows": [
+                {"row_id": rows[0], "holds": False, "reason": "lenient edit"},
+                *[{"row_id": r, "holds": True, "reason": "ok"} for r in rows[1:]],
+            ]})
+        return _good_answer(rows)
+
+
+def _apply_code(rows: list[str], code: str):
+    """Answer rows with *code*: 'pass' holds on all, 'deny' denies all,
+    'deny_first' denies only the first row."""
+    if code == "deny_first":
+        return [(rows[0], False), *[(r, True) for r in rows[1:]]]
+    return [(row_id, code != "deny") for row_id in rows]
+
+
+def _table_with_rows(tmp_path: Path, count: int) -> Path:
+    lines = ["row_id | input | expected | clause | layer"]
+    for i in range(1, count + 1):
+        lines.append(f"AC9-c{i} | input {i} | expected {i} | FR 9 | unit")
+    path = tmp_path / "big_table.md"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def _build_many(tmp_path: Path, rows: int, name: str = "pkg"):
+    """A package whose case table has *rows* rows (N=7 needs > 3! = 6)."""
+    return _build(tmp_path, case_table=_table_with_rows(tmp_path, rows),
+                  out_dir=tmp_path / name)
+
+
+async def test_quorum_all_pass_writes_quorum_json(tmp_path):
+    """AC3-c1: N=3, every voter passes every row."""
+    pkg = _build(tmp_path)
+    complete = QuorumComplete()
+    result = await run_quorum(
+        pkg, complete, system_prompt=SYSTEM_PROMPT,
+        voters=3, models=POOL, node_of=_node_of,
+    )
+    data = json.loads((pkg.directory / "quorum.json").read_text())
+    assert data == result
+    assert result["approved"] is True
+    assert result["pass_counts"] == {
+        "AC2-c1": 3, "AC2-c2": 3, "AC2-c3": 3,
+    }
+    assert result["denied_rows"] == []
+    assert len(result["voter_results"]) == 3
+    for vr in result["voter_results"]:
+        assert vr["raw_answer"]  # per-voter raw answer recorded
+        assert vr["served_node"] in NODE_OF.values()
+        assert vr["model"] in POOL
+
+
+async def test_quorum_one_denial_approved_false_with_voter_and_reason(tmp_path):
+    """AC3-c2: N=3, one voter denies one row."""
+    pkg = _build(tmp_path)
+    complete = QuorumComplete(denier=1)
+    result = await run_quorum(
+        pkg, complete, system_prompt=SYSTEM_PROMPT,
+        voters=3, models=POOL, node_of=_node_of,
+    )
+    denied = result["denied_rows"]
+    assert len(denied) == 1
+    assert denied[0]["row_id"] == "AC2-c2"  # voter 1's shuffled first row
+    assert result["pass_counts"]["AC2-c2"] == 2
+    assert result["approved"] is False
+    deniers = denied[0]["denied_by"]
+    assert deniers == [{"voter_index": 1, "reason": "lenient edit"}]
+
+
+async def test_quorum_unparseable_voter_denies_its_rows(tmp_path):
+    """AC3-c3: an unparseable answer denies that voter's rows."""
+    pkg = _build(tmp_path)
+    complete = QuorumComplete(unparseable=0)
+    result = await run_quorum(
+        pkg, complete, system_prompt=SYSTEM_PROMPT,
+        voters=3, models=POOL, node_of=_node_of,
+    )
+    assert result["approved"] is False
+    assert all(count == 2 for count in result["pass_counts"].values())
+    for entry in result["denied_rows"]:
+        assert entry["denied_by"] == [{"voter_index": 0, "reason": "unparseable"}]
+
+
+async def test_quorum_missing_row_denied_with_reason_missing(tmp_path):
+    """AC3-c3: a parseable answer omitting a row denies it with 'missing'."""
+    pkg = _build(tmp_path)
+    complete = QuorumComplete(missing=2)
+    result = await run_quorum(
+        pkg, complete, system_prompt=SYSTEM_PROMPT,
+        voters=3, models=POOL, node_of=_node_of,
+    )
+    assert result["approved"] is False
+    missing_rows = [
+        e for e in result["denied_rows"]
+        if e["denied_by"] == [{"voter_index": 2, "reason": "missing"}]
+    ]
+    assert len(missing_rows) == 1  # exactly the one omitted row
+    # The fake drops one row of voter 2's own order; the missing row is in
+    # that voter's order and denied only by voter 2.
+    assert missing_rows[0]["row_id"] in result["voter_results"][2]["row_order"]
+
+
+@pytest.mark.parametrize("n", [2, 4])
+async def test_quorum_even_n_config_error_before_any_call(tmp_path, n):
+    """AC3-c4: an even N is a configuration error before any model call."""
+    pkg = _build(tmp_path)
+    complete = QuorumComplete()
+    with pytest.raises(QuorumConfigError, match="odd"):
+        await run_quorum(
+            pkg, complete, system_prompt=SYSTEM_PROMPT,
+            voters=n, models=POOL, node_of=_node_of,
+        )
+    assert complete.bodies == []
+    assert not (pkg.directory / "quorum.json").exists()
+
+
+def test_package_carries_row_ids_no_reread(tmp_path):
+    """spc-960 G F1: row ids ride on the Package; the table is not re-read."""
+    pkg = _build(tmp_path)
+    assert pkg.row_ids == ("AC2-c1", "AC2-c2", "AC2-c3")
+    assert voter_rows(pkg) == ["AC2-c1", "AC2-c2", "AC2-c3"]
+    (pkg.directory / "case_table.md").unlink()
+    assert voter_rows(pkg) == ["AC2-c1", "AC2-c2", "AC2-c3"]
+
+
+@pytest.mark.parametrize("n", [5, 7])
+async def test_quorum_full_pool_coverage_distinct_orders_one_adversarial(
+    tmp_path, n
+):
+    """AC6-c1: N>=pool size: every model serves, orders pairwise distinct,
+    exactly one adversarial voter."""
+    pkg = _build_many(tmp_path, 5)
+    complete = QuorumComplete()
+    result = await run_quorum(
+        pkg, complete, system_prompt=SYSTEM_PROMPT,
+        voters=n, models=POOL, node_of=_node_of,
+    )
+    served = {vr["model"] for vr in result["voter_results"]}
+    assert served == set(POOL)
+    orders = [tuple(vr["row_order"]) for vr in result["voter_results"]]
+    assert len(set(orders)) == n
+    assert sum(1 for vr in result["voter_results"] if vr["adversarial"]) == 1
+
+
+async def test_quorum_rotation_covers_all_four_omissions(tmp_path):
+    """AC6-c2: N=3 over four consecutive runs: 3 distinct models each run,
+    the omitted model differs run to run and covers all four."""
+    pkg = _build(tmp_path)
+    rotation = RotationState()
+    omitted = []
+    for _ in range(4):
+        complete = QuorumComplete()
+        result = await run_quorum(
+            pkg, complete, system_prompt=SYSTEM_PROMPT,
+            voters=3, models=POOL, node_of=_node_of, rotation=rotation,
+        )
+        models = [vr["model"] for vr in result["voter_results"]]
+        assert len(set(models)) == 3
+        omitted.append(({*POOL} - set(models)).pop())
+    assert len(set(omitted)) == 4
+    assert set(omitted) == set(POOL)
+
+
+async def test_quorum_calls_grouped_by_model_contiguous(tmp_path):
+    """AC6-c3: calls run grouped by model, each model's group contiguous;
+    quorum.json records model, served node and wall time per group."""
+    pkg = _build_many(tmp_path, 5)
+    complete = QuorumComplete()
+    result = await run_quorum(
+        pkg, complete, system_prompt=SYSTEM_PROMPT,
+        voters=5, models=POOL, node_of=_node_of,
+    )
+    call_sequence = [b["model"] for b in complete.bodies]
+    groups = result["groups"]
+    assert sum(len(g["voter_indexes"]) for g in groups) == len(call_sequence)
+    seen: list[str] = []
+    for model in call_sequence:
+        if not seen or seen[-1] != model:
+            seen.append(model)
+    assert len(seen) == len(set(seen)), "a model's calls were not contiguous"
+    for g in groups:
+        assert g["served_nodes"], g
+        assert g["wall_time_s"] >= 0.0
+
+
+async def test_quorum_group_order_places_models_as_given(tmp_path):
+    """The caller orders the groups (xtx loads gemma once, glm once)."""
+    pkg = _build_many(tmp_path, 5)
+    complete = QuorumComplete()
+    result = await run_quorum(
+        pkg, complete, system_prompt=SYSTEM_PROMPT,
+        voters=5, models=POOL, node_of=_node_of,
+        group_order=list(reversed(POOL)),
+    )
+    assert [g["model"] for g in result["groups"]] == list(reversed(POOL))
+
+
+async def test_quorum_wall_time_from_the_clock_seam(tmp_path):
+    """Per-group wall time is measured with the injected clock."""
+    pkg = _build(tmp_path)
+    ticks = iter([0.0, 1.5, 2.0, 7.25, 9.0, 9.5])
+    result = await run_quorum(
+        pkg, QuorumComplete(), system_prompt=SYSTEM_PROMPT,
+        voters=3, models=POOL, node_of=_node_of, clock=lambda: next(ticks),
+    )
+    assert [g["wall_time_s"] for g in result["groups"]] == [1.5, 5.25, 0.5]
+
+
+@pytest.mark.parametrize(
+    "short_pool",
+    [
+        ["qwen3.8-flash", "qwen3.8-27b", "gemma-4-31b"],       # no glm
+        ["qwen3.8-flash", "gemma-4-31b", "glm-4.7-flash"],     # no 27b
+        ["qwen3.8-27b", "gemma-4-31b", "glm-4.7-flash"],       # no flash
+        ["qwen3.8-flash", "qwen3.8-27b", "glm-4.7-flash"],     # no gemma
+    ],
+)
+async def test_quorum_short_pool_config_error_before_any_call(tmp_path, short_pool):
+    """AC6-c4: a pool lacking any required model fails before any call."""
+    pkg = _build(tmp_path)
+    complete = QuorumComplete()
+    with pytest.raises(QuorumConfigError, match="missing required model"):
+        await run_quorum(
+            pkg, complete, system_prompt=SYSTEM_PROMPT,
+            voters=3, models=short_pool, node_of=_node_of,
+        )
+    assert complete.bodies == []
+
+
+async def test_quorum_voters_see_the_same_row_set(tmp_path):
+    """AC6-c5: every voter gets the same rows; only order and framing differ."""
+    pkg = _build(tmp_path)
+    complete = QuorumComplete()
+    result = await run_quorum(
+        pkg, complete, system_prompt=SYSTEM_PROMPT,
+        voters=3, models=POOL, node_of=_node_of,
+    )
+    table = set(pkg.row_ids)
+    for vr in result["voter_results"]:
+        assert set(vr["row_order"]) == table
+    messages = [b["messages"][1]["content"] for b in complete.bodies]
+    for row_id in table:
+        for msg in messages:
+            assert f"| {row_id} |" in msg or msg.count(row_id) >= 1
+    adversarial = [
+        vr for vr in result["voter_results"] if vr["adversarial"]
+    ]
+    assert len(adversarial) == 1
+    idx = adversarial[0]["index"]
+    framed = [i for i, m in enumerate(messages) if "adversarial" in m.lower()]
+    assert framed == [idx]
+
+
+async def test_quorum_writes_the_session_log_per_voter(tmp_path, monkeypatch):
+    """Every voter run logs its raw answer and served node (run_log seam)."""
+    log_dir = tmp_path / "logs"
+    monkeypatch.setenv("SR2_SESSION_LOG_DIR", str(log_dir))
+    pkg = _build(tmp_path)
+    log = SessionLogManager().open_session("quorum-test", "role-voter")
+    try:
+        await run_quorum(
+            pkg, QuorumComplete(), system_prompt=SYSTEM_PROMPT,
+            voters=3, models=POOL, node_of=_node_of, session_log=log,
+        )
+    finally:
+        log.close()
+    events = [e for e in _log_events(log_dir) if e["event"] == "voter.answer"]
+    assert len(events) == 3
+    assert {e["data"]["served_node"] for e in events} <= set(NODE_OF.values())
+    assert all(e["data"]["raw_answer"] for e in events)
+
+
+# ---------------------------------------------------------------------------
+# AC4 — the measurement report
+# ---------------------------------------------------------------------------
+
+
+async def test_quorum_report_covers_packages_counts_and_models(tmp_path):
+    """AC4-c1: report per package and count: caught, denied, unanimity;
+    per model catch and deny rates. The fake answers per model: gemma
+    always denies (catches the defect row, denies correct rows), glm
+    denies only its first row, the Qwen models always pass."""
+    defect = _build_many(tmp_path, 5, name="r5")
+    correct = _build_many(tmp_path, 5, name="r7d")
+    codes = {
+        "gemma-4-31b": "deny",
+        "glm-4.7-flash": "deny_first",
+        "qwen3.8-flash": "pass",
+        "qwen3.8-27b": "pass",
+    }
+    out = tmp_path / "report.md"
+    report = await quorum_report(
+        {"r5": {"package": defect, "defect_rows": ["AC9-c2"]},
+         "fixed": {"package": correct, "defect_rows": []}},
+        counts=(3, 5, 7),
+        complete=QuorumComplete(codes=codes),
+        system_prompt=SYSTEM_PROMPT,
+        models=POOL,
+        node_of=_node_of,
+        out_path=out,
+    )
+    assert out.read_text(encoding="utf-8") == report
+    # Coverage: both packages, all three counts, both run modes.
+    for heading in ("## r5", "## fixed"):
+        assert heading in report
+    for count in (3, 5, 7):
+        assert f"- N={count} diversified:" in report
+        assert f"- N={count} plain:" in report
+    # Per-model catch and deny rates.
+    for model in POOL:
+        assert f"{model}: voters" in report
+    assert "catch rate" in report and "deny rate" in report
+    r5_section = report.split("## r5", 1)[1].split("## fixed", 1)[0]
+    fixed_section = report.split("## fixed", 1)[1]
+    # Unanimity verdicts: r5 denied (gemma denies every row it sees).
+    assert "approved=False" in r5_section
+    # The defect row is caught in every r5 run: gemma serves every run
+    # (N >= pool size covers the pool; N=3 plain fills round-robin and
+    # lands on gemma at index 2) and denies every row.
+    assert r5_section.count("defect rows caught 1/1 (AC9-c2)") == 6
+    # Per-model rates on the r5 package, N=7 plain: 7 voters over the
+    # 4-model pool round-robin — qwen3.8-flash, qwen3.8-27b and
+    # gemma-4-31b get 2 voters, glm-4.7-flash 1. Gemma's 2 voters both
+    # catch (deny the defect row) and deny a correct row; the Qwen
+    # voters never deny.
+    n7_plain = r5_section.split("- N=7 plain:")[1].split("- N=")[0]
+    assert "gemma-4-31b: voters 2; catch rate 2/2 (100%)" in n7_plain
+    assert "qwen3.8-flash: voters 2; catch rate 0/2 (0%)" in n7_plain
+    assert "deny rate 0/2 (0%)" in n7_plain
+    assert "qwen3.8-27b: voters 2; catch rate 0/2 (0%)" in n7_plain
+    assert "glm-4.7-flash: voters 1" in n7_plain
+    # The fixed package: no defect row exists, so catch is 0/0; the same
+    # denying models deny correct rows there too.
+    assert "defect rows caught 0/0" in fixed_section
+    assert "correct rows denied" in fixed_section
+    assert "approved=False" in fixed_section
+
+
+async def test_quorum_report_correct_package_with_no_defect_rows(tmp_path):
+    """A correct-code package has no defect rows: catch 0/0, no denies,
+    unanimity approve."""
+    correct = _build_many(tmp_path, 5, name="correct")
+    passing = {m: "pass" for m in POOL}
+    report = await quorum_report(
+        {"fixed": {"package": correct, "defect_rows": []}},
+        counts=(3,),
+        complete=QuorumComplete(codes=passing),
+        system_prompt=SYSTEM_PROMPT,
+        models=POOL,
+        node_of=_node_of,
+        out_path=tmp_path / "report.md",
+    )
+    assert "defect rows: (none)" in report
+    assert "defect rows caught 0/0" in report
+    assert "correct rows denied 0" in report
+    assert "approved=True" in report

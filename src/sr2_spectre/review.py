@@ -1,4 +1,4 @@
-"""Review package builder and single-call voter (spc-960, spec slice 1).
+"""Review package builder, single-call voter and quorum runner (spec slices 1-2).
 
 Two halves of the local-role-runs spec (``local-role-runs.md`` FR 1-4, NFR):
 
@@ -22,14 +22,22 @@ Two halves of the local-role-runs spec (``local-role-runs.md`` FR 1-4, NFR):
   unconstrained retry sent. Every run writes its raw answer and served node
   to the session log through the ``run_log`` seam.
 
-The quorum runner (FR 5-7) is spc-961; this module only provides the single
-voter call it groups.
+The quorum runner (FR 5-7, spc-961) groups the single voter call: N odd
+voters, each with a distinct row order and exactly one with the adversarial
+framing (both rendered into the request, since role cards are out of scope),
+calls grouped by model with each group contiguous, the served node read from
+the relay's ``x-relay-node`` response header (llm-relay-1), per-group wall
+time, and ``quorum.json`` beside the package. ``quorum_report`` tabulates
+catch and deny rates across packages and voter counts for the kodiak-18-c1
+measurement.
 """
 from __future__ import annotations
 
 import fnmatch
 import hashlib
+import itertools
 import json
+import random
 import re
 import time
 from dataclasses import dataclass
@@ -43,10 +51,16 @@ __all__ = [
     "DEFAULT_SECRET_PATTERNS",
     "DEFAULT_MAX_RENDERED_BYTES",
     "DEFAULT_RELAY_BASE_URL",
+    "REQUIRED_POOL_MODELS",
+    "QuorumConfigError",
     "PackageTooLargeError",
     "SecretPathError",
     "RelayCompletionClient",
+    "RelaySchemaRejected",
+    "RotationState",
     "build_package",
+    "quorum_report",
+    "run_quorum",
     "run_voter",
     "voter_request_body",
     "voter_rows",
@@ -104,6 +118,9 @@ class Package:
     directory: Path
     manifest: dict[str, Any]
     package_hash: str
+    # Row ids from the case table, in table order. Carried on the Package so
+    # row handling never re-reads the file (spc-960 G finding F1).
+    row_ids: tuple[str, ...] = ()
 
 
 def _sha256_bytes(payload: bytes) -> str:
@@ -115,7 +132,8 @@ def _rendered_prompt(package_dir: Path, manifest: dict[str, Any]) -> str:
 
     The single rendering shared by the size estimate recorded in the
     manifest and (via ``voter_request_body``) the voter's user message, so
-    the two can never disagree.
+    the two can never disagree. The case table renders last so the rows to
+    answer are the tail of the message, whatever order a voter sees them in.
     """
     parts: list[str] = [
         f"bead: {manifest['bead']}",
@@ -123,7 +141,11 @@ def _rendered_prompt(package_dir: Path, manifest: dict[str, Any]) -> str:
         f"head: {manifest['head']}",
         "",
     ]
-    for entry in manifest["files"]:
+    entries = sorted(
+        manifest["files"],
+        key=lambda e: 1 if e["path"] == "case_table.md" else 0,
+    )
+    for entry in entries:
         parts.append(f"=== {entry['path']} ===")
         parts.append(
             (package_dir / entry["path"]).read_text(encoding="utf-8", errors="replace")
@@ -167,6 +189,7 @@ def build_package(
                 )
 
     entries: list[dict[str, str]] = []
+    case_payload = b""
     placed: list[tuple[Path, str]] = [
         (case_table, "case_table.md"),
         (diff, "diff.patch"),
@@ -184,6 +207,8 @@ def build_package(
 
     for src, dest in placed:
         payload = Path(src).read_bytes()  # the one read of each input source
+        if src is case_table:
+            case_payload = payload
         target = directory / dest
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(payload)
@@ -213,6 +238,11 @@ def build_package(
         directory=directory,
         manifest=manifest,
         package_hash=hashlib.sha256(manifest_bytes).hexdigest(),
+        # Row ids come from the bytes already read for the copy: row
+        # handling never re-reads the case table (spc-960 G finding F1).
+        row_ids=tuple(_parse_case_table_rows(
+            case_payload.decode("utf-8", errors="replace")
+        )),
     )
 
 
@@ -249,14 +279,84 @@ VOTER_SCHEMA = {
 VOTER_MAX_TOKENS_PER_ROW: int = 128
 VOTER_MAX_TOKENS_FLOOR: int = 2048
 
-# The relay's OpenAI-compatible root (spec Dependencies). Until llm-relay-1
-# reports the serving node on every completion, ``served_node`` stays a
-# caller-supplied value.
+# The relay's OpenAI-compatible root (spec Dependencies). The serving node
+# rides the ``x-relay-node`` response header (llm-relay-1, closed); the
+# ``served_node`` keyword remains as a caller override for a pinned node.
 DEFAULT_RELAY_BASE_URL: str = "http://localhost:11434"
 
 
+_VOTER_INSTRUCTION = (
+    "Review the package below against its case table. Answer with the "
+    "voter JSON only. Answer one entry per case-table row, in exactly the "
+    "order the rows appear in the table."
+)
+
+
+def _package_message(package: Package) -> str:
+    """The package body as the voter sees it: render plus a fixed prefix."""
+    return _VOTER_INSTRUCTION + "\n\n" + _rendered_prompt(
+        package.directory, package.manifest
+    )
+
+
+def _rows_block(rows: list[str]) -> str:
+    """The per-voter rows block: the same rows, this voter's order."""
+    return (
+        "Answer one entry per case-table row, in exactly the order listed "
+        "here (this order is yours alone):\n"
+        + "\n".join(rows)
+        + "\n"
+    )
+
+
+_ADVERSARIAL_HEADER = (
+    "You are the adversarial voter. Assume at least one case-table row "
+    "below is violated by this package. For every row, hunt specifically "
+    "for a violation of the row's clause: deny a row the moment the "
+    "package fails its expected outcome, and name the violating row in "
+    "your reasons. Only answer holds=true on a row you could not break."
+)
+
+
+def _adversarial_footer(rows: list[str]) -> str:
+    return (
+        "Adversarial check before you answer: re-read every row above. "
+        "Name in a reason any row whose expected outcome the package "
+        f"violates. Rows: {', '.join(rows)}"
+    )
+
+
+def _voter_user_message(
+    package: Package, rows: list[str], adversarial: bool
+) -> str:
+    """Render one voter's user message (FR 6 diversification content).
+
+    The row order and the adversarial framing are request content: every
+    voter receives the same rows, only the order and the framing differ.
+    """
+    if adversarial:
+        return (
+            _ADVERSARIAL_HEADER
+            + "\n\n"
+            + _package_message(package)
+            + "\n\n"
+            + _rows_block(rows)
+            + "\n"
+            + _adversarial_footer(rows)
+        )
+    if rows == voter_rows(package):
+        # Table order: the plain package message already states it.
+        return _package_message(package)
+    return _package_message(package) + "\n\n" + _rows_block(rows)
+
+
 def voter_request_body(
-    package: Package, system_prompt: str, model: str
+    package: Package,
+    system_prompt: str,
+    model: str,
+    *,
+    rows: list[str] | None = None,
+    adversarial: bool = False,
 ) -> dict[str, Any]:
     """The OpenAI chat-completions body for one voter call (spec AC7).
 
@@ -264,14 +364,11 @@ def voter_request_body(
     ``json_schema`` with ``strict: true`` whatever the model name, offers no
     tools, and asks for enough output tokens that whitespace padding cannot
     truncate the answer. Thinking is off (the workflow's role calls run
-    without it).
+    without it). ``rows`` overrides the case-table order this voter answers
+    in (FR 6 diversification); ``adversarial`` adds the adversarial framing.
     """
-    expected = voter_rows(package)
-    user_message = (
-        "Review the package below against its case table. Answer with the "
-        "voter JSON only.\n\n"
-        + _rendered_prompt(package.directory, package.manifest)
-    )
+    expected = list(rows) if rows is not None else voter_rows(package)
+    user_message = _voter_user_message(package, expected, adversarial)
     return {
         "model": model,
         "messages": [
@@ -303,14 +400,19 @@ class RelayCompletionClient:
     Implementation notes). ``complete`` returns the completion text, or
     raises :class:`RelaySchemaRejected` when the relay or backend answers
     the constrained request with HTTP 400. It sends exactly one request per
-    call: no retry, constrained or not.
+    call: no retry, constrained or not. The serving node the relay reports
+    in the ``x-relay-node`` response header (llm-relay-1) lands in
+    ``last_served_node`` after each call, success or error.
     """
 
     def __init__(
         self, base_url: str = DEFAULT_RELAY_BASE_URL, timeout: float = 180.0
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        # Caller-settable: a quorum package of 1,000+ lines through a local
+        # model can exceed the default on a cold model load.
         self.timeout = timeout
+        self.last_served_node: str | None = None
 
     async def complete(self, body: dict[str, Any]) -> str:
         """POST *body* to ``/v1/chat/completions``; return the answer text."""
@@ -319,6 +421,7 @@ class RelayCompletionClient:
             async with session.post(
                 f"{self.base_url}/v1/chat/completions", json=body
             ) as response:
+                self.last_served_node = response.headers.get("x-relay-node")
                 payload = await response.read()
                 if response.status == 400:
                     raise RelaySchemaRejected(_error_text(payload))
@@ -356,9 +459,8 @@ def _error_text(payload: bytes) -> str:
     return f"{message} ({code})" if code else message
 
 
-def voter_rows(package: Package) -> list[str]:
-    """Row ids from the package's case table, in table order."""
-    text = (package.directory / "case_table.md").read_text(encoding="utf-8")
+def _parse_case_table_rows(text: str) -> list[str]:
+    """Row ids from case-table text, in table order."""
     rows: list[str] = []
     for line in text.splitlines():
         line = line.strip()
@@ -369,6 +471,20 @@ def voter_rows(package: Package) -> list[str]:
             continue  # header line
         rows.append(first)
     return rows
+
+
+def voter_rows(package: Package) -> list[str]:
+    """Row ids from the package's case table, in table order.
+
+    A Package built by :func:`build_package` carries its ``row_ids``; the
+    case table is only re-read for a Package hand-constructed without them
+    (spc-960 G finding F1).
+    """
+    if package.row_ids:
+        return list(package.row_ids)
+    return _parse_case_table_rows(
+        (package.directory / "case_table.md").read_text(encoding="utf-8")
+    )
 
 
 @dataclass
@@ -419,6 +535,8 @@ async def run_voter(
     model: str,
     served_node: str | None = None,
     session_log: SessionLog | None = None,
+    rows: list[str] | None = None,
+    adversarial: bool = False,
 ) -> VoterVerdict:
     """One tool-less model call constrained to the voter schema (FR 3-4, AC5, AC7).
 
@@ -437,12 +555,15 @@ async def run_voter(
     ``unparseable``; a parseable response missing a row denies that row with
     ``missing``. The raw answer and served node are written to the session
     log through the ``run_log`` seam (``session_log`` may be None for a
-    no-op).
+    no-op). ``rows`` and ``adversarial`` pass through to
+    :func:`voter_request_body` (the quorum's per-voter row order and
+    framing); the parsed verdict is normalised to case-table order.
     """
     expected = voter_rows(package)
+    answer_order = list(rows) if rows is not None else list(expected)
 
     def _verdict(
-        rows: list[dict[str, Any]],
+        row_verdicts: list[dict[str, Any]],
         raw: str,
         request_sent: bool,
         error: str,
@@ -458,11 +579,11 @@ async def run_voter(
                     "request_sent": request_sent,
                     "duration_s": round(elapsed, 3),
                     "error": error,
-                    "rows": rows,
+                    "rows": row_verdicts,
                 },
             )
         return VoterVerdict(
-            rows=rows,
+            rows=row_verdicts,
             raw_answer=raw,
             served_node=served_node,
             model=model,
@@ -479,7 +600,9 @@ async def run_voter(
             0.0,
         )
 
-    body = voter_request_body(package, system_prompt, model)
+    body = voter_request_body(
+        package, system_prompt, model, rows=rows, adversarial=adversarial
+    )
     started = time.monotonic()
     try:
         raw = await complete(body)
@@ -491,7 +614,7 @@ async def run_voter(
         return _deny("unparseable", error=str(exc), request_sent=True)
     elapsed = time.monotonic() - started
 
-    verdicts = _parse_answer(raw, expected)
+    verdicts = _parse_answer(raw, answer_order)
     if verdicts is None:
         # A response that does not parse denies every row (spec FR 3).
         return _verdict(
@@ -501,4 +624,440 @@ async def run_voter(
             "",
             elapsed,
         )
+    # Rows come back in the order the voter was given; the verdict is
+    # normalised to case-table order so voters aggregate row by row.
+    verdicts.sort(key=lambda v: expected.index(v["row_id"]))
     return _verdict(verdicts, raw, True, "", elapsed)
+
+
+# ---------------------------------------------------------------------------
+# Quorum runner (FR 5-7, spc-961)
+# ---------------------------------------------------------------------------
+
+# The voter pool must contain all four (Diego, 2026-10-19; spec FR 6).
+REQUIRED_POOL_MODELS: tuple[str, ...] = (
+    "qwen3.8-flash",
+    "qwen3.8-27b",
+    "gemma-4-31b",
+    "glm-4.7-flash",
+)
+
+
+class QuorumConfigError(ValueError):
+    """A quorum configuration error, raised before any model call: an even
+    N, a pool missing one of the four required models, or N above the
+    number of distinct row orders (more voters than the case table has
+    row permutations, FR 6)."""
+
+
+@dataclass
+class RotationState:
+    """Rotation seam for runs below the pool size (FR 6, AC6-c2).
+
+    A run omits one pool model; successive runs omit successive models so
+    the omitted model rotates and covers the whole pool. The default
+    instance rotates on its own within one process; a caller that runs the
+    quorum in a fresh process per run (the measurement driver) persists
+    ``omit_cursor`` beside its artifacts and constructs the state from it.
+    """
+
+    omit_cursor: int = 0
+
+    def next_omit(self, pool: list[str]) -> str:
+        model = pool[self.omit_cursor % len(pool)]
+        self.omit_cursor += 1
+        return model
+
+
+def _validate_quorum_config(
+    package: Package,
+    voters: int,
+    models: list[str],
+    group_order: list[str] | None = None,
+) -> None:
+    if voters % 2 == 0:
+        raise QuorumConfigError(
+            f"voters must be odd (spec FR 5), got {voters}"
+        )
+    if voters < 1:
+        raise QuorumConfigError(f"voters must be at least 1, got {voters}")
+    pool = list(dict.fromkeys(models))
+    if not pool:
+        raise QuorumConfigError("the voter pool is empty")
+    missing = [m for m in REQUIRED_POOL_MODELS if m not in pool]
+    if missing:
+        raise QuorumConfigError(
+            "voter pool is missing required model(s): "
+            + ", ".join(missing)
+            + "; the pool must contain "
+            + ", ".join(REQUIRED_POOL_MODELS)
+        )
+    n_orders = 1
+    for k in range(2, len(package.row_ids) + 1):
+        n_orders *= k
+        if n_orders >= voters:
+            break
+    else:
+        n_orders = max(1, len(package.row_ids))
+    if voters > n_orders:
+        raise QuorumConfigError(
+            f"{voters} voters need {voters} distinct row orders (FR 6) but "
+            f"the case table has {len(package.row_ids)} row(s)"
+        )
+    if group_order is not None:
+        unknown = [m for m in group_order if m not in pool]
+        if unknown:
+            raise QuorumConfigError(
+                "group order names model(s) outside the voter pool: "
+                + ", ".join(unknown)
+            )
+
+
+def _assign_models(
+    voters: int,
+    pool: list[str],
+    rng: random.Random,
+    rotation: RotationState | None,
+    diversify: bool = True,
+) -> list[str]:
+    """One model per voter index.
+
+    Diversified, N at or above the pool size: every pool model serves at
+    least one voter (Diego's note: at least one voter per model). N below
+    it: N distinct models serve, the omitted model rotating across runs
+    (FR 6). Without diversification the pool simply fills round-robin.
+    """
+    if voters >= len(pool):
+        assignment = list(pool)
+        assignment += [pool[i % len(pool)] for i in range(voters - len(pool))]
+    elif diversify:
+        omitted = (rotation or RotationState()).next_omit(pool)
+        assignment = [m for m in pool if m != omitted]
+    else:
+        assignment = [pool[i % len(pool)] for i in range(voters)]
+    rng.shuffle(assignment)
+    return assignment
+
+
+def _distinct_orders(rows: list[str], count: int, rng: random.Random) -> list[list[str]]:
+    """``count`` pairwise-distinct permutations of *rows*.
+
+    The permutations are dealt in a shuffled fixed order rather than drawn
+    by rejection sampling: with few rows (3 rows, 6 permutations) sampling
+    the last distinct order can take arbitrarily long, and a small table
+    with more voters than permutations raises :class:`QuorumConfigError`
+    in constant time instead.
+    """
+    total = 1
+    for k in range(1, len(rows) + 1):
+        total *= k
+    if count > total:
+        raise QuorumConfigError(
+            f"{count} voters need {count} distinct row orders (FR 6) but "
+            f"{len(rows)} row(s) have only {total} permutation(s)"
+        )
+    if count == total:
+        dealt = list(itertools.permutations(rows))
+    else:
+        dealt = rng.sample(list(itertools.permutations(rows)), count)
+    rng.shuffle(dealt)
+    return [list(order) for order in dealt]
+
+
+def _plan_voters(
+    package: Package,
+    voters: int,
+    pool: list[str],
+    rng: random.Random,
+    rotation: RotationState,
+) -> list[dict[str, Any]]:
+    """Assign each voter a model, a distinct row order, and the framing.
+
+    Exactly one voter — chosen by the seeded rng — gets the adversarial
+    framing; every voter gets a pairwise-distinct row order (FR 6).
+    """
+    assignment = _assign_models(voters, pool, rng, rotation)
+    orders = _distinct_orders(voter_rows(package), voters, rng)
+    adversarial_index = rng.randrange(voters)
+    return [
+        {
+            "index": i,
+            "model": assignment[i],
+            "rows": orders[i],
+            "adversarial": i == adversarial_index,
+        }
+        for i in range(voters)
+    ]
+
+
+def _group_order(models: list[str], order: list[str] | None) -> list[str]:
+    """Models in group order: the caller's order when given (the xtx
+    swap-cost note), else first-use order of the voter assignment. The
+    caller's order is validated against the pool in
+    :func:`_validate_quorum_config`, before any call."""
+    if order is None:
+        return list(dict.fromkeys(models))
+    return list(order)
+
+
+async def run_quorum(
+    package: Package,
+    complete: Callable[[dict[str, Any]], Awaitable[str]],
+    *,
+    system_prompt: str,
+    voters: int = 3,
+    models: list[str],
+    node_of: Callable[[str], str | None] | None = None,
+    diversify: bool = True,
+    seed: int = 0,
+    rotation: RotationState | None = None,
+    group_order: list[str] | None = None,
+    session_log: SessionLog | None = None,
+    out_path: Path | None = None,
+    clock: Callable[[], float] = time.monotonic,
+) -> dict[str, Any]:
+    """Run N single-call voters over a package and write ``quorum.json`` (FR 5-6).
+
+    Configuration errors — an even N, a pool missing any of the four
+    required models, N above the number of distinct row orders — raise
+    :class:`QuorumConfigError` before any model call. With ``diversify``
+    each voter gets a distinct row order and exactly one the adversarial
+    framing (rendered into the request: the row order and the framing are
+    request content, the role card is out of scope); ``diversify=False``
+    gives every voter the table order and no framing (the measurement
+    baseline). Calls run grouped by model, each model's group contiguous;
+    ``group_order`` orders the groups so a node that swaps models loads
+    each model once per quorum. The served node comes from the fake or
+    client through ``node_of`` (the relay reports it in ``x-relay-node``);
+    per-group wall time is recorded. The result is written to ``out_path``
+    (default ``quorum.json`` beside the package) and returned.
+    """
+    _validate_quorum_config(package, voters, models, group_order)
+    pool = list(dict.fromkeys(models))
+    rng = random.Random(seed)
+    if diversify:
+        plan = _plan_voters(package, voters, pool, rng, rotation or RotationState())
+    else:
+        rows = voter_rows(package)
+        assignment = _assign_models(voters, pool, rng, rotation, diversify=False)
+        plan = [
+            {
+                "index": i,
+                "model": assignment[i],
+                "rows": list(rows),
+                "adversarial": False,
+            }
+            for i in range(voters)
+        ]
+
+    by_model: dict[str, list[dict[str, Any]]] = {}
+    for entry in plan:
+        by_model.setdefault(entry["model"], []).append(entry)
+    groups: list[dict[str, Any]] = []
+    for model in _group_order(list(by_model), group_order):
+        started = clock()
+        for entry in by_model[model]:
+            verdict = await run_voter(
+                package,
+                complete,
+                system_prompt=system_prompt,
+                model=model,
+                served_node=node_of(model) if node_of is not None else None,
+                session_log=session_log,
+                rows=entry["rows"],
+                adversarial=entry["adversarial"],
+            )
+            entry["verdict"] = verdict
+        groups.append(
+            {
+                "model": model,
+                "voter_indexes": [e["index"] for e in by_model[model]],
+                "served_nodes": sorted(
+                    {
+                        str(e["verdict"].served_node)
+                        for e in by_model[model]
+                        if e["verdict"].served_node is not None
+                    }
+                ),
+                "wall_time_s": round(clock() - started, 3),
+            }
+        )
+
+    rows = voter_rows(package)
+    per_row = {
+        row_id: sum(1 for e in plan if _holds(e, row_id)) for row_id in rows
+    }
+    denied_rows = [
+        {
+            "row_id": row_id,
+            "denied_by": [
+                {
+                    "voter_index": e["index"],
+                    "reason": _reason(e, row_id),
+                }
+                for e in plan
+                if not _holds(e, row_id)
+            ],
+        }
+        for row_id in rows
+        if per_row[row_id] < voters
+    ]
+    result: dict[str, Any] = {
+        "package": str(package.directory),
+        "package_hash": package.package_hash,
+        "voters": voters,
+        "models": pool,
+        "diversify": diversify,
+        "approved": not denied_rows,
+        "rows": rows,
+        "pass_counts": per_row,
+        "voter_results": [
+            {
+                "index": e["index"],
+                "model": e["model"],
+                "served_node": e["verdict"].served_node,
+                "adversarial": e["adversarial"],
+                "row_order": e["rows"],
+                "raw_answer": e["verdict"].raw_answer,
+                "request_sent": e["verdict"].request_sent,
+                "error": e["verdict"].error,
+                "rows": e["verdict"].rows,
+            }
+            for e in plan
+        ],
+        "denied_rows": denied_rows,
+        "groups": groups,
+    }
+    destination = out_path or (package.directory / "quorum.json")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return result
+
+
+def _holds(entry: dict[str, Any], row_id: str) -> bool:
+    for row in entry["verdict"].rows:
+        if row["row_id"] == row_id:
+            return bool(row["holds"])
+    return False
+
+
+def _reason(entry: dict[str, Any], row_id: str) -> str:
+    for row in entry["verdict"].rows:
+        if row["row_id"] == row_id:
+            return str(row["reason"])
+    return "missing"
+
+
+# ---------------------------------------------------------------------------
+# Measurement report (FR 7, AC4)
+# ---------------------------------------------------------------------------
+
+def _row_denials(result: dict[str, Any]) -> dict[str, int]:
+    """Denied-row id -> number of denying voters, from a quorum result."""
+    return {
+        entry["row_id"]: len(entry["denied_by"])
+        for entry in result["denied_rows"]
+    }
+
+
+def _rate(denials: int, total: int) -> str:
+    return f"{denials}/{total} ({denials / total:.0%})" if total else "-"
+
+
+async def quorum_report(
+    packages: dict[str, dict[str, Any]],
+    counts: tuple[int, ...] = (3, 5, 7),
+    *,
+    complete: Callable[[dict[str, Any]], Awaitable[str]],
+    system_prompt: str,
+    models: list[str],
+    node_of: Callable[[str], str | None] | None = None,
+    out_path: Path = Path("report.md"),
+) -> str:
+    """Run the quorum at each count on each package and write ``report.md`` (FR 7, AC4).
+
+    ``packages`` maps a package name to
+    ``{"package": Package, "defect_rows": [row_id, ...]}`` — the defect
+    rows are the case-table rows known to be violated (the r5 package's
+    AC21-c17); every other row is a correct row. Per package and count the
+    report records the defect rows caught (at least one deny), the correct
+    rows denied, and the unanimity verdict; per model the catch and deny
+    rates. Each count runs diversified once and undiversified once: the
+    undiversified run is the no-framing baseline that separates a row
+    denied because it is violated from one denied because of the framing.
+    The report is accepted on completeness, not on the quorum catching the
+    defect (contract: thresholds are decided on the report).
+    """
+    lines = [
+        "# Quorum measurement report",
+        "",
+        "Per package and voter count: defect rows caught (a defect row is"
+        " caught when at least one voter denies it), correct rows denied,"
+        " the unanimity verdict (approved only when every voter passed"
+        " every row). Per model: catch rate on defect rows and deny rate"
+        " on correct rows. Diversified = shuffled row order plus one"
+        " adversarially framed voter; plain = table order, no framing.",
+        "",
+    ]
+    for name, spec in packages.items():
+        pkg: Package = spec["package"]
+        all_rows = voter_rows(pkg)
+        defect_rows = [r for r in spec.get("defect_rows", []) if r in set(all_rows)]
+        correct_total = len(all_rows) - len(defect_rows)
+        lines += [f"## {name}", "", f"- package: `{pkg.directory}`",
+                  f"- package_hash: `{pkg.package_hash}`",
+                  f"- defect rows: {', '.join(defect_rows) or '(none)'}",
+                  f"- correct rows: {correct_total}", ""]
+        for count in counts:
+            for mode, diversify in (("diversified", True), ("plain", False)):
+                result = await run_quorum(
+                    pkg, complete, system_prompt=system_prompt,
+                    voters=count, models=models, node_of=node_of,
+                    diversify=diversify,
+                    out_path=pkg.directory / f"quorum-{count}-{mode}.json",
+                )
+                denials = _row_denials(result)
+                caught = sorted(set(defect_rows) & set(denials))
+                correct_denied = sorted(set(denials) - set(defect_rows))
+                lines.append(
+                    f"- N={count} {mode}: approved={result['approved']}; "
+                    f"defect rows caught {len(caught)}/{len(defect_rows)}"
+                    + (f" ({', '.join(caught)})" if caught else "")
+                    + f"; correct rows denied {len(correct_denied)}"
+                    + (f" ({', '.join(correct_denied)})" if correct_denied else "")
+                )
+                per_model: dict[str, dict[str, int]] = {}
+                for vr in result["voter_results"]:
+                    stats = per_model.setdefault(
+                        vr["model"],
+                        {"catchers": 0, "deniers": 0, "voters": 0},
+                    )
+                    stats["voters"] += 1
+                    row_state = {r["row_id"]: r["holds"] for r in vr["rows"]}
+                    if defect_rows and any(
+                        not row_state.get(r, True) for r in defect_rows
+                    ):
+                        stats["catchers"] += 1
+                    if any(
+                        not holds
+                        for row_id, holds in row_state.items()
+                        if row_id not in defect_rows
+                    ):
+                        stats["deniers"] += 1
+                for model in sorted(per_model):
+                    stats = per_model[model]
+                    voters_here = stats["voters"]
+                    lines.append(
+                        f"  - {model}: voters {voters_here}; catch rate "
+                        f"{_rate(stats['catchers'], voters_here)}"
+                        " (voters denying a defect row), deny rate "
+                        f"{_rate(stats['deniers'], voters_here)}"
+                        " (voters denying a correct row)"
+                    )
+        lines.append("")
+    report = "\n".join(lines)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(report, encoding="utf-8")
+    return report
