@@ -1037,3 +1037,80 @@ async def test_quorum_report_correct_package_with_no_defect_rows(tmp_path):
     assert "defect rows caught 0/0" in report
     assert "correct rows denied 0" in report
     assert "approved=True" in report
+
+
+# ---------------------------------------------------------------------------
+# Regression — the 29-row table must not materialise 29! permutations
+# (the OOM that killed the first kodiak-18 measurement run)
+# ---------------------------------------------------------------------------
+
+
+async def test_quorum_29_row_table_no_permutation_blowup(tmp_path):
+    """A real-size case table (29 rows, kodiak-18) runs at counts 3, 5, 7.
+
+    The first measurement run died because the row-order step built
+    list(itertools.permutations(rows)) — 29! entries — before any model
+    call. Orders for a large table must be drawn without materialising
+    the permutation space: pairwise distinct (AC6), same row set per
+    voter (AC6-c5), no model call needed beyond the per-voter fake.
+    """
+    pkg = _build_many(tmp_path, 29, name="kodiak18")
+    assert len(pkg.row_ids) == 29
+    for n in (3, 5, 7):
+        complete = QuorumComplete()
+        result = await run_quorum(
+            pkg, complete, system_prompt=SYSTEM_PROMPT,
+            voters=n, models=POOL, node_of=_node_of,
+        )
+        orders = [tuple(vr["row_order"]) for vr in result["voter_results"]]
+        assert len(set(orders)) == n, f"orders not distinct at N={n}"
+        for order in orders:
+            assert set(order) == set(pkg.row_ids)
+        assert result["approved"] is True
+
+
+async def test_distinct_orders_large_table_stays_bounded(tmp_path):
+    """_distinct_orders over 29 rows returns quickly, memory-bounded.
+
+    Guards the exact defect: the count below the permutation total took
+    the rng.sample(list(permutations(rows)), count) path. The call must
+    finish in well under a second and the orders must be distinct.
+    """
+    import random
+    import time
+
+    from sr2_spectre.review import _distinct_orders
+
+    rows = [f"AC21-c{i}" for i in range(1, 30)]
+    started = time.monotonic()
+    orders = _distinct_orders(rows, 7, random.Random(0))
+    assert time.monotonic() - started < 1.0
+    assert len(orders) == 7
+    assert len({tuple(o) for o in orders}) == 7
+    for order in orders:
+        assert sorted(order) == sorted(rows)
+
+
+async def test_quorum_report_29_row_table_completes(tmp_path):
+    """quorum_report over a 29-row package at counts 3, 5, 7 — the call
+    pattern the orchestrator's measurement run makes — completes and
+    writes the report."""
+    pkg = _build_many(tmp_path, 29, name="r5big")
+    defect = pkg.row_ids[16]  # a real row id from the built table
+    out = tmp_path / "report.md"
+    report = await quorum_report(
+        {"r5": {"package": pkg, "defect_rows": [defect]}},
+        counts=(3, 5, 7),
+        complete=QuorumComplete(),
+        system_prompt=SYSTEM_PROMPT,
+        models=POOL,
+        node_of=_node_of,
+        out_path=out,
+    )
+    assert out.exists()
+    for count in (3, 5, 7):
+        assert f"- N={count} diversified:" in report
+        assert f"- N={count} plain:" in report
+    # All-passing fake: no row denied, unanimity approve.
+    assert "approved=True" in report
+    assert "defect rows caught 0/1" in report

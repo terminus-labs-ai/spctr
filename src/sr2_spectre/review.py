@@ -739,14 +739,28 @@ def _assign_models(
     return assignment
 
 
+def _order_cap(total: int) -> int:
+    """Largest count materialised as an explicit permutation list."""
+    return max(total, 40320)
+
+
 def _distinct_orders(rows: list[str], count: int, rng: random.Random) -> list[list[str]]:
     """``count`` pairwise-distinct permutations of *rows*.
 
-    The permutations are dealt in a shuffled fixed order rather than drawn
-    by rejection sampling: with few rows (3 rows, 6 permutations) sampling
+    Small tables (at most ``_ORDER_CAP`` permutations) deal the whole
+    permutation list in a shuffled fixed order rather than drawing by
+    rejection sampling: with few rows (3 rows, 6 permutations) sampling
     the last distinct order can take arbitrarily long, and a small table
     with more voters than permutations raises :class:`QuorumConfigError`
     in constant time instead.
+
+    A large table (a real case table has tens of rows; 29! is ~10^31)
+    cannot materialise ``len(rows)!`` permutations — building that list is
+    what OOM-killed the first measurement run — so each order is an
+    independent shuffle. A collision among a handful of voters over a
+    factorially large order space is a birthday event (~10^-26 for 7
+    voters over 29 rows); the loop re-shuffles on the rare collision and
+    gives up with :class:`QuorumConfigError` rather than looping forever.
     """
     total = 1
     for k in range(1, len(rows) + 1):
@@ -756,12 +770,30 @@ def _distinct_orders(rows: list[str], count: int, rng: random.Random) -> list[li
             f"{count} voters need {count} distinct row orders (FR 6) but "
             f"{len(rows)} row(s) have only {total} permutation(s)"
         )
-    if count == total:
+    if total <= _order_cap(len(rows)):
         dealt = list(itertools.permutations(rows))
-    else:
-        dealt = rng.sample(list(itertools.permutations(rows)), count)
-    rng.shuffle(dealt)
-    return [list(order) for order in dealt]
+        if count < total:
+            dealt = rng.sample(dealt, count)
+        rng.shuffle(dealt)
+        return [list(order) for order in dealt]
+    orders: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+    attempts = 0
+    while len(orders) < count:
+        if attempts >= 10 * count:
+            raise QuorumConfigError(
+                f"could not draw {count} distinct row orders from "
+                f"{len(rows)} rows without repetition"
+            )
+        attempts += 1
+        order = list(rows)
+        rng.shuffle(order)
+        key = tuple(order)
+        if key in seen:
+            continue
+        seen.add(key)
+        orders.append(order)
+    return orders
 
 
 def _plan_voters(
