@@ -119,6 +119,11 @@ above.
 
 ## Architecture Overview
 
+Workflow role agent files (including the tool-less single-call voter,
+`~/.sr2-workflow/agents/role-voter.yaml`) live beside the `role-<x>.yaml`
+files under `~/.sr2-workflow/agents/`; the voter's contract is rendered by
+`src/sr2_spectre/review.py`.
+
 ### Resolver/transformer pipeline
 
 Spectre plugs its planning behaviour into SR2 as pipeline extensions rather
