@@ -1,9 +1,10 @@
 """Tests for the review package builder and single-call voter (spc-960).
 
 Unit tests run with no LLM and no network: the voter is exercised against a
-fake backend, and the AC1 determinism test uses the frozen kodiak-18-c1
-inputs when present (skipping cleanly when absent). One e2e test hits the
-local relay and is deselected by default via the ``live`` marker.
+fake ``complete`` that records the request bodies, and the AC1 determinism
+test uses the frozen kodiak-18-c1 inputs when present (skipping cleanly
+when absent). The AC7 live test hits the local relay once per model and is
+deselected by default via the ``live`` marker.
 
 Run: PYTHONPATH=src .venv/bin/python -m pytest tests/test_review.py -q
 """
@@ -14,16 +15,18 @@ from pathlib import Path
 
 import pytest
 
-from sr2 import TextBlock, TokenUsage
-from sr2.protocols.llm import CompletionResponse
 from sr2_spectre.review import (
+    DEFAULT_RELAY_BASE_URL,
     DEFAULT_SECRET_PATTERNS,
     PackageInput,
     PackageTooLargeError,
+    RelayCompletionClient,
+    RelaySchemaRejected,
     SecretPathError,
+    VOTER_SCHEMA,
     build_package,
     run_voter,
-    structured_output_mode,
+    voter_request_body,
     voter_rows,
 )
 from sr2_spectre.run_log import SessionLogManager
@@ -73,42 +76,36 @@ def _build(tmp_path: Path, **kwargs) -> "object":
 
 
 # ---------------------------------------------------------------------------
-# Fake backend for the voter
+# Fake completion transport for the voter
 # ---------------------------------------------------------------------------
 
 
-class FakeLLM:
-    """One-shot LLM stub: records the request, returns a canned answer."""
+class FakeComplete:
+    """Records every request body; returns a canned answer or raises."""
 
     def __init__(self, answer: str | None, *, fail: Exception | None = None):
         self.answer = answer
         self.fail = fail
-        self.requests: list = []
-        self.calls = 0
+        self.bodies: list[dict] = []
 
-    async def complete(self, request):
-        self.calls += 1
-        self.requests.append(request)
+    async def __call__(self, body: dict) -> str:
+        self.bodies.append(body)
         if self.fail is not None:
             raise self.fail
-        return CompletionResponse(
-            id="fake",
-            content=[TextBlock(text=self.answer or "")],
-            stop_reason="end_turn",
-            usage=TokenUsage(),
-        )
-
-    async def stream(self, request):
-        raise NotImplementedError
+        return self.answer or ""
 
 
-def _log_dir(tmp_path: Path) -> Path:
-    return SessionLogManager().directory
+def _good_answer() -> str:
+    return json.dumps({"rows": [
+        {"row_id": "AC2-c1", "holds": True, "reason": "ok"},
+        {"row_id": "AC2-c2", "holds": True, "reason": "ok"},
+        {"row_id": "AC2-c3", "holds": True, "reason": "ok"},
+    ]})
 
 
-def _log_events(tmp_path: Path) -> list[dict]:
+def _log_events(log_dir: Path) -> list[dict]:
     events = []
-    for path in sorted(_log_dir(tmp_path).glob("*.jsonl")):
+    for path in sorted(log_dir.glob("*.jsonl")):
         for line in path.read_text(encoding="utf-8").splitlines():
             events.append(json.loads(line))
     return events
@@ -167,6 +164,24 @@ def test_build_package_refuses_over_limit_package(tmp_path):
         )
 
 
+def test_size_estimate_covers_the_voter_message(tmp_path):
+    """The estimate and the voter user message come from one rendering.
+
+    ``voter_request_body``'s user message is the rendered package (the same
+    text the manifest's size estimate recorded) plus a fixed instruction
+    prefix, so the check can never disagree with what the voter receives.
+    """
+    pkg = _build(tmp_path)
+    body = voter_request_body(pkg, SYSTEM_PROMPT, "qwen3.8-flash")
+    user_message = body["messages"][1]["content"]
+    # The manifest entries all appear in the message, and the message is
+    # within a small fixed overhead of the estimated rendering.
+    for entry in pkg.manifest["files"]:
+        assert f"=== {entry['path']} ===" in user_message
+    estimate_chars = pkg.manifest["rendered_tokens_estimate"] * 4
+    assert len(user_message) <= estimate_chars + 200
+
+
 def test_build_package_refuses_secret_input_naming_the_file(tmp_path):
     for pattern, name in [
         ("*.pem", "cert.pem"),
@@ -192,34 +207,54 @@ def test_build_package_refuses_secret_input_naming_the_file(tmp_path):
 
 
 def test_builder_reads_only_named_paths(tmp_path, monkeypatch):
-    """AC5: build_package reads no path outside those its inputs name."""
+    """AC5: build_package reads no path outside those its inputs name.
+
+    The builder reads each source once (for its bytes) and each placed
+    file once (for the render). Every read is therefore either one of the
+    named input paths or a path the builder itself wrote inside the
+    package directory: a read of anything else, or a second read of an
+    input the builder already consumed, fails here.
+    """
     inputs = _make_inputs(tmp_path)
     files = [PackageInput(inputs["test_file"], "tests/test_flag.py")]
     case_table = _write_case_table(tmp_path)
-    sources = [case_table, inputs["test_file"], inputs["diff"], inputs["run_txt"]]
+    sources = {Path(p).resolve() for p in
+               [case_table, inputs["test_file"], inputs["diff"], inputs["run_txt"]]}
 
     read: list[Path] = []
     original = Path.read_bytes
+    pkg_dir = (tmp_path / "pkg").resolve()
 
     def tracking_read(self: Path, *a, **k):
-        read.append(Path(self).resolve())
+        resolved = Path(self).resolve()
+        read.append(resolved if pkg_dir in resolved.parents else resolved)
         return original(self, *a, **k)
 
-    monkeypatch.setattr(Path, "read_bytes", tracking_read)
-    try:
-        build_package(
-            bead="spc-960", base="base", head="head",
-            case_table=case_table, files=files,
-            diff=inputs["diff"], run_output=inputs["run_txt"],
-            out_dir=tmp_path / "pkg",
-        )
-    finally:
-        monkeypatch.undo()
+    # The render reads through Path.read_text, so track both read paths.
+    text_read: list[Path] = []
+    original_text = Path.read_text
 
-    allowed = {Path(p).resolve() for p in sources}
-    pkg_dir = (tmp_path / "pkg").resolve()
-    for path in read:
-        assert path in allowed or pkg_dir in path.parents, path
+    def tracking_text(self: Path, *a, **k):
+        resolved = Path(self).resolve()
+        text_read.append(resolved if pkg_dir in resolved.parents else resolved)
+        return original_text(self, *a, **k)
+
+    monkeypatch.setattr(Path, "read_bytes", tracking_read)
+    monkeypatch.setattr(Path, "read_text", tracking_text)
+    build_package(
+        bead="spc-960", base="base", head="head",
+        case_table=case_table, files=files,
+        diff=inputs["diff"], run_output=inputs["run_txt"],
+        out_dir=tmp_path / "pkg",
+    )
+
+    input_reads = [p for p in read + text_read if pkg_dir not in p.parents]
+    placed_reads = [p for p in read + text_read if pkg_dir in p.parents]
+    assert set(input_reads) == sources, "read a path no input named"
+    assert len(input_reads) == len(sources), "read an input twice"
+    assert sorted(p.relative_to(pkg_dir).as_posix() for p in placed_reads) == [
+        "case_table.md", "diff.patch", "run.txt", "tests/test_flag.py",
+    ]
 
 
 @pytest.mark.skipif(
@@ -274,28 +309,24 @@ def test_ac1_frozen_r5_inputs_hash_stable(tmp_path):
 
 async def test_voter_run_offers_no_tools(tmp_path):
     pkg = _build(tmp_path)
-    llm = FakeLLM(json.dumps({"rows": [
-        {"row_id": "AC2-c1", "holds": True, "reason": "ok"},
-        {"row_id": "AC2-c2", "holds": True, "reason": "ok"},
-        {"row_id": "AC2-c3", "holds": True, "reason": "ok"},
-    ]}))
+    complete = FakeComplete(_good_answer())
     verdict = await run_voter(
-        pkg, llm, system_prompt=SYSTEM_PROMPT, model="b65-vllm-qwen3.8",
+        pkg, complete, system_prompt=SYSTEM_PROMPT, model="qwen3.8-flash",
     )
-    assert llm.calls == 1
-    request = llm.requests[0]
-    assert request.tools is None
+    assert len(complete.bodies) == 1
+    body = complete.bodies[0]
+    assert not body["tools"]
     assert verdict.request_sent is True
     assert all(row["holds"] for row in verdict.rows)
 
 
 async def test_voter_unparseable_answer_denies_all_rows(tmp_path):
     pkg = _build(tmp_path)
-    llm = FakeLLM("I think the code looks fine, but the quoting is off.")
+    complete = FakeComplete("I think the code looks fine, but the quoting is off.")
     verdict = await run_voter(
-        pkg, llm, system_prompt=SYSTEM_PROMPT, model="b65-vllm-qwen3.8",
+        pkg, complete, system_prompt=SYSTEM_PROMPT, model="qwen3.8-flash",
     )
-    assert llm.calls == 1
+    assert len(complete.bodies) == 1
     assert len(verdict.rows) == 3
     for row in verdict.rows:
         assert row["holds"] is False
@@ -309,9 +340,9 @@ async def test_voter_missing_row_denied_with_reason_missing(tmp_path):
         {"row_id": "AC2-c1", "holds": True, "reason": "ok"},
         {"row_id": "AC2-c3", "holds": True, "reason": "ok"},
     ]})
-    llm = FakeLLM(answer)
+    complete = FakeComplete(answer)
     verdict = await run_voter(
-        pkg, llm, system_prompt=SYSTEM_PROMPT, model="b65-vllm-qwen3.8",
+        pkg, complete, system_prompt=SYSTEM_PROMPT, model="qwen3.8-flash",
     )
     by_id = {row["row_id"]: row for row in verdict.rows}
     assert by_id["AC2-c1"]["holds"] is True
@@ -320,37 +351,86 @@ async def test_voter_missing_row_denied_with_reason_missing(tmp_path):
     assert by_id["AC2-c3"]["holds"] is True
 
 
-async def test_voter_call_failure_denies_all_rows(tmp_path):
+async def test_voter_transport_failure_denies_all_rows_one_call(tmp_path):
+    """A non-400 failure denies every row and retries nothing."""
     pkg = _build(tmp_path)
-    llm = FakeLLM(None, fail=RuntimeError("connection reset"))
+    complete = FakeComplete(None, fail=ConnectionError("connection reset"))
     verdict = await run_voter(
-        pkg, llm, system_prompt=SYSTEM_PROMPT, model="b65-vllm-qwen3.8",
+        pkg, complete, system_prompt=SYSTEM_PROMPT, model="qwen3.8-flash",
     )
-    assert llm.calls == 1
+    assert len(complete.bodies) == 1, "exactly one call per voter run"
     assert all(row["holds"] is False for row in verdict.rows)
-    assert all(row["reason"].startswith("unparseable") for row in verdict.rows)
+    assert all(row["reason"] == "unparseable" for row in verdict.rows)
 
 
 # ---------------------------------------------------------------------------
-# AC5 — no-structured-output fail-closed, secret refusal, session log
+# AC7 — the schema rides on every request, whatever the model name
 # ---------------------------------------------------------------------------
 
 
-def test_structured_output_mode_by_model_name():
-    assert structured_output_mode("b65-vllm-qwen3.8") == "guided-json"
-    assert structured_output_mode("xtx-llama-gemma-4-31b") == "gbnf"
-    # Unknown backend (e.g. desktop LM Studio): no mode, fail closed.
-    assert structured_output_mode("qwen3.8-flash") is None
+def _all_objects_pin_additional_properties(node) -> bool:
+    if isinstance(node, dict):
+        if node.get("type") == "object":
+            if node.get("additionalProperties") is not False:
+                return False
+        return all(_all_objects_pin_additional_properties(v) for v in node.values())
+    if isinstance(node, list):
+        return all(_all_objects_pin_additional_properties(v) for v in node)
+    return True
 
 
-async def test_voter_no_structured_output_denies_all_and_sends_no_request(tmp_path):
+def test_voter_schema_pins_additional_properties_on_every_object():
+    assert _all_objects_pin_additional_properties(VOTER_SCHEMA)
+
+
+@pytest.mark.parametrize("model", ["qwen3.8-flash", "qwen3.8-27b", "gemma-4-31b"])
+def test_request_carries_schema_whatever_the_model_name(tmp_path, model):
+    """AC7: json_schema, strict, additionalProperties: false on every object,
+    for every model name — no backend is inferred from the name."""
     pkg = _build(tmp_path)
-    llm = FakeLLM("{}")
+    body = voter_request_body(pkg, SYSTEM_PROMPT, model)
+    assert body["model"] == model
+    fmt = body["response_format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["json_schema"]["strict"] is True
+    schema = fmt["json_schema"]["schema"]
+    assert schema == VOTER_SCHEMA
+    assert _all_objects_pin_additional_properties(schema)
+    # max_tokens roomy enough that whitespace padding cannot truncate.
+    assert body["max_tokens"] >= 200
+
+
+async def test_voter_sends_the_schema_for_an_unfamiliar_model_name(tmp_path):
+    """A model name unlike any known backend still gets the constrained call."""
+    pkg = _build(tmp_path)
+    complete = FakeComplete(_good_answer())
     verdict = await run_voter(
-        pkg, llm, system_prompt=SYSTEM_PROMPT,
-        model="qwen3.8-flash", served_node="gufo",
+        pkg, complete, system_prompt=SYSTEM_PROMPT,
+        model="some-desktop-lm-studio-thing",
     )
-    assert llm.calls == 0, "no request must be sent without a structured-output mode"
+    assert len(complete.bodies) == 1
+    assert complete.bodies[0]["response_format"]["json_schema"]["strict"] is True
+    assert verdict.request_sent is True
+
+
+# ---------------------------------------------------------------------------
+# AC5 — rejected schema constraint fails closed; secret refusal; run log
+# ---------------------------------------------------------------------------
+
+
+async def test_voter_http400_denies_all_no_structured_output_no_retry(tmp_path):
+    pkg = _build(tmp_path)
+    complete = FakeComplete(
+        None,
+        fail=RelaySchemaRejected(
+            "no node that fits the context supports: structured "
+            "(capability_not_supported)"
+        ),
+    )
+    verdict = await run_voter(
+        pkg, complete, system_prompt=SYSTEM_PROMPT, model="qwen3.8-flash",
+    )
+    assert len(complete.bodies) == 1, "no unconstrained retry may be sent"
     assert verdict.request_sent is False
     assert len(verdict.rows) == 3
     for row in verdict.rows:
@@ -358,7 +438,72 @@ async def test_voter_no_structured_output_denies_all_and_sends_no_request(tmp_pa
         assert row["reason"] == "no-structured-output"
 
 
-async def test_voter_writes_raw_answer_and_served_node_to_session_log(tmp_path, monkeypatch):
+async def test_voter_invalid_response_format_400_fails_closed(tmp_path):
+    pkg = _build(tmp_path)
+    complete = FakeComplete(
+        None,
+        fail=RelaySchemaRejected(
+            "JSON Schema: objects require properties and additionalProperties: false "
+            "(invalid_response_format)"
+        ),
+    )
+    verdict = await run_voter(
+        pkg, complete, system_prompt=SYSTEM_PROMPT, model="gemma-4-31b",
+    )
+    assert len(complete.bodies) == 1
+    assert all(r["reason"] == "no-structured-output" for r in verdict.rows)
+    assert "invalid_response_format" in verdict.error
+
+
+def test_relay_client_flags_400_as_schema_rejected():
+    """The HTTP boundary: 400 -> RelaySchemaRejected; other >=400 -> raise."""
+    import asyncio
+
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import aiohttp
+
+    def _response(status: int, payload: bytes):
+        response = MagicMock()
+        response.status = status
+        response.read = AsyncMock(return_value=payload)
+        response.request_info = MagicMock()
+        response.history = ()
+        return response
+
+    client = RelayCompletionClient(base_url="http://relay.invalid")
+
+    async def run_with(status: int, payload: bytes):
+        response = _response(status, payload)
+        cm = MagicMock()
+        cm.__aenter__ = AsyncMock(return_value=response)
+        cm.__aexit__ = AsyncMock(return_value=False)
+        session = MagicMock()
+        session.post = MagicMock(return_value=cm)
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=session)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        with patch("aiohttp.ClientSession", return_value=ctx):
+            return await client.complete({"model": "m"})
+
+    body_400 = json.dumps(
+        {"error": {"message": "nope", "code": "capability_not_supported"}}
+    ).encode()
+    with pytest.raises(RelaySchemaRejected, match="capability_not_supported"):
+        asyncio.run(run_with(400, body_400))
+
+    with pytest.raises(aiohttp.ClientResponseError):
+        asyncio.run(run_with(503, b'{"error": {"message": "busy"}}'))
+
+    ok_body = json.dumps(
+        {"choices": [{"message": {"content": '{"rows": []}'}}]}
+    ).encode()
+    assert asyncio.run(run_with(200, ok_body)) == '{"rows": []}'
+
+
+async def test_voter_writes_raw_answer_and_served_node_to_session_log(
+    tmp_path, monkeypatch
+):
     log_dir = tmp_path / "logs"
     monkeypatch.setenv("SR2_SESSION_LOG_DIR", str(log_dir))
     pkg = _build(tmp_path)
@@ -367,22 +512,23 @@ async def test_voter_writes_raw_answer_and_served_node_to_session_log(tmp_path, 
         {"row_id": "AC2-c2", "holds": False, "reason": "lenient edit"},
         {"row_id": "AC2-c3", "holds": True, "reason": "ok"},
     ]})
-    llm = FakeLLM(answer)
+    complete = FakeComplete(answer)
     log = SessionLogManager().open_session("voter-test", "role-voter")
     try:
         await run_voter(
-            pkg, llm, system_prompt=SYSTEM_PROMPT,
-            model="b65-vllm-qwen3.8", served_node="b65", session_log=log,
+            pkg, complete, system_prompt=SYSTEM_PROMPT,
+            model="qwen3.8-flash", served_node="gufo", session_log=log,
         )
     finally:
         log.close()
 
-    events = _log_events(tmp_path)
-    voter_events = [e for e in events if e["event"] == "voter.answer"]
-    assert len(voter_events) == 1
-    data = voter_events[0]["data"]
-    assert data["served_node"] == "b65"
-    assert data["model"] == "b65-vllm-qwen3.8"
+    events = [
+        e for e in _log_events(log_dir) if e["event"] == "voter.answer"
+    ]
+    assert len(events) == 1
+    data = events[0]["data"]
+    assert data["served_node"] == "gufo"
+    assert data["model"] == "qwen3.8-flash"
     assert data["raw_answer"] == answer
     assert data["request_sent"] is True
     rows = {r["row_id"]: r for r in data["rows"]}
@@ -390,23 +536,23 @@ async def test_voter_writes_raw_answer_and_served_node_to_session_log(tmp_path, 
     assert rows["AC2-c2"]["reason"] == "lenient edit"
 
 
-async def test_voter_no_structured_output_also_logs(tmp_path, monkeypatch):
+async def test_voter_no_structured_output_denial_also_logs(tmp_path, monkeypatch):
     log_dir = tmp_path / "logs"
     monkeypatch.setenv("SR2_SESSION_LOG_DIR", str(log_dir))
     pkg = _build(tmp_path)
-    llm = FakeLLM("{}")
+    complete = FakeComplete(None, fail=RelaySchemaRejected("rejected (capability_not_supported)"))
     log = SessionLogManager().open_session("voter-test", "role-voter")
     try:
         await run_voter(
-            pkg, llm, system_prompt=SYSTEM_PROMPT,
+            pkg, complete, system_prompt=SYSTEM_PROMPT,
             model="qwen3.8-flash", served_node="gufo", session_log=log,
         )
     finally:
         log.close()
-    events = _log_events(tmp_path)
-    voter_events = [e for e in events if e["event"] == "voter.answer"]
-    assert len(voter_events) == 1
-    data = voter_events[0]["data"]
+    events = [e for e in _log_events(log_dir) if e["event"] == "voter.answer"]
+    assert len(events) == 1
+    data = events[0]["data"]
+    assert data["served_node"] == "gufo"
     assert data["request_sent"] is False
     assert all(r["reason"] == "no-structured-output" for r in data["rows"])
 
@@ -417,51 +563,32 @@ def test_voter_rows_parses_case_table(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# E2E: real relay call behind the live marker (deselected by default)
+# AC7 live check — one call per model through the relay (deselected by default)
 # ---------------------------------------------------------------------------
+
+LIVE_MODELS = ["qwen3.8-flash", "qwen3.8-27b", "gemma-4-31b"]
 
 
 @pytest.mark.live
-@pytest.mark.skipif(
-    not Path("/home/shepard/git/sr2-spectre/.venv").is_dir(),
-    reason="main checkout venv not present",
-)
-def test_voter_e2e_live_relay(tmp_path, monkeypatch):
-    """One live call through the relay against the real LiteLLMCallable.
-
-    Proves the single-call path end to end: one request, no tools, a raw
-    answer and served node in the session log. The relay's structured-output
-    support is unverified, so the assertion on the answer is lenient: the
-    call must succeed and be logged, not that the answer is valid JSON.
-    """
+@pytest.mark.parametrize("model", LIVE_MODELS)
+def test_ac7_live_relay_returns_schema_valid_answer(tmp_path, model):
+    """AC7: one live call per model returns an answer that parses against the
+    voter schema. glm-4.7-flash is not served yet and is not included."""
     import asyncio
+    import re
 
-    from sr2.integrations.litellm import LiteLLMCallable
-
-    log_dir = tmp_path / "logs"
-    monkeypatch.setenv("SR2_SESSION_LOG_DIR", str(log_dir))
     pkg = _build(tmp_path)
-    llm = LiteLLMCallable(
-        model="qwen3.8-flash",
-        base_url="http://localhost:11434/v1",
-        api_key="dummy",
-    )
-    log = SessionLogManager().open_session("voter-e2e", "role-voter")
-    try:
-        verdict = asyncio.run(run_voter(
-            pkg, llm, system_prompt=SYSTEM_PROMPT,
-            model="b65-vllm-qwen3.8", served_node="gufo", session_log=log,
-        ))
-    finally:
-        log.close()
+    body = voter_request_body(pkg, SYSTEM_PROMPT, model)
+    client = RelayCompletionClient(base_url=DEFAULT_RELAY_BASE_URL, timeout=300.0)
+    raw = asyncio.run(client.complete(body))
 
-    assert verdict.request_sent is True
-    assert len(verdict.rows) == 3
-    for row in verdict.rows:
-        assert set(row) == {"row_id", "holds", "reason"}
+    data = json.loads(raw)  # must parse at all
+    assert isinstance(data.get("rows"), list) and data["rows"], raw[:200]
+    for row in data["rows"]:
+        assert isinstance(row["row_id"], str)
         assert isinstance(row["holds"], bool)
-    events = _log_events(tmp_path)
-    voter_events = [e for e in events if e["event"] == "voter.answer"]
-    assert len(voter_events) == 1
-    assert voter_events[0]["data"]["served_node"] == "gufo"
-    assert voter_events[0]["data"]["raw_answer"].strip()
+        assert isinstance(row["reason"], str)
+    # Reason text stays one line (a schema deviation if broken; a padding
+    # backend that ignores the "one line" ask fails here loudly).
+    for row in data["rows"]:
+        assert re.fullmatch(r"[^\n]*", row["reason"])

@@ -8,19 +8,25 @@ Two halves of the local-role-runs spec (``local-role-runs.md`` FR 1-4, NFR):
   the paths its inputs name, and runs no command: the diff between base and
   head is an input like the run output.
 * ``run_voter`` — one model call with no tools offered, whose answer is
-  constrained to the per-row voter schema. A response that does not parse is
-  a denial of every row with reason ``unparseable``; a parseable response
-  missing a row is a denial of that row with reason ``missing``. A backend
-  with no structured-output mode fails closed: every row denied with reason
-  ``no-structured-output`` and no request sent. Every run writes its raw
-  answer and served node to the session log through the ``run_log`` seam.
+  constrained to the per-row voter schema. The schema goes on every request
+  as an OpenAI ``response_format`` of type ``json_schema`` (strict,
+  ``additionalProperties: false`` on every object) whatever the model name;
+  no backend is inferred from the name (spec AC7). The default transport
+  POSTs the body directly to the relay's ``/v1/chat/completions``: sr2's
+  model-call layer cannot carry ``response_format``. A response that does
+  not parse is a denial of every row with reason ``unparseable``; a
+  parseable response missing a row is a denial of that row with reason
+  ``missing``. A schema constraint the relay or backend rejects (HTTP 400,
+  e.g. ``capability_not_supported`` or ``invalid_response_format``) fails
+  closed: every row denied with reason ``no-structured-output`` and no
+  unconstrained retry sent. Every run writes its raw answer and served node
+  to the session log through the ``run_log`` seam.
 
 The quorum runner (FR 5-7) is spc-961; this module only provides the single
 voter call it groups.
 """
 from __future__ import annotations
 
-import asyncio
 import fnmatch
 import hashlib
 import json
@@ -28,20 +34,21 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Awaitable, Callable
 
-from sr2 import Message, TextBlock
-from sr2.protocols.llm import CompletionRequest, LLMCallable
+import aiohttp
 from sr2_spectre.run_log import SessionLog
 
 __all__ = [
     "DEFAULT_SECRET_PATTERNS",
     "DEFAULT_MAX_RENDERED_BYTES",
+    "DEFAULT_RELAY_BASE_URL",
     "PackageTooLargeError",
     "SecretPathError",
+    "RelayCompletionClient",
     "build_package",
     "run_voter",
-    "structured_output_mode",
+    "voter_request_body",
     "voter_rows",
 ]
 
@@ -99,27 +106,18 @@ class Package:
     package_hash: str
 
 
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _row_id(row: str) -> str:
-    """The first cell of a case-table row line (``row_id | ...``)."""
-    return row.split("|", 1)[0].strip()
+def _sha256_bytes(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _rendered_prompt(package_dir: Path, manifest: dict[str, Any]) -> str:
-    """Render the voter prompt: every package file with a header.
+    """Render the package body: every manifest file under a path header.
 
-    The same rendering is used for the size estimate recorded in the
-    manifest and (by spc-961) for the user message of the voter call.
+    The single rendering shared by the size estimate recorded in the
+    manifest and (via ``voter_request_body``) the voter's user message, so
+    the two can never disagree.
     """
     parts: list[str] = [
-        "Review package",
         f"bead: {manifest['bead']}",
         f"base: {manifest['base']}",
         f"head: {manifest['head']}",
@@ -168,23 +166,28 @@ def build_package(
                     f"'{pattern}': {path}"
                 )
 
-    directory = out_dir or Path("review-package")
-    if directory.exists():
-        # Never mix a stale tree with a new one.
-        for child in sorted(directory.iterdir(), reverse=True):
-            child.unlink()
-
     entries: list[dict[str, str]] = []
     placed: list[tuple[Path, str]] = [
         (case_table, "case_table.md"),
         (diff, "diff.patch"),
         (run_output, "run.txt"),
     ] + [(fi.path, fi.dest) for fi in files] + [(fi.path, fi.dest) for fi in evidence]
+
+    directory = out_dir or Path("review-package")
+    directory.mkdir(parents=True, exist_ok=True)
+    # Only files the builder itself places are ever removed, so an out_dir
+    # holding anything else is left alone rather than wiped.
+    known = {"manifest.json", *(dest for _, dest in placed)}
+    for child in directory.rglob("*"):
+        if child.is_file() and child.relative_to(directory).as_posix() not in known:
+            child.unlink()
+
     for src, dest in placed:
+        payload = Path(src).read_bytes()  # the one read of each input source
         target = directory / dest
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(Path(src).read_bytes())
-        entries.append({"path": dest, "sha256": _sha256_file(target)})
+        target.write_bytes(payload)
+        entries.append({"path": dest, "sha256": _sha256_bytes(payload)})
 
     manifest: dict[str, Any] = {
         "bead": bead,
@@ -239,34 +242,118 @@ VOTER_SCHEMA = {
     "additionalProperties": False,
 }
 
-# llama.cpp GBNF grammar for the same schema (compact; no nested objects).
-VOTER_GBNF_GRAMMAR = """
-root   ::= open rows close
-open   ::= \\"{\\" \\"rows\\" \\":\\" \\"[\\"
-rows   ::= row (comma row)*
-row    ::= \\"{\\" \\"row_id\\" \\":\\" rid comma \\"holds\\" \\":\\" bool comma \\"reason\\" \\":\\" reason \\"\\"
-comma  ::= \",\\"
-rid    ::= rch+
-bool   ::= \\"true\\" | \\"false\\"
-reason ::= rch+
-rch    ::= [\\x20-\\x7e]
-close  ::= \\"\\"\\"
-"""
+
+# Output room: enough that a backend padding the JSON with whitespace cannot
+# truncate it (relay probe 2026-10-19: max_tokens 60 truncated, 200 stopped
+# cleanly on a two-row answer; 128 per row with a 2048 floor).
+VOTER_MAX_TOKENS_PER_ROW: int = 128
+VOTER_MAX_TOKENS_FLOOR: int = 2048
+
+# The relay's OpenAI-compatible root (spec Dependencies). Until llm-relay-1
+# reports the serving node on every completion, ``served_node`` stays a
+# caller-supplied value.
+DEFAULT_RELAY_BASE_URL: str = "http://localhost:11434"
 
 
-def structured_output_mode(model: str) -> str | None:
-    """The backend's structured-output mode, picked from the relay model name.
+def voter_request_body(
+    package: Package, system_prompt: str, model: str
+) -> dict[str, Any]:
+    """The OpenAI chat-completions body for one voter call (spec AC7).
 
-    ``"guided-json"`` for vLLM, ``"gbnf"`` for llama.cpp, ``None`` when the
-    backend is unknown and no structured-output mode is available (fail
-    closed; spec FR 3).
+    Carries the voter schema as a ``response_format`` of type
+    ``json_schema`` with ``strict: true`` whatever the model name, offers no
+    tools, and asks for enough output tokens that whitespace padding cannot
+    truncate the answer. Thinking is off (the workflow's role calls run
+    without it).
     """
-    name = model.lower()
-    if "vllm" in name:
-        return "guided-json"
-    if "llama" in name:
-        return "gbnf"
-    return None
+    expected = voter_rows(package)
+    user_message = (
+        "Review the package below against its case table. Answer with the "
+        "voter JSON only.\n\n"
+        + _rendered_prompt(package.directory, package.manifest)
+    )
+    return {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_message},
+        ],
+        "tools": [],
+        "max_tokens": max(
+            VOTER_MAX_TOKENS_FLOOR, VOTER_MAX_TOKENS_PER_ROW * len(expected)
+        ),
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "voter_answer",
+                "strict": True,
+                "schema": VOTER_SCHEMA,
+            },
+        },
+        "reasoning_effort": "none",
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+
+
+class RelayCompletionClient:
+    """Minimal OpenAI-compatible client that carries ``response_format``.
+
+    sr2's model-call layer cannot send ``response_format``, so the voter
+    POSTs through the relay's ``/v1/chat/completions`` directly (contract:
+    Implementation notes). ``complete`` returns the completion text, or
+    raises :class:`RelaySchemaRejected` when the relay or backend answers
+    the constrained request with HTTP 400. It sends exactly one request per
+    call: no retry, constrained or not.
+    """
+
+    def __init__(
+        self, base_url: str = DEFAULT_RELAY_BASE_URL, timeout: float = 180.0
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+
+    async def complete(self, body: dict[str, Any]) -> str:
+        """POST *body* to ``/v1/chat/completions``; return the answer text."""
+        client_timeout = aiohttp.ClientTimeout(total=self.timeout)
+        async with aiohttp.ClientSession(timeout=client_timeout) as session:
+            async with session.post(
+                f"{self.base_url}/v1/chat/completions", json=body
+            ) as response:
+                payload = await response.read()
+                if response.status == 400:
+                    raise RelaySchemaRejected(_error_text(payload))
+                if response.status >= 400:
+                    raise aiohttp.ClientResponseError(
+                        response.request_info,
+                        response.history,
+                        status=response.status,
+                        message=_error_text(payload),
+                    )
+                data = json.loads(payload)
+        choices = data.get("choices") or [{}]
+        return (choices[0].get("message") or {}).get("content") or ""
+
+
+class RelaySchemaRejected(RuntimeError):
+    """The relay or backend rejected the schema constraint (HTTP 400).
+
+    ``error_code`` is the relay's error code when the body carried one
+    (e.g. ``capability_not_supported``, ``invalid_response_format``).
+    """
+
+    def __init__(self, message: str, error_code: str = "") -> None:
+        super().__init__(message)
+        self.error_code = error_code
+
+
+def _error_text(payload: bytes) -> str:
+    try:
+        error = json.loads(payload).get("error") or {}
+    except (json.JSONDecodeError, AttributeError):
+        return payload.decode("utf-8", errors="replace")[:500]
+    message = str(error.get("message", ""))[:500]
+    code = str(error.get("code", ""))
+    return f"{message} ({code})" if code else message
 
 
 def voter_rows(package: Package) -> list[str]:
@@ -292,8 +379,8 @@ class VoterVerdict:
     raw_answer: str
     served_node: str | None
     model: str
-    mode: str | None
     request_sent: bool
+    error: str = ""
 
 
 def _row_verdict(row_id: str, holds: bool, reason: str) -> dict[str, Any]:
@@ -324,140 +411,94 @@ def _parse_answer(raw: str, expected_rows: list[str]) -> list[dict[str, Any]] | 
     ]
 
 
-def _render_package_prompt(package: Package) -> str:
-    manifest = package.manifest
-    parts: list[str] = [
-        "Review the package below. Answer with the voter JSON only.",
-        f"bead: {manifest['bead']}",
-        f"base: {manifest['base']}",
-        f"head: {manifest['head']}",
-        "",
-    ]
-    for entry in manifest["files"]:
-        parts.append(f"=== {entry['path']} ===")
-        parts.append(
-            (package.directory / entry["path"]).read_text(encoding="utf-8", errors="replace")
-        )
-        parts.append("")
-    return "\n".join(parts)
-
-
 async def run_voter(
     package: Package,
-    llm: LLMCallable,
+    complete: Callable[[dict[str, Any]], Awaitable[str]],
     *,
     system_prompt: str,
     model: str,
     served_node: str | None = None,
     session_log: SessionLog | None = None,
-    timeout: float = 120.0,
 ) -> VoterVerdict:
-    """One tool-less model call constrained to the voter schema (spec FR 3-4).
+    """One tool-less model call constrained to the voter schema (FR 3-4, AC5, AC7).
 
-    The structured-output mode is picked from the relay model name
-    (``structured_output_mode``). With no mode, every row is denied with
-    reason ``no-structured-output`` and no request is sent. The raw answer
-    and served node are written to the session log through the ``run_log``
-    seam (``session_log`` may be None for a no-op).
+    ``complete`` takes the OpenAI body from :func:`voter_request_body` and
+    returns the completion text — production passes a
+    :class:`RelayCompletionClient`; tests pass a fake that records bodies.
+    The schema constraint rides on every request whatever the model name;
+    nothing is inferred from the name. The request carries no tools.
+
+    A schema constraint the relay or backend rejects (HTTP 400, surfaced as
+    :class:`RelaySchemaRejected`) denies every row with reason
+    ``no-structured-output`` and sends no unconstrained retry. Any other
+    failure from ``complete`` (transport, timeout) denies every row with
+    reason ``unparseable`` and retries nothing: one call per voter run. A
+    response that does not parse denies every row with reason
+    ``unparseable``; a parseable response missing a row denies that row with
+    ``missing``. The raw answer and served node are written to the session
+    log through the ``run_log`` seam (``session_log`` may be None for a
+    no-op).
     """
     expected = voter_rows(package)
 
-    def _log(data: Mapping[str, Any]) -> None:
+    def _verdict(
+        rows: list[dict[str, Any]],
+        raw: str,
+        request_sent: bool,
+        error: str,
+        elapsed: float,
+    ) -> VoterVerdict:
         if session_log is not None:
-            session_log.append("voter.answer", dict(data))
-
-    def _deny(reason: str, *, mode: str | None = None, request_sent: bool = False) -> VoterVerdict:
-        _log(
-            {
-                "model": model,
-                "served_node": served_node,
-                "raw_answer": "",
-                "request_sent": request_sent,
-                "rows": [
-                    _row_verdict(row_id, False, reason) for row_id in expected
-                ],
-            }
-        )
+            session_log.append(
+                "voter.answer",
+                {
+                    "model": model,
+                    "served_node": served_node,
+                    "raw_answer": raw,
+                    "request_sent": request_sent,
+                    "duration_s": round(elapsed, 3),
+                    "error": error,
+                    "rows": rows,
+                },
+            )
         return VoterVerdict(
-            rows=[_row_verdict(r, False, reason) for r in expected],
-            raw_answer="",
-            served_node=served_node,
-            model=model,
-            mode=mode,
-            request_sent=request_sent,
-        )
-
-    mode = structured_output_mode(model)
-    if mode is None:
-        return _deny("no-structured-output", mode=None)
-
-    # No tools are offered: the request carries none and the structured
-    # output mode constrains the answer to the voter schema.
-    request = CompletionRequest(
-        system=[TextBlock(text=system_prompt)],
-        messages=[
-            Message(role="user", content=[TextBlock(text=_render_package_prompt(package))]),
-        ],
-        tools=None,
-    )
-    # The structured-output payload is available on the VoterVerdict (mode
-    # field) and the module-level VOTER_SCHEMA / VOTER_GBNF_GRAMMAR
-    # constants; a backend wrapper (spc-961) uses them to emit
-    # backend-specific kwargs (vLLM guided JSON / llama.cpp GBNF).
-
-    started = time.monotonic()
-    try:
-        response = await _bounded(llm.complete(request), timeout)
-    except Exception as exc:  # noqa: BLE001 — a failed call denies every row
-        return _deny(f"unparseable: {exc}", mode=mode, request_sent=True)
-    elapsed = time.monotonic() - started
-
-    raw = "".join(
-        block.text for block in response.content if isinstance(block, TextBlock)
-    )
-    verdicts = _parse_answer(raw, expected)
-    if verdicts is None:
-        # A response that does not parse counts as a denial of every row.
-        _log(
-            {
-                "model": model,
-                "served_node": served_node,
-                "raw_answer": raw,
-                "request_sent": True,
-                "duration_s": round(elapsed, 3),
-                "rows": [
-                    _row_verdict(row_id, False, "unparseable") for row_id in expected
-                ],
-            }
-        )
-        return VoterVerdict(
-            rows=[_row_verdict(r, False, "unparseable") for r in expected],
+            rows=rows,
             raw_answer=raw,
             served_node=served_node,
             model=model,
-            mode=mode,
-            request_sent=True,
+            request_sent=request_sent,
+            error=error,
         )
 
-    _log(
-        {
-            "model": model,
-            "served_node": served_node,
-            "raw_answer": raw,
-            "request_sent": True,
-            "duration_s": round(elapsed, 3),
-            "rows": verdicts,
-        }
-    )
-    return VoterVerdict(
-        rows=verdicts,
-        raw_answer=raw,
-        served_node=served_node,
-        model=model,
-        mode=mode,
-        request_sent=True,
-    )
+    def _deny(reason: str, error: str = "", request_sent: bool = False) -> VoterVerdict:
+        return _verdict(
+            [_row_verdict(row_id, False, reason) for row_id in expected],
+            "",
+            request_sent,
+            error,
+            0.0,
+        )
 
+    body = voter_request_body(package, system_prompt, model)
+    started = time.monotonic()
+    try:
+        raw = await complete(body)
+    except RelaySchemaRejected as exc:
+        # Fail closed (AC5): the schema constraint itself was rejected.
+        # Every row is denied; no unconstrained retry is ever sent.
+        return _deny("no-structured-output", error=str(exc))
+    except Exception as exc:  # noqa: BLE001 — any other failure denies every row
+        return _deny("unparseable", error=str(exc), request_sent=True)
+    elapsed = time.monotonic() - started
 
-def _bounded(coro, timeout: float):
-    return asyncio.wait_for(coro, timeout)
+    verdicts = _parse_answer(raw, expected)
+    if verdicts is None:
+        # A response that does not parse denies every row (spec FR 3).
+        return _verdict(
+            [_row_verdict(row_id, False, "unparseable") for row_id in expected],
+            raw,
+            True,
+            "",
+            elapsed,
+        )
+    return _verdict(verdicts, raw, True, "", elapsed)
