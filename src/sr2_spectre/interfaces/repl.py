@@ -15,6 +15,9 @@ work exactly like a normal shell session:
 Slash commands (identical semantics to the TUI):
   /quit /exit /reset /help /tools /history /save [path] /load <path>
 
+Terminal counterpart of Discord's /model (spc-956):
+  /change-model [name]
+
 Ctrl-C during a turn stops the turn (twice in quick succession force-quits);
 Ctrl-C at the prompt abandons the half-typed input.
 
@@ -67,6 +70,7 @@ Commands:
   /history  — show conversation history
   /save [path]  — save session to JSON (default: ~/.sr2-spectre/session.json)
   /load <path>  — load session from JSON
+  /change-model [name]  — list models, or switch the active one
 
 Multiline input: Enter sends the message, Shift+Enter (or Alt+Enter) adds a
 newline.  Shift+Enter only reaches the REPL if your terminal is set to send a
@@ -76,7 +80,17 @@ the prompt abandons the current input.  Ctrl-D or /quit exits.  History is
 persisted between runs.
 """
 
-_COMMANDS = ["/quit", "/exit", "/reset", "/help", "/tools", "/history", "/save", "/load"]
+_COMMANDS = [
+    "/quit",
+    "/exit",
+    "/reset",
+    "/help",
+    "/tools",
+    "/history",
+    "/save",
+    "/load",
+    "/change-model",
+]
 
 
 def render_markdown(text: str, console: Console | None = None) -> Text | Markdown:
@@ -220,6 +234,70 @@ def _make_prompt_session(completer):
         multiline=True,
         key_bindings=_make_key_bindings(),
     )
+
+
+def _active_model_pointer() -> Path | None:
+    """Path to the writable active-model pointer file, or None if unset.
+
+    Same env var Discord's /model writes: the config itself is mounted
+    read-only, so the pointer file is the only surface that survives a
+    restart.
+    """
+    pointer = os.environ.get("SR2_ACTIVE_MODEL_FILE")
+    return Path(pointer) if pointer else None
+
+
+def render_change_model_command(
+    arg: str | None,
+    model_names: Iterable[str],
+    active_model: str,
+    pointer_configured: bool,
+) -> tuple[list[tuple[str, str]], str | None]:
+    """Pure decision logic for /change-model — no I/O.
+
+    Mirrors ``interfaces.discord.handler.render_model_command``; the REPL
+    renders Rich markup lines instead of Discord markdown, so the two stay
+    deliberately separate (the duplication is a dozen lines).
+
+    Args:
+        arg: Model name after "/change-model"; None lists the models.
+        model_names: Keys of the configured ``models`` map.
+        active_model: The model name currently in force.
+        pointer_configured: Whether ``SR2_ACTIVE_MODEL_FILE`` is set, i.e.
+            whether a switch can be persisted across restarts.
+
+    Returns:
+        ``(lines, selection)`` — *lines* is a list of ``(markup, style)``
+        pairs to print, *selection* is the model name the caller should
+        persist and apply, or None when nothing should change (a listing,
+        an error, or re-selecting the active model).
+    """
+    names = set(model_names)
+    if arg is None:
+        lines: list[tuple[str, str]] = [("[bold]Models:[/bold]", "")]
+        for name in sorted(names):
+            if name == active_model:
+                lines.append((f"  [green]• {name}[/green]  ← active", ""))
+            else:
+                lines.append((f"  {name}", "dim"))
+        return lines, None
+
+    if arg not in names:
+        available = ", ".join(sorted(names)) or "(none configured)"
+        return (
+            [(f"[red]Unknown model: {arg}[/red]", ""), (f"Available: {available}", "dim")],
+            None,
+        )
+
+    if arg == active_model:
+        return ([(f"Already using {arg}.", "dim")], None)
+
+    note = (
+        "Not persisted — SR2_ACTIVE_MODEL_FILE is unset, so a restart reverts."
+        if not pointer_configured
+        else "Takes effect on the next message."
+    )
+    return ([(f"[green]Switched to {arg}.[/green]", ""), (note, "dim")], arg)
 
 
 class REPLInterface:
@@ -512,6 +590,7 @@ class REPLInterface:
             "/history": lambda a: self._cmd_history(agent),
             "/save": lambda a: self._cmd_save(agent, arg),
             "/load": lambda a: self._cmd_load(agent, arg),
+            "/change-model": lambda a: self._cmd_change_model(agent, arg),
         }
         handler = handlers.get(cmd)
         if handler is None:
@@ -561,6 +640,52 @@ class REPLInterface:
             self.console.print(f"[green]Session loaded from {path} ({len(messages)} messages)[/green]")
         except Exception as e:
             self.console.print(f"[red]Error loading session: {e}[/red]")
+
+    async def _cmd_change_model(self, agent: "Agent", arg: str | None) -> None:
+        """Handle /change-model — list models or switch the active one.
+
+        Terminal counterpart of Discord's /model (spc-956).  A switch is
+        applied in-process through ``agent.apply_config`` — the Runtime
+        re-seats the LLM via ``LiveLLM.retarget`` — and persisted, when
+        possible, by writing the pointer file *first*: a failed write aborts
+        the switch so the pointer and the in-process model never diverge.
+        """
+        config = getattr(agent, "config", None)
+        models = getattr(config, "models", None)
+        if not models:
+            self.console.print("[red]No models are configured.[/red]")
+            return
+
+        pointer = _active_model_pointer()
+        lines, selection = render_change_model_command(
+            arg, set(models), getattr(config, "active_model", ""), pointer is not None
+        )
+        if selection is None:
+            # A listing, an error, or a no-op: print and stop.
+            for markup, style in lines:
+                self.console.print(markup, style=style or None)
+            return
+
+        if pointer is not None:
+            # Persist first: a failed write must leave the in-process model
+            # untouched, so the pointer and the running session never diverge.
+            try:
+                pointer.write_text(f"{selection}\n")
+            except OSError as exc:
+                self.console.print(
+                    f"[red]Could not persist the switch: {exc}[/red] "
+                    "[dim]Active model unchanged.[/dim]"
+                )
+                return
+
+        new_config = config.model_copy(update={"active_model": selection})
+        try:
+            agent.apply_config(new_config)
+        except Exception as exc:
+            self.console.print(f"[red]Could not apply the switch: {exc}[/red]")
+            return
+        for markup, style in lines:
+            self.console.print(markup, style=style or None)
 
 
 __all__ = ["REPLInterface", "render_markdown"]
