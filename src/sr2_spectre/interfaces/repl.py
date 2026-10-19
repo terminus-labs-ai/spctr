@@ -13,7 +13,7 @@ work exactly like a normal shell session:
   rendered as Markdown.
 
 Slash commands (identical semantics to the TUI):
-  /quit /exit /reset /help /tools /history /save [path] /load <path>
+  /quit /exit /reset /help /tools /history /context /save [path] /load <path>
 
 Terminal counterpart of Discord's /model (spc-956):
   /change-model [name]
@@ -52,6 +52,7 @@ from sr2_spectre.events import (
 )
 from sr2_spectre.interfaces.session_io import (
     default_save_path,
+    estimate_history_stats,
     format_history_summary,
     load_session,
     save_session,
@@ -68,6 +69,7 @@ Commands:
   /help     — show this help
   /tools    — list available tools
   /history  — show conversation history
+  /context  — show session id, message count and estimated context tokens
   /save [path]  — save session to JSON (default: ~/.sr2-spectre/session.json)
   /load <path>  — load session from JSON
   /change-model [name]  — list models, or switch the active one
@@ -87,6 +89,7 @@ _COMMANDS = [
     "/help",
     "/tools",
     "/history",
+    "/context",
     "/save",
     "/load",
     "/change-model",
@@ -571,8 +574,10 @@ class REPLInterface:
         else:
             session_id = getattr(agent, "session_id", "unknown")
             msg_count = len(getattr(agent, "history", []))
+            est_tokens = estimate_history_stats(getattr(agent, "history", [])).tokens
             self.console.print(
-                f"[dim]— session {session_id[:8]} · {msg_count} msgs · {total_tool_calls} tools —[/dim]"
+                f"[dim]— session {session_id[:8]} · {msg_count} msgs · {total_tool_calls} tools"
+                f" · ~{est_tokens} tok est. —[/dim]"
             )
 
     # ------------------------------------------------------------------
@@ -588,6 +593,7 @@ class REPLInterface:
             "/help": self._cmd_help,
             "/tools": lambda a: self._cmd_tools(agent),
             "/history": lambda a: self._cmd_history(agent),
+            "/context": lambda a: self._cmd_context(agent),
             "/save": lambda a: self._cmd_save(agent, arg),
             "/load": lambda a: self._cmd_load(agent, arg),
             "/change-model": lambda a: self._cmd_change_model(agent, arg),
@@ -620,6 +626,27 @@ class REPLInterface:
         summary = format_history_summary(agent.history)
         for line in summary.splitlines():
             self.console.print(line)
+
+    async def _cmd_context(self, agent: "Agent", _arg: str | None = None) -> None:
+        """Handle /context — estimated context size for the current session.
+
+        Read-only.  The token figure is CharacterTokenCounter over
+        ``agent.history`` (see ``estimate_history_stats``), not LLM-reported
+        usage; extra arguments are ignored.
+        """
+        session_id = getattr(agent, "session_id", "unknown")
+        stats = estimate_history_stats(agent.history)
+        self.console.print(
+            f"Session {session_id[:8]} · {stats.messages} msgs · ~{stats.tokens} tokens est."
+        )
+        if stats.messages > 0:
+            by_role = " · ".join(
+                f"{role} ~{tokens}"
+                for role, tokens in sorted(
+                    stats.by_role.items(), key=lambda item: (-item[1], item[0])
+                )
+            )
+            self.console.print(f"By role: {by_role}")
 
     async def _cmd_save(self, agent: "Agent", arg: str | None) -> None:
         path = Path(arg) if arg else default_save_path()

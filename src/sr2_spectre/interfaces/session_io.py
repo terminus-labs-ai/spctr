@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import NamedTuple
+
+from sr2.pipeline.token_counting import CharacterTokenCounter
 
 
 def default_save_path() -> Path:
@@ -117,6 +120,49 @@ def format_history_summary(history: list) -> str:
     return "\n".join(lines)
 
 
+class HistoryStats(NamedTuple):
+    """Estimated context footprint of an ``agent.history`` list.
+
+    Attributes:
+        messages: Number of messages in the history.
+        tokens: Estimated token total over every message's content blocks.
+        by_role: Token sums grouped by ``msg.role``.
+    """
+
+    messages: int
+    tokens: int
+    by_role: dict[str, int]
+
+
+# One counter per module is fine: CharacterTokenCounter is stateless and is
+# the same zero-dependency counter session.py/runtime.py hand to SR2.
+_token_counter = CharacterTokenCounter()
+
+
+def estimate_history_stats(history: list) -> HistoryStats:
+    """Estimate context size over ``agent.history`` in tokens.
+
+    Delegates per-message counting to SR2's ``CharacterTokenCounter``
+    (chars // 4 over every content block: text, thinking, tool_use and
+    tool_result) so the figure matches the counter the pipeline itself uses.
+    This is deliberately NOT LLM-reported usage — real input/output usage
+    needs shared-sr2 stream changes (spc-82).
+
+    Messages with missing or empty content contribute 0 and never raise.
+    """
+    messages = 0
+    tokens = 0
+    by_role: dict[str, int] = {}
+    for msg in history or []:
+        messages += 1
+        content = getattr(msg, "content", None)
+        count = _token_counter.count(content) if content else 0
+        tokens += count
+        role = getattr(msg, "role", "") or ""
+        by_role[role] = by_role.get(role, 0) + count
+    return HistoryStats(messages=messages, tokens=tokens, by_role=by_role)
+
+
 __all__ = [
     "default_save_path",
     "serialize_history",
@@ -124,4 +170,6 @@ __all__ = [
     "save_session",
     "load_session",
     "format_history_summary",
+    "HistoryStats",
+    "estimate_history_stats",
 ]
