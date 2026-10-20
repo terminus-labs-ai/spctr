@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -26,6 +27,7 @@ from sr2_spectre.review import (
     RotationState,
     SecretPathError,
     VOTER_SCHEMA,
+    _error_text,
     build_package,
     quorum_report,
     run_quorum,
@@ -318,7 +320,9 @@ async def test_voter_run_offers_no_tools(tmp_path):
     )
     assert len(complete.bodies) == 1
     body = complete.bodies[0]
-    assert not body["tools"]
+    # spc-966: offering no tools means the field is absent entirely — some
+    # backends reject "tools": [] with HTTP 400.
+    assert "tools" not in body
     assert verdict.request_sent is True
     assert all(row["holds"] for row in verdict.rows)
 
@@ -393,6 +397,8 @@ def test_request_carries_schema_whatever_the_model_name(tmp_path, model):
     pkg = _build(tmp_path)
     body = voter_request_body(pkg, SYSTEM_PROMPT, model)
     assert body["model"] == model
+    # 966-c1: no tools offered — the field is absent, not an empty array.
+    assert "tools" not in body
     fmt = body["response_format"]
     assert fmt["type"] == "json_schema"
     assert fmt["json_schema"]["strict"] is True
@@ -458,6 +464,68 @@ async def test_voter_invalid_response_format_400_fails_closed(tmp_path):
     assert "invalid_response_format" in verdict.error
 
 
+# The live r5 rejection (spc-961-r3 finding 2): an HTTP 400 that is not a
+# schema-constraint rejection. It must not reach the no-structured-output
+# path; it is the existing other-failure path (unparseable, request_sent).
+_EMPTY_TOOLS_400 = json.dumps(
+    {
+        "error": {
+            "message": "tools must not be an empty array. Either provide at "
+            "least one tool or omit the field entirely.",
+            "type": "invalid_request_error",
+        }
+    }
+).encode()
+
+
+async def test_voter_non_schema_400_denies_unparseable_not_no_structured_output(
+    tmp_path,
+):
+    """966-c2: a 400 that is not a schema rejection -> unparseable, no retry."""
+    import aiohttp
+
+    from sr2_spectre.review import _is_schema_constraint_rejection
+
+    # The HTTP-boundary classification (the same predicate
+    # RelayCompletionClient.complete applies, tested end-to-end below in
+    # test_relay_client_flags_400_as_schema_rejected): this 400 is an
+    # ordinary request failure, not a schema rejection.
+    assert not _is_schema_constraint_rejection(_EMPTY_TOOLS_400)
+
+    # run_voter treats it as any other failure: every row denied
+    # unparseable, error text kept, request_sent True, one call only.
+    pkg = _build(tmp_path)
+    complete = FakeComplete(
+        None,
+        fail=aiohttp.ClientResponseError(
+            MagicMock(), (), status=400, message=_error_text(_EMPTY_TOOLS_400)
+        ),
+    )
+    verdict = await run_voter(
+        pkg, complete, system_prompt=SYSTEM_PROMPT, model="qwen3.8-flash",
+    )
+    assert len(complete.bodies) == 1, "no retry may be sent"
+    assert verdict.request_sent is True
+    assert len(verdict.rows) == 3
+    for row in verdict.rows:
+        assert row["holds"] is False
+        assert row["reason"] == "unparseable"
+    assert "empty array" in verdict.error
+
+
+async def test_voter_schema_rejection_codes_still_no_structured_output(tmp_path):
+    """966-c3: capability_not_supported / invalid_response_format unchanged."""
+    pkg = _build(tmp_path)
+    for code in ("capability_not_supported", "invalid_response_format"):
+        complete = FakeComplete(None, fail=RelaySchemaRejected(f"({code})"))
+        verdict = await run_voter(
+            pkg, complete, system_prompt=SYSTEM_PROMPT, model="qwen3.8-flash",
+        )
+        assert len(complete.bodies) == 1, "no unconstrained retry may be sent"
+        assert all(r["reason"] == "no-structured-output" for r in verdict.rows), code
+        assert code in verdict.error
+
+
 def test_relay_client_flags_400_as_schema_rejected():
     """The HTTP boundary: 400 -> RelaySchemaRejected; other >=400 -> raise."""
     import asyncio
@@ -494,6 +562,31 @@ def test_relay_client_flags_400_as_schema_rejected():
     ).encode()
     with pytest.raises(RelaySchemaRejected, match="capability_not_supported"):
         asyncio.run(run_with(400, body_400))
+
+    # spc-966: a 400 that is not a schema-constraint rejection (the live r5
+    # "tools must not be an empty array" case) is an ordinary request
+    # failure, not RelaySchemaRejected.
+    empty_tools_400 = json.dumps(
+        {
+            "error": {
+                "message": "tools must not be an empty array. Either provide "
+                "at least one tool or omit the field entirely.",
+                "type": "invalid_request_error",
+            }
+        }
+    ).encode()
+    with pytest.raises(aiohttp.ClientResponseError) as excinfo:
+        asyncio.run(run_with(400, empty_tools_400))
+    assert not isinstance(excinfo.value, RelaySchemaRejected)
+    assert "empty array" in str(excinfo.value)
+
+    # A schema-constraint 400 without a code but naming response_format is
+    # still a schema rejection.
+    named_400 = json.dumps(
+        {"error": {"message": "response_format is not supported by this node"}}
+    ).encode()
+    with pytest.raises(RelaySchemaRejected):
+        asyncio.run(run_with(400, named_400))
 
     with pytest.raises(aiohttp.ClientResponseError):
         asyncio.run(run_with(503, b'{"error": {"message": "busy"}}'))
