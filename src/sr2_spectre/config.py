@@ -161,6 +161,7 @@ class AgentConfig(BaseModel):
     )
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
     tool_result_max_bytes: int = Field(default=65536)
+    tool_limit_notice: str = Field(default="Tool iteration limit reached; stopping.")
     reminders: RemindersConfig = Field(default_factory=RemindersConfig)
 
 

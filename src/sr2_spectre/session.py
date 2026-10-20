@@ -382,6 +382,10 @@ class Session:
                             "sr2.retry",
                             {**(ev.meta or {}), "iteration": ev.iteration},
                         )
+                    elif ev.type == "repeat_guard":
+                        self._log_event("tool.repeat_guard", dict(ev.meta or {}))
+                    elif ev.type == "final_answer":
+                        self._log_event("sr2.final_answer", dict(ev.meta or {}))
                     elif ev.type == "error" and ev.errors:
                         self._log_event(
                             "pipeline.error",
@@ -403,7 +407,7 @@ class Session:
                                 is_error=getattr(tr, "is_error", False),
                             )
             except ToolLoopLimitError:
-                notice = "Tool iteration limit reached; stopping."
+                notice = self.config.agent.tool_limit_notice
                 text_acc.append(notice)
                 yield AgentTextDelta(text=notice)
 
