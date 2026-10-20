@@ -262,9 +262,10 @@ def voter_request_body(
 
     Carries the voter schema as a ``response_format`` of type
     ``json_schema`` with ``strict: true`` whatever the model name, offers no
-    tools, and asks for enough output tokens that whitespace padding cannot
-    truncate the answer. Thinking is off (the workflow's role calls run
-    without it).
+    tools — the ``tools`` field is absent entirely, since some backends
+    reject an empty tools array with HTTP 400 — and asks for enough output
+    tokens that whitespace padding cannot truncate the answer. Thinking is
+    off (the workflow's role calls run without it).
     """
     expected = voter_rows(package)
     user_message = (
@@ -278,7 +279,6 @@ def voter_request_body(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_message},
         ],
-        "tools": [],
         "max_tokens": max(
             VOTER_MAX_TOKENS_FLOOR, VOTER_MAX_TOKENS_PER_ROW * len(expected)
         ),
@@ -302,8 +302,11 @@ class RelayCompletionClient:
     POSTs through the relay's ``/v1/chat/completions`` directly (contract:
     Implementation notes). ``complete`` returns the completion text, or
     raises :class:`RelaySchemaRejected` when the relay or backend answers
-    the constrained request with HTTP 400. It sends exactly one request per
-    call: no retry, constrained or not.
+    the constrained request with an HTTP 400 that rejects the schema
+    constraint itself (spc-966). Any other 400 — e.g. "tools must not be an
+    empty array" — is an ordinary request failure raised as
+    ``aiohttp.ClientResponseError``, not a schema rejection. It sends
+    exactly one request per call: no retry, constrained or not.
     """
 
     def __init__(
@@ -321,7 +324,16 @@ class RelayCompletionClient:
             ) as response:
                 payload = await response.read()
                 if response.status == 400:
-                    raise RelaySchemaRejected(_error_text(payload))
+                    if _is_schema_constraint_rejection(payload):
+                        raise RelaySchemaRejected(
+                            _error_text(payload), _error_code(payload)
+                        )
+                    raise aiohttp.ClientResponseError(
+                        response.request_info,
+                        response.history,
+                        status=response.status,
+                        message=_error_text(payload),
+                    )
                 if response.status >= 400:
                     raise aiohttp.ClientResponseError(
                         response.request_info,
@@ -354,6 +366,43 @@ def _error_text(payload: bytes) -> str:
     message = str(error.get("message", ""))[:500]
     code = str(error.get("code", ""))
     return f"{message} ({code})" if code else message
+
+
+def _error_dict(payload: bytes) -> dict[str, Any]:
+    """The ``error`` object of an error response body, or {} if unreadable."""
+    try:
+        error = json.loads(payload).get("error")
+    except (json.JSONDecodeError, AttributeError):
+        return {}
+    return error if isinstance(error, dict) else {}
+
+
+def _error_code(payload: bytes) -> str:
+    return str(_error_dict(payload).get("code", ""))
+
+
+# Error codes the relay or backend uses to reject the schema constraint
+# itself (spc-966; relay probe 2026-10-20).
+_SCHEMA_REJECTION_CODES = frozenset(
+    {"capability_not_supported", "invalid_response_format"}
+)
+
+
+def _is_schema_constraint_rejection(payload: bytes) -> bool:
+    """Does this HTTP 400 body reject the schema constraint (spec AC5, AC7)?
+
+    True only when the error names a schema-constraint rejection: one of
+    the relay's codes (``capability_not_supported``,
+    ``invalid_response_format``) or a message naming ``response_format``
+    or the JSON schema. Any other 400 (e.g. "tools must not be an empty
+    array") is an ordinary request failure, not a schema rejection, and
+    must not route the voter run down the ``no-structured-output`` path.
+    """
+    error = _error_dict(payload)
+    if str(error.get("code", "")) in _SCHEMA_REJECTION_CODES:
+        return True
+    message = str(error.get("message", "")).lower()
+    return "response_format" in message or "json schema" in message
 
 
 def voter_rows(package: Package) -> list[str]:
