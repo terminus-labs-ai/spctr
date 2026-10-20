@@ -1395,3 +1395,178 @@ async def test_run_voter_reads_node_of_after_the_call(tmp_path, monkeypatch):
     assert len(events) == 1
     assert events[0]["data"]["served_node"] == "node-late"
     assert verdict.served_node == "node-late"
+
+
+
+# ---------------------------------------------------------------------------
+# spc-967 — non-judging voters are listed apart, never counted as judgement
+#
+# The r5 N=3 plain run read qwen3.8-27b as catch 1/1 and deny 1/1 because
+# the voter whose call failed (HTTP 400) denies every row without any
+# judgement, and the rate counted that denial as the model's call. A voter
+# that judged nothing is listed in its own line and kept out of the rates;
+# it still blocks unanimity (fail closed, unchanged).
+# ---------------------------------------------------------------------------
+
+
+class QuorumCompleteFailing(QuorumComplete):
+    """QuorumComplete where a named model never gives a judgement.
+
+    ``raise_for`` maps a model name to the exception its call raises;
+    ``empty_rows_for`` maps a model name to the answer ``{"rows": []}``
+    (every row missing); ``garbage_for`` maps a model name to a non-JSON
+    answer (every row unparseable). Every other model passes every row.
+    """
+
+    def __init__(self, *, raise_for: dict[str, Exception] | None = None,
+                 empty_rows_for: tuple[str, ...] = (),
+                 garbage_for: tuple[str, ...] = ()):
+        super().__init__()
+        self.raise_for = raise_for or {}
+        self.empty_rows_for = empty_rows_for
+        self.garbage_for = garbage_for
+
+    async def __call__(self, body: dict) -> str:
+        model = body["model"]
+        self.bodies.append(body)
+        failure = self.raise_for.get(model)
+        if failure is not None:
+            raise failure
+        if model in self.empty_rows_for:
+            return json.dumps({"rows": []})
+        if model in self.garbage_for:
+            return "looks fine to me"
+        return _good_answer(self._rows_of(body))
+
+
+def _report_run(tmp_path, complete, name="r5", defect_rows=("AC9-c2",)):
+    return quorum_report(
+        {name: {"package": _build_many(tmp_path, 5, name=name),
+                "defect_rows": list(defect_rows)}},
+        counts=(3,),
+        complete=complete,
+        system_prompt=SYSTEM_PROMPT,
+        models=POOL,
+        node_of=_node_of,
+        out_path=tmp_path / "report.md",
+    )
+
+
+def _plain_voters(tmp_path, name="r5") -> dict[str, int]:
+    """model -> voter index for the plain N=3 run the report just wrote.
+
+    At N below the pool size one model is omitted and the assignment is
+    shuffled, so a test reads the indexes back from ``quorum-3-plain.json``
+    instead of naming them.
+    """
+    quorum = json.loads(
+        (tmp_path / name / "quorum-3-plain.json").read_text(encoding="utf-8")
+    )
+    return {vr["model"]: vr["index"] for vr in quorum["voter_results"]}
+
+
+async def test_report_error_voter_listed_apart_and_out_of_rates(tmp_path):
+    """967-c1: a voter whose call failed is listed as non-judging and
+    excluded from its model's catch and deny rates."""
+    error_text = 'HTTP 400: {"code": "capability_not_supported"}'
+    report = await _report_run(
+        tmp_path,
+        QuorumCompleteFailing(
+            raise_for={"qwen3.8-flash": RuntimeError(error_text)}
+        ),
+    )
+    # Listed apart: package, count, voter index, model, cause, error text.
+    assert (
+        f"- non-judging voter: r5 N=3 plain, "
+        f"voter {_plain_voters(tmp_path)['qwen3.8-flash']}, "
+        "model qwen3.8-flash, cause error, error " + error_text
+        + " (excluded from the catch and deny rates below)" in report
+    )
+    # Excluded from the rates: the N=3 plain run gives qwen3.8-flash one
+    # voter, so its rates read 0 judged, never the 1/1 the failed call
+    # used to produce.
+    plain = report.split("- N=3 plain:")[1].split("- N=")[0]
+    assert "qwen3.8-flash: voters 0; catch rate n/a (0 judged)" in plain
+    assert "deny rate n/a (0 judged)" in plain
+    assert "catch rate 1/1" not in plain and "deny rate 1/1" not in plain
+    # Fail closed, unchanged: the failed voter still blocks unanimity.
+    assert "approved=False" in report
+
+
+async def test_report_no_answer_voter_listed_as_non_judging(tmp_path):
+    """967-c4: an empty answer (every row missing) and an unparseable
+    response (every row unparseable) are non-judging with `error` empty."""
+    report = await _report_run(
+        tmp_path,
+        QuorumCompleteFailing(
+            empty_rows_for=("gemma-4-31b",), garbage_for=("glm-4.7-flash",)
+        ),
+    )
+    voters = _plain_voters(tmp_path)
+    for model, cause in (
+        ("gemma-4-31b", "missing"),
+        ("glm-4.7-flash", "unparseable"),
+    ):
+        assert (
+            f"- non-judging voter: r5 N=3 plain, voter {voters[model]}, "
+            f"model {model}, cause {cause} (excluded from the catch and "
+            "deny rates below)" in report
+        )
+    plain = report.split("- N=3 plain:")[1].split("- N=")[0]
+    assert "gemma-4-31b: voters 0; catch rate n/a (0 judged)" in plain
+    assert "glm-4.7-flash: voters 0; catch rate n/a (0 judged)" in plain
+    assert "catch rate 1/1" not in plain and "deny rate 1/1" not in plain
+    # Fail closed, unchanged.
+    assert "approved=False" in report
+
+
+async def test_report_model_with_only_non_judging_voters_reads_na(tmp_path):
+    """967-c2: every voter of one model non-judging -> `n/a (0 judged)`,
+    not 1/1 and not the 0/0 dash."""
+    report = await _report_run(
+        tmp_path,
+        QuorumCompleteFailing(
+            raise_for={m: RuntimeError("boom") for m in POOL},
+            empty_rows_for=POOL,
+            garbage_for=POOL,
+        ),
+    )
+    plain = report.split("- N=3 plain:")[1].split("- N=")[0]
+    # Only the models serving that run report; the pool model it omits
+    # has no line at all.
+    for model in _plain_voters(tmp_path):
+        assert f"{model}: voters 0; catch rate n/a (0 judged)" in plain
+        assert "deny rate n/a (0 judged)" in plain
+    # Not the 0/0 dash, and no rate built from a judged voter.
+    assert "0/0" not in plain
+    rates = "\n".join(
+        line for line in plain.splitlines() if ": voters " in line
+    )
+    assert "1/1" not in rates
+    # Every non-judging voter of the run is listed.
+    assert report.count("- non-judging voter: r5 N=3 plain") == 3
+    # Fail closed, unchanged.
+    assert "approved=False" in report
+
+
+async def test_report_unchanged_when_no_voter_failed(tmp_path):
+    """967-c3: with every voter answering, the report reads as before spc-967."""
+    codes = {
+        "gemma-4-31b": "deny",
+        "glm-4.7-flash": "deny_first",
+        "qwen3.8-flash": "pass",
+        "qwen3.8-27b": "pass",
+    }
+    report = await _report_run(tmp_path, QuorumComplete(codes=codes))
+    assert "non-judging" not in report
+    assert "n/a (0 judged)" not in report
+    plain = report.split("- N=3 plain:")[1].split("- N=")[0]
+    # The plain N=3 run at cursor 0 serves gemma, qwen3.8-flash and glm
+    # (qwen3.8-27b is omitted); each gets one voter. Gemma denies every
+    # row (catches the defect row, denies no correct row beyond it), glm
+    # denies only its first row (AC9-c1, a correct row), qwen3.8-flash
+    # passes every row.
+    assert "gemma-4-31b: voters 1; catch rate 1/1 (100%)" in plain
+    assert "glm-4.7-flash: voters 1; catch rate 0/1 (0%)" in plain
+    assert "qwen3.8-flash: voters 1; catch rate 0/1 (0%)" in plain
+    assert "qwen3.8-27b" not in plain

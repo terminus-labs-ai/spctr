@@ -1129,6 +1129,34 @@ def _rate(denials: int, total: int) -> str:
     return f"{denials}/{total} ({denials / total:.0%})" if total else "-"
 
 
+# A voter that gave no verdict on any row (spc-967): its rows are all
+# denied by the failure path, never by the model's judgement.
+_NON_JUDGEMENT_REASONS: frozenset[str] = frozenset(
+    {"missing", "unparseable", "no-structured-output"}
+)
+
+
+def _non_judging(vr: dict[str, Any]) -> str | None:
+    """Why this voter judged nothing, or None when it gave a judgement.
+
+    A voter whose call failed (non-empty ``error``) or whose answer gave
+    no verdict on any row — every row ``missing``, ``unparseable`` or
+    ``no-structured-output`` (an empty ``{"rows": []}`` parses to all
+    ``missing``) — supplies no judgement: the denial is the failure, not
+    the model's call. Such a voter is listed separately and kept out of
+    the per-model catch and deny rates. A voter that answered some rows
+    is judging; its missing rows count as before.
+    """
+    error = str(vr.get("error") or "")
+    if error:
+        return "error"
+    if vr["rows"] and all(
+        str(r.get("reason")) in _NON_JUDGEMENT_REASONS for r in vr["rows"]
+    ):
+        return str(vr["rows"][0].get("reason"))
+    return None
+
+
 async def quorum_report(
     packages: dict[str, dict[str, Any]],
     counts: tuple[int, ...] = (3, 5, 7),
@@ -1200,11 +1228,22 @@ async def quorum_report(
                     + (f" ({', '.join(correct_denied)})" if correct_denied else "")
                 )
                 per_model: dict[str, dict[str, int]] = {}
+                # Seed every model serving this run: a model whose every
+                # voter judged nothing still reports, at 0 judged (spc-967).
                 for vr in result["voter_results"]:
-                    stats = per_model.setdefault(
+                    per_model.setdefault(
                         vr["model"],
                         {"catchers": 0, "deniers": 0, "voters": 0},
                     )
+                non_judging: list[dict[str, Any]] = []
+                for vr in result["voter_results"]:
+                    cause = _non_judging(vr)
+                    if cause is not None:
+                        # spc-967: a voter that judged nothing is listed
+                        # separately, never counted as judgement.
+                        non_judging.append({"vr": vr, "cause": cause})
+                        continue
+                    stats = per_model[vr["model"]]
                     stats["voters"] += 1
                     row_state = {r["row_id"]: r["holds"] for r in vr["rows"]}
                     if defect_rows and any(
@@ -1217,14 +1256,33 @@ async def quorum_report(
                         if row_id not in defect_rows
                     ):
                         stats["deniers"] += 1
+                for entry in non_judging:
+                    vr = entry["vr"]
+                    lines.append(
+                        f"  - non-judging voter: {name} N={count} {mode}, "
+                        f"voter {vr['index']}, model {vr['model']}, "
+                        f"cause {entry['cause']}"
+                        + (f", error {vr['error']}" if vr["error"] else "")
+                        + " (excluded from the catch and deny rates below)"
+                    )
                 for model in sorted(per_model):
                     stats = per_model[model]
                     voters_here = stats["voters"]
+                    catch = (
+                        _rate(stats["catchers"], voters_here)
+                        if voters_here
+                        else "n/a (0 judged)"
+                    )
+                    deny = (
+                        _rate(stats["deniers"], voters_here)
+                        if voters_here
+                        else "n/a (0 judged)"
+                    )
                     lines.append(
                         f"  - {model}: voters {voters_here}; catch rate "
-                        f"{_rate(stats['catchers'], voters_here)}"
+                        f"{catch}"
                         " (voters denying a defect row), deny rate "
-                        f"{_rate(stats['deniers'], voters_here)}"
+                        f"{deny}"
                         " (voters denying a correct row)"
                     )
         lines.append("")
