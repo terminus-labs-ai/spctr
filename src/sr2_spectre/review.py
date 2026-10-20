@@ -722,20 +722,26 @@ async def run_voter(
 # Quorum runner (FR 5-7, spc-961)
 # ---------------------------------------------------------------------------
 
-# The voter pool must contain all four (Diego, 2026-10-19; spec FR 6).
+# The voter pool must contain all three (Diego, 2026-10-20, D27; spec
+# FR 6). glm-4.7-flash is out of the pool entirely, including as a
+# shadow voter: a pool containing it is a configuration error
+# (EXCLUDED_POOL_MODELS).
 REQUIRED_POOL_MODELS: tuple[str, ...] = (
     "qwen3.8-flash",
     "qwen3.8-27b",
     "gemma-4-31b",
-    "glm-4.7-flash",
 )
+
+# Models excluded from the voter pool by decision D27 (Diego, 2026-10-20).
+EXCLUDED_POOL_MODELS: tuple[str, ...] = ("glm-4.7-flash",)
 
 
 class QuorumConfigError(ValueError):
     """A quorum configuration error, raised before any model call: an even
-    N, a pool missing one of the four required models, or N above the
-    number of distinct row orders (more voters than the case table has
-    row permutations, FR 6)."""
+    N, a pool missing one of the three required models or containing an
+    excluded one (glm-4.7-flash, D27), or N above the number of distinct
+    row orders (more voters than the case table has row permutations,
+    FR 6)."""
 
 
 @dataclass
@@ -793,6 +799,14 @@ def _validate_quorum_config(
     pool = list(dict.fromkeys(models))
     if not pool:
         raise QuorumConfigError("the voter pool is empty")
+    excluded = [m for m in EXCLUDED_POOL_MODELS if m in pool]
+    if excluded:
+        raise QuorumConfigError(
+            "voter pool contains excluded model(s): "
+            + ", ".join(excluded)
+            + "; glm-4.7-flash is out of the pool entirely (D27, Diego, "
+            "2026-10-20)"
+        )
     missing = [m for m in REQUIRED_POOL_MODELS if m not in pool]
     if missing:
         raise QuorumConfigError(
@@ -953,7 +967,7 @@ async def run_quorum(
     complete: Callable[[dict[str, Any]], Awaitable[str]],
     *,
     system_prompt: str,
-    voters: int = 3,
+    voters: int = 5,
     models: list[str],
     node_of: Callable[[str], str | None] | None = None,
     diversify: bool = True,
@@ -966,9 +980,11 @@ async def run_quorum(
 ) -> dict[str, Any]:
     """Run N single-call voters over a package and write ``quorum.json`` (FR 5-6).
 
-    Configuration errors — an even N, a pool missing any of the four
-    required models, N above the number of distinct row orders — raise
-    :class:`QuorumConfigError` before any model call. With ``diversify``
+    Configuration errors — an even N, a pool missing any of the three
+    required models or containing the excluded ``glm-4.7-flash`` (D27), N
+    above the number of distinct row orders — raise
+    :class:`QuorumConfigError` before any model call. The default N is 5
+    (D27, Diego, 2026-10-20). With ``diversify``
     each voter gets a distinct row order and exactly one the adversarial
     framing (rendered into the request: the row order and the framing are
     request content, the role card is out of scope); ``diversify=False``

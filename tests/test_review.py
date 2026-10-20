@@ -671,7 +671,8 @@ LIVE_MODELS = ["qwen3.8-flash", "qwen3.8-27b", "gemma-4-31b"]
 @pytest.mark.parametrize("model", LIVE_MODELS)
 def test_ac7_live_relay_returns_schema_valid_answer(tmp_path, model):
     """AC7: one live call per model returns an answer that parses against the
-    voter schema. glm-4.7-flash is not served yet and is not included."""
+    voter schema. glm-4.7-flash is out of the pool entirely (D27) and is
+    not included."""
     import asyncio
     import re
 
@@ -696,12 +697,17 @@ def test_ac7_live_relay_returns_schema_valid_answer(tmp_path, model):
 # AC3 / AC6 — the quorum runner
 # ---------------------------------------------------------------------------
 
-POOL = ["qwen3.8-flash", "qwen3.8-27b", "gemma-4-31b", "glm-4.7-flash"]
+# The D27 pool (Diego, 2026-10-20): three models, glm-4.7-flash out
+# entirely. ROTATION_POOL is an explicit caller-supplied 4-model pool that
+# keeps the below-pool-size rotation machinery exercised beyond the
+# required three; it holds no glm model.
+POOL = ["qwen3.8-flash", "qwen3.8-27b", "gemma-4-31b"]
+ROTATION_POOL = POOL + ["llama-4-405b"]
 NODE_OF = {
     "qwen3.8-flash": "b65",
     "qwen3.8-27b": "b65",
     "gemma-4-31b": "xtx",
-    "glm-4.7-flash": "xtx",
+    "llama-4-405b": "xtx",
 }
 
 
@@ -901,12 +907,12 @@ def test_package_carries_row_ids_no_reread(tmp_path):
     assert voter_rows(pkg) == ["AC2-c1", "AC2-c2", "AC2-c3"]
 
 
-@pytest.mark.parametrize("n", [5, 7])
+@pytest.mark.parametrize("n", [3, 5])
 async def test_quorum_full_pool_coverage_distinct_orders_one_adversarial(
     tmp_path, n
 ):
-    """AC6-c1: N>=pool size: every model serves, orders pairwise distinct,
-    exactly one adversarial voter."""
+    """AC6-c1 (D27): N>=pool size over the three-model pool: every model
+    serves, orders pairwise distinct, exactly one adversarial voter."""
     pkg = _build_many(tmp_path, 5)
     complete = QuorumComplete()
     result = await run_quorum(
@@ -920,13 +926,44 @@ async def test_quorum_full_pool_coverage_distinct_orders_one_adversarial(
     assert sum(1 for vr in result["voter_results"] if vr["adversarial"]) == 1
 
 
+def test_required_pool_models_is_the_d27_three():
+    """D27-c1: the required pool is exactly the three D27 models; no glm
+    entry remains in the module outside the rejection rule."""
+    from sr2_spectre import review
+
+    assert review.REQUIRED_POOL_MODELS == (
+        "qwen3.8-flash",
+        "qwen3.8-27b",
+        "gemma-4-31b",
+    )
+    assert "glm-4.7-flash" not in review.REQUIRED_POOL_MODELS
+
+
+async def test_quorum_default_voters_is_five(tmp_path):
+    """D27-c5: run_quorum with no voters argument issues five calls, with
+    every pool model serving at least one voter."""
+    pkg = _build_many(tmp_path, 5)
+    complete = QuorumComplete()
+    result = await run_quorum(
+        pkg, complete, system_prompt=SYSTEM_PROMPT,
+        models=POOL, node_of=_node_of,
+    )
+    assert len(complete.bodies) == 5
+    assert result["voters"] == 5
+    assert len(result["voter_results"]) == 5
+    assert {vr["model"] for vr in result["voter_results"]} == set(POOL)
+    assert sum(1 for vr in result["voter_results"] if vr["adversarial"]) == 1
+
+
 @pytest.mark.parametrize("diversify", [True, False])
-async def test_quorum_rotation_covers_all_four_omissions(
+async def test_quorum_rotation_covers_all_pool_omissions(
     tmp_path, diversify
 ):
-    """AC6-c2: N=3 over four consecutive runs: 3 distinct models each run,
-    the omitted model differs run to run and covers all four, in both
-    modes (at cursor c both omit pool[c % len(pool)])."""
+    """AC6-c2: N=3 over consecutive runs: 3 distinct models each run,
+    the omitted model differs run to run and covers the whole
+    caller-supplied pool, in both modes (at cursor c both omit
+    pool[c % len(pool)]). The rotation machinery stays generic, so an
+    explicit 4-model pool (no glm, D27) rotates across four omissions."""
     pkg = _build(tmp_path)
     rotation = RotationState()
     omitted = []
@@ -934,14 +971,14 @@ async def test_quorum_rotation_covers_all_four_omissions(
         complete = QuorumComplete()
         result = await run_quorum(
             pkg, complete, system_prompt=SYSTEM_PROMPT,
-            voters=3, models=POOL, node_of=_node_of, rotation=rotation,
+            voters=3, models=ROTATION_POOL, node_of=_node_of, rotation=rotation,
             diversify=diversify,
         )
         models = [vr["model"] for vr in result["voter_results"]]
         assert len(set(models)) == 3
-        omitted.append(({*POOL} - set(models)).pop())
+        omitted.append(({*ROTATION_POOL} - set(models)).pop())
     assert len(set(omitted)) == 4
-    assert set(omitted) == set(POOL)
+    assert set(omitted) == set(ROTATION_POOL)
 
 
 async def test_quorum_calls_grouped_by_model_contiguous(tmp_path):
@@ -967,7 +1004,7 @@ async def test_quorum_calls_grouped_by_model_contiguous(tmp_path):
 
 
 async def test_quorum_group_order_places_models_as_given(tmp_path):
-    """The caller orders the groups (xtx loads gemma once, glm once)."""
+    """The caller orders the groups (xtx loads gemma once, llama once)."""
     pkg = _build_many(tmp_path, 5)
     complete = QuorumComplete()
     result = await run_quorum(
@@ -992,14 +1029,14 @@ async def test_quorum_wall_time_from_the_clock_seam(tmp_path):
 @pytest.mark.parametrize(
     "short_pool",
     [
-        ["qwen3.8-flash", "qwen3.8-27b", "gemma-4-31b"],       # no glm
-        ["qwen3.8-flash", "gemma-4-31b", "glm-4.7-flash"],     # no 27b
-        ["qwen3.8-27b", "gemma-4-31b", "glm-4.7-flash"],       # no flash
-        ["qwen3.8-flash", "qwen3.8-27b", "glm-4.7-flash"],     # no gemma
+        ["qwen3.8-flash", "qwen3.8-27b"],       # no gemma
+        ["qwen3.8-flash", "gemma-4-31b"],       # no 27b
+        ["qwen3.8-27b", "gemma-4-31b"],         # no flash
     ],
 )
 async def test_quorum_short_pool_config_error_before_any_call(tmp_path, short_pool):
-    """AC6-c4: a pool lacking any required model fails before any call."""
+    """AC6-c4 (D27): a pool lacking any of the three required models fails
+    before any call."""
     pkg = _build(tmp_path)
     complete = QuorumComplete()
     with pytest.raises(QuorumConfigError, match="missing required model"):
@@ -1008,6 +1045,20 @@ async def test_quorum_short_pool_config_error_before_any_call(tmp_path, short_po
             voters=3, models=short_pool, node_of=_node_of,
         )
     assert complete.bodies == []
+
+
+async def test_quorum_glm_pool_config_error_before_any_call(tmp_path):
+    """D27-c3: a pool containing glm-4.7-flash is a configuration error
+    before any model call, and the message names glm-4.7-flash."""
+    pkg = _build(tmp_path)
+    complete = QuorumComplete()
+    with pytest.raises(QuorumConfigError, match="glm-4.7-flash"):
+        await run_quorum(
+            pkg, complete, system_prompt=SYSTEM_PROMPT,
+            voters=5, models=[*POOL, "glm-4.7-flash"], node_of=_node_of,
+        )
+    assert complete.bodies == []
+    assert not (pkg.directory / "quorum.json").exists()
 
 
 async def test_quorum_voters_see_the_same_row_set(tmp_path):
@@ -1061,13 +1112,14 @@ async def test_quorum_writes_the_session_log_per_voter(tmp_path, monkeypatch):
 async def test_quorum_report_covers_packages_counts_and_models(tmp_path):
     """AC4-c1: report per package and count: caught, denied, unanimity;
     per model catch and deny rates. The fake answers per model: gemma
-    always denies (catches the defect row, denies correct rows), glm
+    always denies (catches the defect row, denies correct rows),
+    llama-4-405b (an explicit non-required pool entry, no glm, D27)
     denies only its first row, the Qwen models always pass."""
     defect = _build_many(tmp_path, 5, name="r5")
     correct = _build_many(tmp_path, 5, name="r7d")
     codes = {
         "gemma-4-31b": "deny",
-        "glm-4.7-flash": "deny_first",
+        "llama-4-405b": "deny_first",
         "qwen3.8-flash": "pass",
         "qwen3.8-27b": "pass",
     }
@@ -1078,7 +1130,7 @@ async def test_quorum_report_covers_packages_counts_and_models(tmp_path):
         counts=(3, 5, 7),
         complete=QuorumComplete(codes=codes),
         system_prompt=SYSTEM_PROMPT,
-        models=POOL,
+        models=ROTATION_POOL,
         node_of=_node_of,
         out_path=out,
     )
@@ -1090,7 +1142,7 @@ async def test_quorum_report_covers_packages_counts_and_models(tmp_path):
         assert f"- N={count} diversified:" in report
         assert f"- N={count} plain:" in report
     # Per-model catch and deny rates.
-    for model in POOL:
+    for model in ROTATION_POOL:
         assert f"{model}: voters" in report
     assert "catch rate" in report and "deny rate" in report
     r5_section = report.split("## r5", 1)[1].split("## fixed", 1)[0]
@@ -1098,14 +1150,14 @@ async def test_quorum_report_covers_packages_counts_and_models(tmp_path):
     # Unanimity verdicts: r5 denied (gemma denies every row it sees).
     assert "approved=False" in r5_section
     # The defect row is caught in every r5 run: gemma serves every run
-    # (N >= pool size covers the pool; with the fresh cursor 0 the r5
-    # N=3 runs omit qwen3.8-flash (diversified, cursor 0) and
+    # (N >= pool size covers the pool; below it the fresh cursor 0 makes
+    # the r5 N=3 runs omit qwen3.8-flash (diversified, cursor 0) and
     # qwen3.8-27b (plain, cursor 1), so gemma is never omitted) and
     # denies every row.
     assert r5_section.count("defect rows caught 1/1 (AC9-c2)") == 6
     # Per-model rates on the r5 package, N=7 plain: 7 voters over the
     # 4-model pool round-robin — qwen3.8-flash, qwen3.8-27b and
-    # gemma-4-31b get 2 voters, glm-4.7-flash 1. Gemma's 2 voters both
+    # gemma-4-31b get 2 voters, llama-4-405b 1. Gemma's 2 voters both
     # catch (deny the defect row) and deny a correct row; the Qwen
     # voters never deny.
     n7_plain = r5_section.split("- N=7 plain:")[1].split("- N=")[0]
@@ -1113,7 +1165,7 @@ async def test_quorum_report_covers_packages_counts_and_models(tmp_path):
     assert "qwen3.8-flash: voters 2; catch rate 0/2 (0%)" in n7_plain
     assert "deny rate 0/2 (0%)" in n7_plain
     assert "qwen3.8-27b: voters 2; catch rate 0/2 (0%)" in n7_plain
-    assert "glm-4.7-flash: voters 1" in n7_plain
+    assert "llama-4-405b: voters 1" in n7_plain
     # The fixed package: no defect row exists, so catch is 0/0; the same
     # denying models deny correct rows there too.
     assert "defect rows caught 0/0" in fixed_section
@@ -1246,27 +1298,30 @@ def _fresh_rotation(monkeypatch):
 async def test_quorum_rotation_across_successive_runs_without_caller_state(
     tmp_path, diversify
 ):
-    """AC6-c2: four default N=3 runs omit all four pool models in order,
-    in both modes.
+    """AC6-c2: four default N=3 runs over an explicit 4-model pool omit
+    all four pool models in order, in both modes.
 
     The measurement driver calls run_quorum once per process or once per
     count and keeps no state of its own. Passing a RotationState is an
     opt-out for a caller that persists the cursor, not a requirement: with
     none passed, four consecutive N=3 runs must still omit four different
     models. At cursor c both modes omit pool[c % len(pool)], so the
-    sequence is the pool order.
+    sequence is the pool order. The explicit pool carries a fourth,
+    non-required model (no glm, D27) so one run per pool model is
+    observed.
     """
     pkg = _build(tmp_path)
     omitted = []
     for _ in range(4):
         result = await run_quorum(
             pkg, QuorumComplete(), system_prompt=SYSTEM_PROMPT,
-            voters=3, models=POOL, node_of=_node_of, diversify=diversify,
+            voters=3, models=ROTATION_POOL, node_of=_node_of, diversify=diversify,
         )
         models = [vr["model"] for vr in result["voter_results"]]
         assert len(set(models)) == 3, models
-        omitted.append(({*POOL} - set(models)).pop())
-    assert omitted == POOL, (
+        omitted.append(({*ROTATION_POOL} - set(models)).pop())
+    pool_order = list(dict.fromkeys(ROTATION_POOL))
+    assert omitted == [pool_order[0], pool_order[1], pool_order[2], pool_order[3]], (
         f"the omitted model did not rotate across runs: {omitted}"
     )
 
@@ -1279,7 +1334,9 @@ async def test_quorum_report_rotates_the_omitted_model(tmp_path):
     rotation is measured across. Two default reports at counts=(3,) make
     four N=3 runs (diversified, plain, diversified, plain); at cursor c
     both modes omit pool[c % len(pool)], so the omitted models are the
-    pool order.
+    pool order. The explicit pool carries a fourth, non-required model
+    (no glm, D27) so the four cursors of two reports land on four
+    distinct omissions.
     """
     pkg = _build_many(tmp_path, 5, name="rot")
     omitted = []
@@ -1289,7 +1346,7 @@ async def test_quorum_report_rotates_the_omitted_model(tmp_path):
             counts=(3,),
             complete=QuorumComplete(),
             system_prompt=SYSTEM_PROMPT,
-            models=POOL,
+            models=ROTATION_POOL,
             node_of=_node_of,
             out_path=tmp_path / "report.md",
         )
@@ -1301,8 +1358,9 @@ async def test_quorum_report_rotates_the_omitted_model(tmp_path):
             )
             models = {vr["model"] for vr in quorum["voter_results"]}
             assert len(models) == 3, models
-            omitted.append(({*POOL} - models).pop())
-    assert omitted == POOL, (
+            omitted.append((set(ROTATION_POOL) - models).pop())
+    pool_order = list(dict.fromkeys(ROTATION_POOL))
+    assert omitted == pool_order, (
         f"quorum_report did not rotate the omitted model: {omitted}"
     )
 
@@ -1497,11 +1555,14 @@ async def test_report_error_voter_listed_apart_and_out_of_rates(tmp_path):
 
 async def test_report_no_answer_voter_listed_as_non_judging(tmp_path):
     """967-c4: an empty answer (every row missing) and an unparseable
-    response (every row unparseable) are non-judging with `error` empty."""
+    response (every row unparseable) are non-judging with `error` empty.
+
+    The plain N=3 run over the D27 three-model pool serves every model,
+    so both failure shapes get a voter in one run."""
     report = await _report_run(
         tmp_path,
         QuorumCompleteFailing(
-            empty_rows_for=("gemma-4-31b",), garbage_for=("glm-4.7-flash",)
+            empty_rows_for=("gemma-4-31b",), garbage_for=("qwen3.8-27b",)
         ),
     )
     voters = _plain_voters(tmp_path)
@@ -1509,7 +1570,7 @@ async def test_report_no_answer_voter_listed_as_non_judging(tmp_path):
     # empty-answer cause `no-answer`; the unparseable voter keeps `unparseable`.
     for model, cause in (
         ("gemma-4-31b", "no-answer"),
-        ("glm-4.7-flash", "unparseable"),
+        ("qwen3.8-27b", "unparseable"),
     ):
         assert (
             f"- non-judging voter: r5 N=3 plain, voter {voters[model]}, "
@@ -1518,7 +1579,7 @@ async def test_report_no_answer_voter_listed_as_non_judging(tmp_path):
         )
     plain = report.split("- N=3 plain:")[1].split("- N=")[0]
     assert "gemma-4-31b: voters 0; catch rate n/a (0 judged)" in plain
-    assert "glm-4.7-flash: voters 0; catch rate n/a (0 judged)" in plain
+    assert "qwen3.8-27b: voters 0; catch rate n/a (0 judged)" in plain
     assert "catch rate 1/1" not in plain and "deny rate 1/1" not in plain
     # Fail closed, unchanged.
     assert "approved=False" in report
@@ -1557,23 +1618,20 @@ async def test_report_unchanged_when_no_voter_failed(tmp_path):
     """967-c3: with every voter answering, the report reads as before spc-967."""
     codes = {
         "gemma-4-31b": "deny",
-        "glm-4.7-flash": "deny_first",
+        "qwen3.8-27b": "deny_first",
         "qwen3.8-flash": "pass",
-        "qwen3.8-27b": "pass",
     }
     report = await _report_run(tmp_path, QuorumComplete(codes=codes))
     assert "non-judging" not in report
     assert "n/a (0 judged)" not in report
     plain = report.split("- N=3 plain:")[1].split("- N=")[0]
-    # The plain N=3 run at cursor 0 serves gemma, qwen3.8-flash and glm
-    # (qwen3.8-27b is omitted); each gets one voter. Gemma denies every
-    # row (catches the defect row, denies no correct row beyond it), glm
-    # denies only its first row (AC9-c1, a correct row), qwen3.8-flash
-    # passes every row.
+    # The plain N=3 run over the D27 three-model pool serves every model;
+    # each gets one voter. Gemma denies every row (catches the defect row,
+    # denies no correct row beyond it), qwen3.8-27b denies only its first
+    # row (AC9-c1, a correct row), qwen3.8-flash passes every row.
     assert "gemma-4-31b: voters 1; catch rate 1/1 (100%)" in plain
-    assert "glm-4.7-flash: voters 1; catch rate 0/1 (0%)" in plain
+    assert "qwen3.8-27b: voters 1; catch rate 0/1 (0%)" in plain
     assert "qwen3.8-flash: voters 1; catch rate 0/1 (0%)" in plain
-    assert "qwen3.8-27b" not in plain
 
 
 # ---------------------------------------------------------------------------
@@ -1682,7 +1740,7 @@ async def test_report_non_judging_voter_does_not_object(tmp_path):
         QuorumCompleteFailing(
             raise_for={"qwen3.8-flash": RuntimeError("boom")},
             empty_rows_for=("gemma-4-31b",),
-            garbage_for=("glm-4.7-flash",),
+            garbage_for=("qwen3.8-27b",),
         ),
     )
     assert report.count("- non-judging voter: r5 N=3 plain") == 3
