@@ -1153,8 +1153,33 @@ def _non_judging(vr: dict[str, Any]) -> str | None:
     if vr["rows"] and all(
         str(r.get("reason")) in _NON_JUDGEMENT_REASONS for r in vr["rows"]
     ):
+        # spc-984 / spc-967 row 967-c4: an answer with no rows at all
+        # ({"rows": []}) parses to every row ``missing``; its cause reads
+        # ``no-answer``. A voter that answered some rows keeps the reason
+        # of its first row (``unparseable`` and friends).
+        if all(str(r.get("reason")) == "missing" for r in vr["rows"]):
+            return "no-answer"
         return str(vr["rows"][0].get("reason"))
     return None
+
+
+# The report's judges, by voter index (spc-972): a name per voter, cycling
+# from index 7 on. Presentation only — the name enters ``report.md`` and
+# nothing else: never a request body, never ``quorum.json``.
+JUDGE_NAMES: tuple[str, ...] = (
+    "Phoenix",
+    "Edgeworth",
+    "Franziska",
+    "Godot",
+    "Mia",
+    "Gumshoe",
+    "Maya",
+)
+
+
+def judge_name(index: int) -> str:
+    """The judge announcing for voter *index* (cycles past the seventh)."""
+    return JUDGE_NAMES[index % len(JUDGE_NAMES)]
 
 
 async def quorum_report(
@@ -1265,6 +1290,26 @@ async def quorum_report(
                         + (f", error {vr['error']}" if vr["error"] else "")
                         + " (excluded from the catch and deny rates below)"
                     )
+                # spc-972: every denial by a judging voter is announced by
+                # that voter's judge. Presentation only — the name never
+                # enters a request body or quorum.json. A non-judging
+                # voter's denials are the failure, not a call, so it gets
+                # no line (spc-967).
+                judging_by_index = {
+                    vr["index"]: vr["model"]
+                    for vr in result["voter_results"]
+                    if _non_judging(vr) is None
+                }
+                for entry in result["denied_rows"]:
+                    for denial in entry["denied_by"]:
+                        index = denial["voter_index"]
+                        if index not in judging_by_index:
+                            continue
+                        lines.append(
+                            f"  - OBJECTION!!! {judge_name(index)} "
+                            f"(voter {index}, {judging_by_index[index]}) "
+                            f"on {entry['row_id']}: {denial['reason']}"
+                        )
                 for model in sorted(per_model):
                     stats = per_model[model]
                     voters_here = stats["voters"]

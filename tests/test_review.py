@@ -19,6 +19,7 @@ import pytest
 from sr2_spectre.review import (
     DEFAULT_RELAY_BASE_URL,
     DEFAULT_SECRET_PATTERNS,
+    JUDGE_NAMES,
     PackageInput,
     PackageTooLargeError,
     QuorumConfigError,
@@ -29,6 +30,7 @@ from sr2_spectre.review import (
     VOTER_SCHEMA,
     _error_text,
     build_package,
+    judge_name,
     quorum_report,
     run_quorum,
     run_voter,
@@ -1503,8 +1505,10 @@ async def test_report_no_answer_voter_listed_as_non_judging(tmp_path):
         ),
     )
     voters = _plain_voters(tmp_path)
+    # spc-972 folds in spc-984: spc-967 row 967-c4 (confirmed) names the
+    # empty-answer cause `no-answer`; the unparseable voter keeps `unparseable`.
     for model, cause in (
-        ("gemma-4-31b", "missing"),
+        ("gemma-4-31b", "no-answer"),
         ("glm-4.7-flash", "unparseable"),
     ):
         assert (
@@ -1570,3 +1574,127 @@ async def test_report_unchanged_when_no_voter_failed(tmp_path):
     assert "glm-4.7-flash: voters 1; catch rate 0/1 (0%)" in plain
     assert "qwen3.8-flash: voters 1; catch rate 0/1 (0%)" in plain
     assert "qwen3.8-27b" not in plain
+
+
+# ---------------------------------------------------------------------------
+# spc-972 — the report announces every denial with OBJECTION!!! (AC8)
+#
+# Each voter gets a judge name fixed by its index (Phoenix, Edgeworth,
+# Franziska, Godot, Mia, Gumshoe, Maya, cycling past seven) and every
+# denied row gets an `OBJECTION!!!` line naming judge, voter index, model,
+# row and reason. Presentation only: the name never enters a request body
+# or quorum.json, and a non-judging voter (spc-967) never objects.
+# ---------------------------------------------------------------------------
+
+
+async def test_report_denial_announced_by_the_voters_judge(tmp_path):
+    """AC8-c1: N=3, voter 1 denies row X with reason R -> the line naming
+    Edgeworth (voter 1), that voter's model, the row and the reason."""
+    report = await _report_run(tmp_path, QuorumComplete(denier=1))
+    # The fake denies by request ordinal, so read the run voter 1 served
+    # in (the diversified run) and the row, model and reason it recorded.
+    quorum = json.loads(
+        (tmp_path / "r5" / "quorum-3-diversified.json").read_text(encoding="utf-8")
+    )
+    denied = quorum["denied_rows"][0]
+    voter1 = next(vr for vr in quorum["voter_results"] if vr["index"] == 1)
+    assert [d["voter_index"] for d in denied["denied_by"]] == [1]
+    assert (
+        f"OBJECTION!!! Edgeworth (voter 1, {voter1['model']}) on "
+        f"{denied['row_id']}: {denied['denied_by'][0]['reason']}" in report
+    )
+    # One line per (row, denying voter); exactly one denial in the run.
+    assert report.count("OBJECTION!!!") == 1
+
+
+async def test_report_no_denials_prints_no_objection(tmp_path):
+    """AC8-c2: every voter passes every row -> no OBJECTION!!! line."""
+    report = await _report_run(
+        tmp_path, QuorumComplete(codes={m: "pass" for m in POOL})
+    )
+    assert "OBJECTION!!!" not in report
+    assert "approved=True" in report
+
+
+async def test_report_judge_flavor_is_presentation_only(tmp_path):
+    """AC8-c3: the same quorum run with fake voters sends request bodies
+    and writes quorum.json byte-identical to the pre-flavor output: no
+    judge name anywhere in them."""
+    pkg = _build_many(tmp_path, 5, name="flavor")
+    complete = QuorumComplete(denier=1)
+    report = await quorum_report(
+        {"r5": {"package": pkg, "defect_rows": ["AC9-c2"]}},
+        counts=(3,),
+        complete=complete,
+        system_prompt=SYSTEM_PROMPT,
+        models=POOL,
+        node_of=_node_of,
+        out_path=tmp_path / "report.md",
+    )
+    # The flavor did render: the report carries the judge names.
+    assert "OBJECTION!!!" in report
+    # Every request body sent is plain: no judge name in any of them.
+    bodies = json.dumps(complete.bodies)
+    for name in JUDGE_NAMES:
+        assert name not in bodies
+    # quorum.json (each run's file) carries no judge name either.
+    for quorum_file in sorted(pkg.directory.glob("quorum-*.json")):
+        text = quorum_file.read_text(encoding="utf-8")
+        for name in JUDGE_NAMES:
+            assert name not in text
+    # The body each voter receives is exactly what voter_request_body
+    # builds for it — the renderer adds nothing on the way to the model.
+    # Requests run grouped by model and the report runs both modes, so
+    # match each body to the run (mode) whose row order it carries.
+    runs = {
+        mode: json.loads(
+            (pkg.directory / f"quorum-3-{mode}.json").read_text(encoding="utf-8")
+        )
+        for mode in ("diversified", "plain")
+    }
+    # Every body a voter received is exactly what voter_request_body
+    # builds for some voter of one of the two runs — the renderer adds
+    # nothing on the way to the model — and every voter of both runs has
+    # its body among those sent.
+    def _expected(mode: str) -> list[dict]:
+        quorum = runs[mode]
+        return [
+            voter_request_body(
+                pkg, SYSTEM_PROMPT, vr["model"], rows=vr["row_order"],
+                adversarial=vr["adversarial"],
+            )
+            for vr in quorum["voter_results"]
+        ]
+
+    all_expected = _expected("diversified") + _expected("plain")
+    assert len(all_expected) == len(complete.bodies)
+    for body in complete.bodies:
+        assert body in all_expected, body["model"]
+    for body in all_expected:
+        assert body in complete.bodies
+
+
+async def test_report_non_judging_voter_does_not_object(tmp_path):
+    """AC8-c4: a non-judging voter (call failed, empty answer, unparseable
+    answer) is listed as non-judging and gets no OBJECTION!!! line."""
+    report = await _report_run(
+        tmp_path,
+        QuorumCompleteFailing(
+            raise_for={"qwen3.8-flash": RuntimeError("boom")},
+            empty_rows_for=("gemma-4-31b",),
+            garbage_for=("glm-4.7-flash",),
+        ),
+    )
+    assert report.count("- non-judging voter: r5 N=3 plain") == 3
+    assert "OBJECTION!!!" not in report
+
+
+def test_judge_names_by_index_cycle_past_seven():
+    """The seven judges in order, cycling from index 7 on."""
+    assert JUDGE_NAMES == (
+        "Phoenix", "Edgeworth", "Franziska", "Godot", "Mia", "Gumshoe", "Maya",
+    )
+    assert [judge_name(i) for i in range(9)] == [
+        "Phoenix", "Edgeworth", "Franziska", "Godot", "Mia", "Gumshoe", "Maya",
+        "Phoenix", "Edgeworth",
+    ]
