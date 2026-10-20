@@ -102,6 +102,24 @@ bd close <id>         # Complete work
 - If push fails, resolve and retry until it succeeds
 <!-- END BEADS INTEGRATION -->
 
+## Mandates
+
+Project identity statements. Agent G and the review lenses grade every
+change against them; a violation is escalation trigger 3.
+
+- **Every behaviour and every message is a YAML parameter.** Any switch,
+  threshold, timing, retry or guard that changes what Spectre does, and any
+  text shown to a user or sent to a model, is a field in the YAML config
+  (`SpectreConfig` in `src/sr2_spectre/config.py`, documented in
+  `config.example.yaml` and `docs/CONFIG-REFERENCE.md`). Behaviour that
+  belongs to the SR2 pipeline is a field in SR2 `PipelineConfig`, not a
+  Spectre-side side-config or split hook. No hardcoded message strings, no
+  constants that a deployment might want to vary. (Diego, 2026-10-20, spc-959.)
+- **Discover the roster, never hardcode it.** Agents are the YAML files
+  under `$SR2_HOME/agents` (fallback `~/.sr2/agents`). Tooling, tests and
+  other projects read that directory; a literal list of agent names is a
+  defect. (Diego, 2026-10-19; galaxy-map fixed its copy in gmap-48.)
+
 ## Vault continuity
 
 When work is tracked from `/data/obsidian`, its source area `NOW.md` is a
