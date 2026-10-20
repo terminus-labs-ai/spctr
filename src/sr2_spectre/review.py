@@ -742,9 +742,11 @@ class QuorumConfigError(ValueError):
 class RotationState:
     """Rotation seam for runs below the pool size (FR 6, AC6-c2).
 
-    A run omits one pool model; successive runs omit successive models so
-    the omitted model rotates and covers the whole pool. One instance
-    holds the cursor across the calls that make it; ``run_quorum`` and
+    One cursor: each run below the pool size consumes one step, and at
+    cursor ``c`` both the diversified and the plain run omit
+    ``pool[c % len(pool)]``, so the omitted model rotates and covers the
+    whole pool across successive runs. One instance holds the cursor
+    across the calls that make it; ``run_quorum`` (either mode) and
     ``quorum_report`` share a process-wide default instance when no state
     is passed, so the rotation holds across successive calls within one
     process. A caller that runs the quorum in a fresh process per run (the
@@ -762,10 +764,9 @@ class RotationState:
     def advance(self) -> int:
         """Consume one rotation step and return the cursor before it.
 
-        The plain (undiversified) fill uses this as its round-robin offset
-        so the model that drops out of the last group rotates across runs
-        too (FR 6): without it every plain run omits the same model and
-        the rotation stalls.
+        The plain (undiversified) fill starts its round-robin one past
+        this cursor, so at cursor ``c`` it omits ``pool[c % len(pool)]``
+        — the same model ``next_omit`` omits at that cursor (FR 6).
         """
         cursor = self.omit_cursor
         self.omit_cursor += 1
@@ -833,9 +834,10 @@ def _assign_models(
     Diversified, N at or above the pool size: every pool model serves at
     least one voter (Diego's note: at least one voter per model). N below
     it: N distinct models serve, the omitted model rotating across runs
-    (FR 6). Without diversification the pool fills round-robin from the
-    rotation cursor, so the model that drops out of the last group rotates
-    too and successive runs of either kind advance one shared cursor.
+    (FR 6). Without diversification the pool fills round-robin starting
+    one past the rotation cursor, so at cursor ``c`` both modes omit
+    ``pool[c % len(pool)]`` and successive runs of either kind advance one
+    shared cursor.
     """
     if voters >= len(pool):
         assignment = list(pool)
@@ -844,11 +846,11 @@ def _assign_models(
         omitted = (rotation or RotationState()).next_omit(pool)
         assignment = [m for m in pool if m != omitted]
     else:
-        # Round-robin starting at the rotation cursor: the model the last
-        # group runs short of rotates across runs (FR 6) instead of every
-        # plain run omitting pool[0].
+        # Round-robin starting one past the rotation cursor: at cursor c
+        # this omits pool[c % len(pool)], the same model next_omit omits
+        # at that cursor (FR 6).
         offset = (rotation or RotationState()).advance()
-        assignment = [pool[(offset + i) % len(pool)] for i in range(voters)]
+        assignment = [pool[(offset + 1 + i) % len(pool)] for i in range(voters)]
     rng.shuffle(assignment)
     return assignment
 
@@ -981,11 +983,10 @@ async def run_quorum(
     ``out_path`` (default ``quorum.json`` beside the package) and
     returned.
 
-    With ``diversify`` and N below the pool size, the omitted model
-    rotates across runs (FR 6, AC6-c2): a caller-supplied ``rotation``
-    drives it, and without one the process-wide default
-    :class:`RotationState` does, so the rotation holds for successive
-    calls within one process.
+    With N below the pool size, the omitted model rotates across runs
+    (FR 6, AC6-c2) in both modes: a caller-supplied ``rotation`` drives
+    it, and without one the process-wide default :class:`RotationState`
+    does, so the rotation holds for successive calls within one process.
     """
     _validate_quorum_config(package, voters, models, group_order)
     pool = list(dict.fromkeys(models))
@@ -996,7 +997,9 @@ async def run_quorum(
         )
     else:
         rows = voter_rows(package)
-        assignment = _assign_models(voters, pool, rng, rotation, diversify=False)
+        assignment = _assign_models(
+            voters, pool, rng, rotation or _DEFAULT_ROTATION, diversify=False
+        )
         plan = [
             {
                 "index": i,
@@ -1154,7 +1157,8 @@ async def quorum_report(
     The omitted-model rotation (FR 6, AC6-c2) holds across every
     ``run_quorum`` call the report makes (each count and mode is one run)
     and across successive report calls: with no ``rotation`` passed the
-    report shares the process-wide :class:`RotationState`.
+    report shares the process-wide :class:`RotationState`, the same
+    default ``run_quorum`` (either mode) uses.
     """
     shared_rotation = rotation or _DEFAULT_ROTATION
     lines = [

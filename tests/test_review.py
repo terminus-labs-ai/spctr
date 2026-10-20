@@ -918,9 +918,13 @@ async def test_quorum_full_pool_coverage_distinct_orders_one_adversarial(
     assert sum(1 for vr in result["voter_results"] if vr["adversarial"]) == 1
 
 
-async def test_quorum_rotation_covers_all_four_omissions(tmp_path):
+@pytest.mark.parametrize("diversify", [True, False])
+async def test_quorum_rotation_covers_all_four_omissions(
+    tmp_path, diversify
+):
     """AC6-c2: N=3 over four consecutive runs: 3 distinct models each run,
-    the omitted model differs run to run and covers all four."""
+    the omitted model differs run to run and covers all four, in both
+    modes (at cursor c both omit pool[c % len(pool)])."""
     pkg = _build(tmp_path)
     rotation = RotationState()
     omitted = []
@@ -929,6 +933,7 @@ async def test_quorum_rotation_covers_all_four_omissions(tmp_path):
         result = await run_quorum(
             pkg, complete, system_prompt=SYSTEM_PROMPT,
             voters=3, models=POOL, node_of=_node_of, rotation=rotation,
+            diversify=diversify,
         )
         models = [vr["model"] for vr in result["voter_results"]]
         assert len(set(models)) == 3
@@ -1091,8 +1096,10 @@ async def test_quorum_report_covers_packages_counts_and_models(tmp_path):
     # Unanimity verdicts: r5 denied (gemma denies every row it sees).
     assert "approved=False" in r5_section
     # The defect row is caught in every r5 run: gemma serves every run
-    # (N >= pool size covers the pool; N=3 plain fills round-robin and
-    # lands on gemma at index 2) and denies every row.
+    # (N >= pool size covers the pool; with the fresh cursor 0 the r5
+    # N=3 runs omit qwen3.8-flash (diversified, cursor 0) and
+    # qwen3.8-27b (plain, cursor 1), so gemma is never omitted) and
+    # denies every row.
     assert r5_section.count("defect rows caught 1/1 (AC9-c2)") == 6
     # Per-model rates on the r5 package, N=7 plain: 7 voters over the
     # 4-model pool round-robin — qwen3.8-flash, qwen3.8-27b and
@@ -1220,71 +1227,60 @@ async def test_quorum_report_29_row_table_completes(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def _fresh_rotation():
-    """Restore the process-wide rotation cursor around a test.
+@pytest.fixture(autouse=True)
+def _fresh_rotation(monkeypatch):
+    """Give every test a fresh process-wide rotation cursor.
 
     The state that makes AC6-c2 hold across successive ``run_quorum`` and
-    ``quorum_report`` calls is process-wide by design, so a test that
-    exercises it neither depends on nor upsets the tests around it. Read
-    with ``getattr`` so a build that has no rotation default fails the
-    assertion below rather than erroring here.
+    ``quorum_report`` calls is process-wide by design, so without this no
+    test may depend on the cursor an earlier test left behind.
     """
     from sr2_spectre import review
 
-    state = getattr(review, "_DEFAULT_ROTATION", None)
-    cursor = getattr(state, "omit_cursor", 0)
-    yield
-    if state is not None:
-        state.omit_cursor = cursor
+    monkeypatch.setattr(review, "_DEFAULT_ROTATION", RotationState())
 
 
+@pytest.mark.parametrize("diversify", [True, False])
 async def test_quorum_rotation_across_successive_runs_without_caller_state(
-    tmp_path, _fresh_rotation
+    tmp_path, diversify
 ):
-    """AC6-c2: four default runs rotate the omitted model with no bookkeeping.
+    """AC6-c2: four default N=3 runs omit all four pool models in order,
+    in both modes.
 
     The measurement driver calls run_quorum once per process or once per
     count and keeps no state of its own. Passing a RotationState is an
     opt-out for a caller that persists the cursor, not a requirement: with
     none passed, four consecutive N=3 runs must still omit four different
-    models.
+    models. At cursor c both modes omit pool[c % len(pool)], so the
+    sequence is the pool order.
     """
     pkg = _build(tmp_path)
     omitted = []
     for _ in range(4):
         result = await run_quorum(
             pkg, QuorumComplete(), system_prompt=SYSTEM_PROMPT,
-            voters=3, models=POOL, node_of=_node_of,
+            voters=3, models=POOL, node_of=_node_of, diversify=diversify,
         )
         models = [vr["model"] for vr in result["voter_results"]]
         assert len(set(models)) == 3, models
         omitted.append(({*POOL} - set(models)).pop())
-    assert len(set(omitted)) == 4, (
+    assert omitted == POOL, (
         f"the omitted model did not rotate across runs: {omitted}"
     )
-    assert set(omitted) == set(POOL)
 
 
-async def test_quorum_report_rotates_the_omitted_model(
-    tmp_path, _fresh_rotation
-):
+async def test_quorum_report_rotates_the_omitted_model(tmp_path):
     """AC6-c2 / AC4: successive default quorum_report calls rotate the model.
 
     The report drives run_quorum once per count and mode and keeps no
     rotation bookkeeping of its own, so it must share the same state the
-    rotation is measured across. Asserted on the cursor: the plain
-    (undiversified) fill omits the model the last group runs short of, so
-    a report that never advances it leaves every run omitting pool[0].
+    rotation is measured across. Two default reports at counts=(3,) make
+    four N=3 runs (diversified, plain, diversified, plain); at cursor c
+    both modes omit pool[c % len(pool)], so the omitted models are the
+    pool order.
     """
     pkg = _build_many(tmp_path, 5, name="rot")
-    from sr2_spectre import review
-
-    def cursor() -> int:
-        return getattr(getattr(review, "_DEFAULT_ROTATION", None),
-                       "omit_cursor", 0)
-
-    before = cursor()
+    omitted = []
     for _ in range(2):
         await quorum_report(
             {"r5": {"package": pkg, "defect_rows": ["AC9-c2"]}},
@@ -1295,14 +1291,18 @@ async def test_quorum_report_rotates_the_omitted_model(
             node_of=_node_of,
             out_path=tmp_path / "report.md",
         )
-        # One rotation step per run the report makes (diversified and
-        # plain at N=3), so the cursor moves by two per report call and
-        # the second report starts where the first left off.
-        assert cursor() - before == 2, (
-            f"quorum_report did not rotate the omitted model: "
-            f"cursor {before} -> {cursor()}"
-        )
-        before += 2
+        for mode in ("diversified", "plain"):
+            quorum = json.loads(
+                (pkg.directory / f"quorum-3-{mode}.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            models = {vr["model"] for vr in quorum["voter_results"]}
+            assert len(models) == 3, models
+            omitted.append(({*POOL} - models).pop())
+    assert omitted == POOL, (
+        f"quorum_report did not rotate the omitted model: {omitted}"
+    )
 
 
 async def test_served_node_follows_the_call_not_the_model(tmp_path):
