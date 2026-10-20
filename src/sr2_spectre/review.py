@@ -402,7 +402,9 @@ class RelayCompletionClient:
     the constrained request with HTTP 400. It sends exactly one request per
     call: no retry, constrained or not. The serving node the relay reports
     in the ``x-relay-node`` response header (llm-relay-1) lands in
-    ``last_served_node`` after each call, success or error.
+    ``last_served_node`` after each call, success or error; ``node_of`` is
+    the seam :func:`run_voter` reads after each call, so the node recorded
+    for a voter is the one that served that voter's call.
     """
 
     def __init__(
@@ -414,15 +416,30 @@ class RelayCompletionClient:
         self.timeout = timeout
         self.last_served_node: str | None = None
 
+    def node_of(self, _model: str) -> str | None:
+        """The node that served the last call (``x-relay-node``).
+
+        The seam :func:`run_voter` reads after each call, so the node
+        recorded for a voter is the one that served that voter's call
+        (llm-relay-1). The model argument is unused: the relay reports one
+        node per response, whatever the model in the request.
+        """
+        return self.last_served_node
+
     async def complete(self, body: dict[str, Any]) -> str:
-        """POST *body* to ``/v1/chat/completions``; return the answer text."""
+        """POST *body* to ``/v1/chat/completions``; return the answer text.
+
+        The serving node the relay reports in the ``x-relay-node``
+        response header (llm-relay-1) lands in ``last_served_node`` after
+        the call, success or error.
+        """
         client_timeout = aiohttp.ClientTimeout(total=self.timeout)
         async with aiohttp.ClientSession(timeout=client_timeout) as session:
             async with session.post(
                 f"{self.base_url}/v1/chat/completions", json=body
             ) as response:
-                self.last_served_node = response.headers.get("x-relay-node")
                 payload = await response.read()
+                self.last_served_node = response.headers.get("x-relay-node")
                 if response.status == 400:
                     raise RelaySchemaRejected(_error_text(payload))
                 if response.status >= 400:
@@ -534,6 +551,7 @@ async def run_voter(
     system_prompt: str,
     model: str,
     served_node: str | None = None,
+    node_of: Callable[[str], str | None] | None = None,
     session_log: SessionLog | None = None,
     rows: list[str] | None = None,
     adversarial: bool = False,
@@ -545,6 +563,14 @@ async def run_voter(
     :class:`RelayCompletionClient`; tests pass a fake that records bodies.
     The schema constraint rides on every request whatever the model name;
     nothing is inferred from the name. The request carries no tools.
+
+    The node that served this call is recorded two ways. ``served_node``
+    is a caller override for a node known before the call (a pinned node).
+    ``node_of`` is read *after* the call and wins over it: the relay
+    reports the serving node in ``x-relay-node`` only once the response is
+    in (llm-relay-1), so a node that changes per call is recorded for the
+    call it served, never shifted to the next voter. Both the session-log
+    event and the returned verdict carry the resolved node.
 
     A schema constraint the relay or backend rejects (HTTP 400, surfaced as
     :class:`RelaySchemaRejected`) denies every row with reason
@@ -568,13 +594,19 @@ async def run_voter(
         request_sent: bool,
         error: str,
         elapsed: float,
+        node: str | None = None,
     ) -> VoterVerdict:
+        # The node recorded for this voter is the one that served this
+        # voter's call: ``node_of`` is read after the call (the relay
+        # reports it in ``x-relay-node`` once the response is in,
+        # llm-relay-1) and wins over the pre-call override.
+        served = node if node is not None else served_node
         if session_log is not None:
             session_log.append(
                 "voter.answer",
                 {
                     "model": model,
-                    "served_node": served_node,
+                    "served_node": served,
                     "raw_answer": raw,
                     "request_sent": request_sent,
                     "duration_s": round(elapsed, 3),
@@ -585,7 +617,7 @@ async def run_voter(
         return VoterVerdict(
             rows=row_verdicts,
             raw_answer=raw,
-            served_node=served_node,
+            served_node=served,
             model=model,
             request_sent=request_sent,
             error=error,
@@ -613,6 +645,10 @@ async def run_voter(
     except Exception as exc:  # noqa: BLE001 — any other failure denies every row
         return _deny("unparseable", error=str(exc), request_sent=True)
     elapsed = time.monotonic() - started
+    # Read after the call: the relay names the serving node in the
+    # response header, so this is the node that served *this* call even
+    # when it changes call to call (llm-relay-1).
+    served = node_of(model) if node_of is not None else None
 
     verdicts = _parse_answer(raw, answer_order)
     if verdicts is None:
@@ -623,11 +659,12 @@ async def run_voter(
             True,
             "",
             elapsed,
+            served,
         )
     # Rows come back in the order the voter was given; the verdict is
     # normalised to case-table order so voters aggregate row by row.
     verdicts.sort(key=lambda v: expected.index(v["row_id"]))
-    return _verdict(verdicts, raw, True, "", elapsed)
+    return _verdict(verdicts, raw, True, "", elapsed, served)
 
 
 # ---------------------------------------------------------------------------
@@ -655,10 +692,13 @@ class RotationState:
     """Rotation seam for runs below the pool size (FR 6, AC6-c2).
 
     A run omits one pool model; successive runs omit successive models so
-    the omitted model rotates and covers the whole pool. The default
-    instance rotates on its own within one process; a caller that runs the
-    quorum in a fresh process per run (the measurement driver) persists
-    ``omit_cursor`` beside its artifacts and constructs the state from it.
+    the omitted model rotates and covers the whole pool. One instance
+    holds the cursor across the calls that make it; ``run_quorum`` and
+    ``quorum_report`` share a process-wide default instance when no state
+    is passed, so the rotation holds across successive calls within one
+    process. A caller that runs the quorum in a fresh process per run (the
+    measurement driver) persists ``omit_cursor`` beside its artifacts and
+    constructs the state from it.
     """
 
     omit_cursor: int = 0
@@ -667,6 +707,23 @@ class RotationState:
         model = pool[self.omit_cursor % len(pool)]
         self.omit_cursor += 1
         return model
+
+    def advance(self) -> int:
+        """Consume one rotation step and return the cursor before it.
+
+        The plain (undiversified) fill uses this as its round-robin offset
+        so the model that drops out of the last group rotates across runs
+        too (FR 6): without it every plain run omits the same model and
+        the rotation stalls.
+        """
+        cursor = self.omit_cursor
+        self.omit_cursor += 1
+        return cursor
+
+
+# Process-wide default: the rotation holds across successive run_quorum
+# and quorum_report calls within one process (FR 6, AC6-c2).
+_DEFAULT_ROTATION = RotationState()
 
 
 def _validate_quorum_config(
@@ -725,7 +782,9 @@ def _assign_models(
     Diversified, N at or above the pool size: every pool model serves at
     least one voter (Diego's note: at least one voter per model). N below
     it: N distinct models serve, the omitted model rotating across runs
-    (FR 6). Without diversification the pool simply fills round-robin.
+    (FR 6). Without diversification the pool fills round-robin from the
+    rotation cursor, so the model that drops out of the last group rotates
+    too and successive runs of either kind advance one shared cursor.
     """
     if voters >= len(pool):
         assignment = list(pool)
@@ -734,7 +793,11 @@ def _assign_models(
         omitted = (rotation or RotationState()).next_omit(pool)
         assignment = [m for m in pool if m != omitted]
     else:
-        assignment = [pool[i % len(pool)] for i in range(voters)]
+        # Round-robin starting at the rotation cursor: the model the last
+        # group runs short of rotates across runs (FR 6) instead of every
+        # plain run omitting pool[0].
+        offset = (rotation or RotationState()).advance()
+        assignment = [pool[(offset + i) % len(pool)] for i in range(voters)]
     rng.shuffle(assignment)
     return assignment
 
@@ -860,15 +923,26 @@ async def run_quorum(
     baseline). Calls run grouped by model, each model's group contiguous;
     ``group_order`` orders the groups so a node that swaps models loads
     each model once per quorum. The served node comes from the fake or
-    client through ``node_of`` (the relay reports it in ``x-relay-node``);
-    per-group wall time is recorded. The result is written to ``out_path``
-    (default ``quorum.json`` beside the package) and returned.
+    client through ``node_of`` (the relay reports it in ``x-relay-node``
+    after the call, llm-relay-1); it is read after each voter's call, so
+    the node recorded for a voter is the one that served that voter's
+    call. Per-group wall time is recorded. The result is written to
+    ``out_path`` (default ``quorum.json`` beside the package) and
+    returned.
+
+    With ``diversify`` and N below the pool size, the omitted model
+    rotates across runs (FR 6, AC6-c2): a caller-supplied ``rotation``
+    drives it, and without one the process-wide default
+    :class:`RotationState` does, so the rotation holds for successive
+    calls within one process.
     """
     _validate_quorum_config(package, voters, models, group_order)
     pool = list(dict.fromkeys(models))
     rng = random.Random(seed)
     if diversify:
-        plan = _plan_voters(package, voters, pool, rng, rotation or RotationState())
+        plan = _plan_voters(
+            package, voters, pool, rng, rotation or _DEFAULT_ROTATION
+        )
     else:
         rows = voter_rows(package)
         assignment = _assign_models(voters, pool, rng, rotation, diversify=False)
@@ -889,12 +963,15 @@ async def run_quorum(
     for model in _group_order(list(by_model), group_order):
         started = clock()
         for entry in by_model[model]:
+            # run_voter reads node_of after the call, so the node recorded
+            # for this voter (verdict, quorum.json and session log) is the
+            # one that served this voter's call (llm-relay-1).
             verdict = await run_voter(
                 package,
                 complete,
                 system_prompt=system_prompt,
                 model=model,
-                served_node=node_of(model) if node_of is not None else None,
+                node_of=node_of,
                 session_log=session_log,
                 rows=entry["rows"],
                 adversarial=entry["adversarial"],
@@ -1006,6 +1083,7 @@ async def quorum_report(
     system_prompt: str,
     models: list[str],
     node_of: Callable[[str], str | None] | None = None,
+    rotation: RotationState | None = None,
     out_path: Path = Path("report.md"),
 ) -> str:
     """Run the quorum at each count on each package and write ``report.md`` (FR 7, AC4).
@@ -1021,7 +1099,13 @@ async def quorum_report(
     denied because it is violated from one denied because of the framing.
     The report is accepted on completeness, not on the quorum catching the
     defect (contract: thresholds are decided on the report).
+
+    The omitted-model rotation (FR 6, AC6-c2) holds across every
+    ``run_quorum`` call the report makes (each count and mode is one run)
+    and across successive report calls: with no ``rotation`` passed the
+    report shares the process-wide :class:`RotationState`.
     """
+    shared_rotation = rotation or _DEFAULT_ROTATION
     lines = [
         "# Quorum measurement report",
         "",
@@ -1047,7 +1131,7 @@ async def quorum_report(
                 result = await run_quorum(
                     pkg, complete, system_prompt=system_prompt,
                     voters=count, models=models, node_of=node_of,
-                    diversify=diversify,
+                    diversify=diversify, rotation=shared_rotation,
                     out_path=pkg.directory / f"quorum-{count}-{mode}.json",
                 )
                 denials = _row_denials(result)

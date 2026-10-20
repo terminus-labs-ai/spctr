@@ -1114,3 +1114,191 @@ async def test_quorum_report_29_row_table_completes(tmp_path):
     # All-passing fake: no row denied, unanimity approve.
     assert "approved=True" in report
     assert "defect rows caught 0/1" in report
+
+
+# ---------------------------------------------------------------------------
+# Regression — rotation without caller bookkeeping (AC6-c2), and the served
+# node recorded for the call that was served (AC3, AC6, llm-relay-1)
+#
+# Both caught defects hid behind the seam the tests used: the rotation test
+# passed a RotationState explicitly, so nothing proved the default rotated;
+# every served-node assertion read a static model -> node map, so a node
+# read before the call (or shifted by one) looked correct.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def _fresh_rotation():
+    """Restore the process-wide rotation cursor around a test.
+
+    The state that makes AC6-c2 hold across successive ``run_quorum`` and
+    ``quorum_report`` calls is process-wide by design, so a test that
+    exercises it neither depends on nor upsets the tests around it. Read
+    with ``getattr`` so a build that has no rotation default fails the
+    assertion below rather than erroring here.
+    """
+    from sr2_spectre import review
+
+    state = getattr(review, "_DEFAULT_ROTATION", None)
+    cursor = getattr(state, "omit_cursor", 0)
+    yield
+    if state is not None:
+        state.omit_cursor = cursor
+
+
+async def test_quorum_rotation_across_successive_runs_without_caller_state(
+    tmp_path, _fresh_rotation
+):
+    """AC6-c2: four default runs rotate the omitted model with no bookkeeping.
+
+    The measurement driver calls run_quorum once per process or once per
+    count and keeps no state of its own. Passing a RotationState is an
+    opt-out for a caller that persists the cursor, not a requirement: with
+    none passed, four consecutive N=3 runs must still omit four different
+    models.
+    """
+    pkg = _build(tmp_path)
+    omitted = []
+    for _ in range(4):
+        result = await run_quorum(
+            pkg, QuorumComplete(), system_prompt=SYSTEM_PROMPT,
+            voters=3, models=POOL, node_of=_node_of,
+        )
+        models = [vr["model"] for vr in result["voter_results"]]
+        assert len(set(models)) == 3, models
+        omitted.append(({*POOL} - set(models)).pop())
+    assert len(set(omitted)) == 4, (
+        f"the omitted model did not rotate across runs: {omitted}"
+    )
+    assert set(omitted) == set(POOL)
+
+
+async def test_quorum_report_rotates_the_omitted_model(
+    tmp_path, _fresh_rotation
+):
+    """AC6-c2 / AC4: successive default quorum_report calls rotate the model.
+
+    The report drives run_quorum once per count and mode and keeps no
+    rotation bookkeeping of its own, so it must share the same state the
+    rotation is measured across. Asserted on the cursor: the plain
+    (undiversified) fill omits the model the last group runs short of, so
+    a report that never advances it leaves every run omitting pool[0].
+    """
+    pkg = _build_many(tmp_path, 5, name="rot")
+    from sr2_spectre import review
+
+    def cursor() -> int:
+        return getattr(getattr(review, "_DEFAULT_ROTATION", None),
+                       "omit_cursor", 0)
+
+    before = cursor()
+    for _ in range(2):
+        await quorum_report(
+            {"r5": {"package": pkg, "defect_rows": ["AC9-c2"]}},
+            counts=(3,),
+            complete=QuorumComplete(),
+            system_prompt=SYSTEM_PROMPT,
+            models=POOL,
+            node_of=_node_of,
+            out_path=tmp_path / "report.md",
+        )
+        # One rotation step per run the report makes (diversified and
+        # plain at N=3), so the cursor moves by two per report call and
+        # the second report starts where the first left off.
+        assert cursor() - before == 2, (
+            f"quorum_report did not rotate the omitted model: "
+            f"cursor {before} -> {cursor()}"
+        )
+        before += 2
+
+
+async def test_served_node_follows_the_call_not_the_model(tmp_path):
+    """AC3/AC6: a node that changes per call is recorded per voter and per group.
+
+    The relay names the serving node in the ``x-relay-node`` response
+    header, so it is only known after the call (llm-relay-1). A fake whose
+    node changes call to call catches both shapes of the old defect: a
+    node read before the call recorded None first and then the previous
+    call's node, shifted by one.
+    """
+    nodes = ["node-a", "node-b", "node-c"]
+
+    class ShiftingClient:
+        """Stands in for RelayCompletionClient: last_served_node is set
+        by complete(), so it is None before the first call."""
+
+        def __init__(self) -> None:
+            self.last_served_node: str | None = None
+            self.calls = 0
+
+        async def complete(self, body: dict) -> str:
+            self.last_served_node = nodes[self.calls % len(nodes)]
+            self.calls += 1
+            return await QuorumComplete()(body)
+
+        def node_of(self, model: str) -> str | None:
+            return self.last_served_node
+
+    client = ShiftingClient()
+    pkg = _build(tmp_path)
+    result = await run_quorum(
+        pkg, client.complete, system_prompt=SYSTEM_PROMPT,
+        voters=3, models=POOL, node_of=client.node_of,
+    )
+    # Per voter: the node of that voter's own call, in call order.
+    served = [vr["served_node"] for vr in result["voter_results"]]
+    assert all(s is not None for s in served), served
+    assert sorted(served) == sorted(nodes), served
+    # Per group: the groups partition the voters, so their nodes are the
+    # same set with no repeats — a shifted read would put one node twice
+    # and lose another. And each group records exactly the nodes of its
+    # own voters' calls.
+    groups = result["groups"]
+    assert sum(len(g["served_nodes"]) for g in groups) == 3, groups
+    for g in groups:
+        assert len(g["served_nodes"]) == len(g["voter_indexes"]), g
+    by_index = {vr["index"]: vr for vr in result["voter_results"]}
+    for g in groups:
+        assert set(g["served_nodes"]) == {
+            by_index[i]["served_node"] for i in g["voter_indexes"]
+        }, g
+
+
+async def test_run_voter_reads_node_of_after_the_call(tmp_path, monkeypatch):
+    """AC3: run_voter's session-log event carries the node of its own call.
+
+    The quorum aggregates after the calls, so a verdict whose node is
+    patched afterwards cannot fix the log event: the voter itself must
+    read node_of once the completion has returned.
+    """
+    log_dir = tmp_path / "logs"
+    monkeypatch.setenv("SR2_SESSION_LOG_DIR", str(log_dir))
+    pkg = _build(tmp_path)
+    rows = voter_rows(pkg)
+    answer = json.dumps({"rows": [
+        {"row_id": r, "holds": True, "reason": "ok"} for r in rows
+    ]})
+    client = RelayCompletionClient.__new__(RelayCompletionClient)
+    client.last_served_node = None
+
+    async def complete(body: dict) -> str:
+        # The relay reports the node in the response header: only known
+        # once the call has returned.
+        client.last_served_node = "node-late"
+        return answer
+
+    log = SessionLogManager().open_session("voter-node", "role-voter")
+    try:
+        verdict = await run_voter(
+            pkg, complete, system_prompt=SYSTEM_PROMPT,
+            model="qwen3.8-flash", node_of=lambda _m: client.last_served_node,
+            session_log=log,
+        )
+    finally:
+        log.close()
+    events = [
+        e for e in _log_events(log_dir) if e["event"] == "voter.answer"
+    ]
+    assert len(events) == 1
+    assert events[0]["data"]["served_node"] == "node-late"
+    assert verdict.served_node == "node-late"
