@@ -130,6 +130,36 @@ class RemindersConfig(BaseModel):
         return str(Path(raw.replace("{agent}", agent_name)).expanduser())
 
 
+class SituationSourceConfig(BaseModel):
+    """One declared situation source (sr2-102 / FR22).
+
+    The ``type`` field selects the built-in adapter: ``files``, ``git``,
+    or ``beads``.  ``paths`` is used by ``files``; ``repo`` by ``git``;
+    ``project`` by ``beads``.  ``required`` controls whether a failure is
+    surfaced as a structured ``ContinuityFailure`` (FR29).
+    """
+
+    type: str
+    paths: list[str] = []
+    repo: str = ""
+    project: str = ""
+    required: bool = True
+
+    def model_post_init(self, __context: object) -> None:
+        _VALID_SOURCE_TYPES = {"files", "git", "beads"}
+        if self.type not in _VALID_SOURCE_TYPES:
+            raise ValueError(
+                f"unknown situation source type {self.type!r}; "
+                f"expected one of {sorted(_VALID_SOURCE_TYPES)}"
+            )
+
+
+class ContinuityConfig(BaseModel):
+    """Continuity grounding configuration (sr2-102 / FR22)."""
+
+    situation_sources: list[SituationSourceConfig] = []
+
+
 class AgentConfig(BaseModel):
     """Agent-level configuration — spectre-owned concerns only.
 
@@ -184,6 +214,7 @@ class SpectreConfig(BaseModel):
             "An unknown name falls back to 'default' — see active_model_config."
         ),
     )
+    continuity: ContinuityConfig = ContinuityConfig()
     discord: DiscordConfig | None = None
     zulip: ZulipConfig | None = None
     provenance_store_path: str | None = Field(
