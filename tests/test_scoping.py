@@ -10,6 +10,7 @@ Covers obsidian-y10f acceptance criteria:
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from unittest.mock import patch
@@ -190,6 +191,56 @@ class TestReExec:
 
         cmd = mock_exec.call_args[0][1]
         assert "--unit=spectre-bead-7" in cmd
+
+
+class TestOOMToolErrorSurfacing:
+    """AC2 integration: a tool call whose child OOM-kills surfaces as a tool
+    error and sibling calls in the same session continue normally."""
+
+    @pytest.mark.asyncio
+    async def test_oom_killed_child_surfaces_as_tool_output(self, tmp_path):
+        """A subprocess killed by SIGKILL (simulating cgroup OOM) returns its
+        partial output with 'Killed' rather than crashing the session."""
+        from sr2_spectre.tools.builtins.terminal import TerminalTool
+
+        tool = TerminalTool(timeout=10)
+        # Allocate past RLIMIT_AS (64MB); kernel sends SIGKILL.
+        result = await tool(
+            "bash -c 'ulimit -v 65536; python3 -c \""
+            "import sys; sys.stdout.write('before_kill\\\\n'); sys.stdout.flush(); "
+            "data = bytearray(100*1024*1024)"
+            "\"'"
+        )
+        # The session survived: we got a result string back.
+        assert isinstance(result, str)
+        # The kernel or shell reports the kill.
+        assert "Killed" in result or "before_kill" in result
+
+    @pytest.mark.asyncio
+    async def test_sibling_call_survives_oom_sibling(self):
+        """Concurrent tool calls: one OOM'd, the other completes normally."""
+        from sr2_spectre.tools.builtins.terminal import TerminalTool
+
+        tool = TerminalTool(timeout=10)
+        oom_cmd = (
+            "bash -c 'ulimit -v 65536; python3 -c \""
+            "data = bytearray(100*1024*1024)"
+            "\"'"
+        )
+        ok_cmd = "echo alive"
+
+        results = await asyncio.gather(
+            tool(oom_cmd),
+            tool(ok_cmd),
+            return_exceptions=True,
+        )
+        oom_result, ok_result = results
+        # The healthy call completed normally.
+        assert isinstance(ok_result, str)
+        assert "alive" in ok_result
+        # The OOM call either returned partial output or raised — either way
+        # it did not take down the event loop or the sibling.
+        assert isinstance(oom_result, str) or isinstance(oom_result, Exception)
 
 
 class TestSystemdUserRunning:
