@@ -90,6 +90,11 @@ Targeted run for a single file or test node, as usual with pytest:
 .venv/bin/python -m pytest tests/test_some_module.py -v
 ```
 
+The suite is self-isolating: `tests/conftest.py` points `SR2_HOME` at a
+per-test temp dir and drops an inherited `SR2_SESSION_LOG_DIR`, so it passes
+with or without the dispatch launch's session-log environment. No `env -u`
+prefix is needed.
+
 ### Running tests in a build worktree
 
 Build sessions work in Git worktrees under `/data/worktrees/sr2-spectre/`

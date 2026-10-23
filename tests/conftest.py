@@ -32,8 +32,16 @@ def _isolate_sr2_home(tmp_path_factory, monkeypatch) -> None:
     Runtime writes session logs under $SR2_HOME/logs/sessions and sweeps
     that directory; without this, tests touch the real ~/.sr2 the bots use.
     Tests that need a specific SR2_HOME still set or delete it themselves.
+
+    An inherited ``SR2_SESSION_LOG_DIR`` (e.g. from the documented dispatch
+    launch) takes precedence over SR2_HOME in ``SessionLogManager.directory``
+    and would redirect session logs out of the isolated home, breaking every
+    test that asserts on log location or absence. Drop it so the default
+    under the fixture SR2_HOME applies; tests that need a specific value
+    still set it themselves.
     """
     monkeypatch.setenv("SR2_HOME", str(tmp_path_factory.mktemp("sr2_home")))
+    monkeypatch.delenv("SR2_SESSION_LOG_DIR", raising=False)
 
 
 def _make_mock_agent(
