@@ -458,6 +458,12 @@ def main(argv: list[str] | None = None) -> None:
         exit_code = _run_config_show(args[2:])
         sys.exit(exit_code)
 
+    # Self-scoping: re-exec under a memory-capped systemd scope when not
+    # already inside one. Skips for services, gmap/workflow wrappers, and
+    # when systemd-run is unavailable.
+    from sr2_spectre.scoping import maybe_enter_scope
+    maybe_enter_scope(args)
+
     # Dispatch the headless 'dispatch' subcommand (own argv surface; the
     # lazy import avoids a cli <-> dispatch import cycle).
     if len(args) >= 1 and args[0] == "dispatch":
