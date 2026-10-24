@@ -6,6 +6,8 @@ import os
 import signal
 from pathlib import Path
 
+from sr2_spectre.session_identity import current_session_id
+
 
 def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
     """Kill the command's whole process group (spawns run in their own
@@ -62,6 +64,14 @@ class TerminalTool:
         kwargs: dict = {}
         if self.workspace_root is not None:
             kwargs["cwd"] = self.workspace_root
+        # spc-137: during a session turn, name the session to the command
+        # (interaction-signal capture reads $SPECTRE_SESSION_ID, mirroring
+        # ${CLAUDE_CODE_SESSION_ID:--} / ${CODEX_THREAD_ID:--}). When unset
+        # (outside a turn) pass no env at all: byte-identical inherited
+        # behavior.
+        session_id = current_session_id.get()
+        if session_id is not None:
+            kwargs["env"] = {**os.environ, "SPECTRE_SESSION_ID": session_id}
 
         proc = await asyncio.create_subprocess_shell(
             command,

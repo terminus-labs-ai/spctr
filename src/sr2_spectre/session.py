@@ -38,6 +38,7 @@ from sr2_spectre.events import (
 )
 from sr2_spectre.live_llm import LoggedLLM, RetryingLLM
 from sr2_spectre.run_log import SessionLog, SessionLogManager, SessionTracer
+from sr2_spectre.session_identity import current_session_id
 from sr2_spectre.tools.output import ToolOutput
 from sr2_spectre.tools.registry import ToolRegistry
 
@@ -324,6 +325,17 @@ class Session:
         """Stream agent events for a user message, logging turn boundaries."""
         self._log_event("turn.start", {"input": text})
         self._turns_in_flight += 1
+        # spc-137: name this session for tools launched during the turn (the
+        # terminal tool exports it to subprocesses). Set in this async
+        # generator, whose context attaches to the consuming task (PEP 550),
+        # so concurrent turns in other tasks never see it — same reasoning
+        # as the ``turn_scope`` idiom in sr2_spectre.reminders.tool. The
+        # SR2 pipeline awaits the tool executor inline, so tool calls made
+        # during this turn read this value. Restored on exit.
+        previous_session_id = current_session_id.get()
+        current_session_id.set(
+            self._log.path.stem if self._log is not None else self.frame_id
+        )
         try:
             started = time.monotonic()
             tool_calls = 0
@@ -350,6 +362,7 @@ class Session:
                 {"duration_ms": _ms_since(started), "tool_calls": tool_calls},
             )
         finally:
+            current_session_id.set(previous_session_id)
             self._turns_in_flight -= 1
             if self._close_requested and self._turns_in_flight == 0:
                 self._close_log_now()

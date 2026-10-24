@@ -193,3 +193,49 @@ async def test_terminal_cancel_kills_child_processes() -> None:
         await task
     await asyncio.sleep(0.2)
     assert _surviving_pids("32.9") == []
+
+
+# ---------------------------------------------------------------------------
+# SPECTRE_SESSION_ID injection (spc-137): per-turn session identity for
+# subprocesses, via the current_session_id ContextVar.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_terminal_exports_session_id_when_context_set(
+    monkeypatch,
+) -> None:
+    """With current_session_id set, the command sees it in $SPECTRE_SESSION_ID."""
+    from sr2_spectre.session_identity import current_session_id
+    from sr2_spectre.tools.builtins.terminal import TerminalTool
+
+    monkeypatch.setenv("SPC137_INHERIT_PROBE", "inherited-ok")
+    token = current_session_id.set("20261014T142141Z-role-g-default-f83b786d")
+    try:
+        out = await TerminalTool()(
+            command='echo "$SPECTRE_SESSION_ID"; echo "$SPC137_INHERIT_PROBE"'
+        )
+    finally:
+        current_session_id.reset(token)
+    lines = out.splitlines()
+    assert lines[0] == "20261014T142141Z-role-g-default-f83b786d"
+    # The env is a merge over os.environ, not a replacement.
+    assert lines[1] == "inherited-ok"
+
+
+@pytest.mark.asyncio
+async def test_terminal_no_session_id_outside_turn_env_inherited(
+    monkeypatch,
+) -> None:
+    """Unset context: SPECTRE_SESSION_ID is absent; environment is inherited."""
+    from sr2_spectre.tools.builtins.terminal import TerminalTool
+
+    monkeypatch.setenv("SPC137_INHERIT_PROBE", "inherited-ok")
+    probe = (
+        '[ -n "${SPECTRE_SESSION_ID+x}" ] && echo present || echo absent; '
+        'echo "$SPC137_INHERIT_PROBE"'
+    )
+    out = await TerminalTool()(command=probe)
+    lines = out.splitlines()
+    assert lines[0] == "absent"
+    # Inheritance is otherwise unchanged: the probe variable still arrives.
+    assert lines[1] == "inherited-ok"
