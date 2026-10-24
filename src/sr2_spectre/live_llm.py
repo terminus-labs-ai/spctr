@@ -78,6 +78,11 @@ def build_llm(model_cfg: ModelConfig) -> LiteLLMCallable:
         kwargs.update(model_cfg.params)
     if "max_tokens" not in model_cfg.params and "max_completion_tokens" not in model_cfg.params:
         kwargs["max_tokens"] = DEFAULT_MAX_OUTPUT_TOKENS
+    # obsidian-pt2k.1: consumed by LiteLLMCallable's context guard itself,
+    # never forwarded to the provider. Omitted when unset so the guard is
+    # strictly opt-in per profile.
+    if model_cfg.context_limit is not None:
+        kwargs["context_limit"] = model_cfg.context_limit
     return LiteLLMCallable(**kwargs)
 
 

@@ -64,6 +64,12 @@ class ModelConfig(BaseModel):
     base_url: str | None = None
     api_key: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
+    # obsidian-pt2k.1: total token ceiling (input estimate + requested
+    # output, in llm-relay's estimate units) the serving endpoint accepts.
+    # Set it to the largest node's context minus headroom (e.g. 229000 for
+    # the qwen3.8 mesh's 229376). None disables the guard: overlong requests
+    # go out and die on the endpoint's 400 as before.
+    context_limit: int | None = Field(default=None, gt=0)
     # Wall-clock cap on one model call; None disables it.
     call_timeout_seconds: float | None = Field(default=900.0, gt=0)
     # Max silence between stream events (from call start for the first); None disables it.
