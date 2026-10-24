@@ -35,6 +35,37 @@ from sr2_spectre.tools.registry import ToolRegistry
 logger = logging.getLogger(__name__)
 
 
+async def _connect_mcp_with_retry(
+    client: MCPClient, retries: int, backoff_seconds: float
+) -> list | None:
+    """Connect one MCP client, retrying MCPConnectionError with backoff (spc-5).
+
+    After a reboot, dependent MCP servers (e.g. the glyph docker container)
+    can take ~35s to accept connections while agents start at t+0; retrying
+    lets a boot race self-heal instead of leaving the agent permanently
+    without the server's tools. Returns the client's bridges, or None once
+    the retries are exhausted — the caller keeps the tolerate-and-warn
+    behavior so a permanently absent server degrades startup instead of
+    killing it. A genuine external cancellation (raw CancelledError, not
+    wrapped by connect()) is NOT retried and propagates.
+    """
+    attempt = 0
+    while True:
+        try:
+            return await client.connect()
+        except MCPConnectionError as exc:
+            if attempt >= retries:
+                logger.warning("MCP server failed to connect: %s", exc)
+                return None
+            delay = backoff_seconds * 2**attempt
+            attempt += 1
+            logger.warning(
+                "MCP connect failed — retry %d/%d in %gs error=%s",
+                attempt, retries, delay, exc,
+            )
+            await asyncio.sleep(delay)
+
+
 def _tool_accepts_workspace_root(class_path: str) -> bool:
     """Return True if the tool class's __init__ accepts a workspace_root kwarg.
 
@@ -111,6 +142,8 @@ class Runtime:
         self._seed_skills_fs_signature(config)
 
         # MCP clients — one per mcp_servers entry; connected lazily via initialize()
+        # Parallel list of the config entries: retry policy is per server (spc-5).
+        self._mcp_server_configs: list = list(config.agent.mcp_servers)
         self._mcp_clients: list[MCPClient] = []
         for mcp_cfg in config.agent.mcp_servers:
             if mcp_cfg.type == "stdio":
@@ -828,18 +861,29 @@ class Runtime:
                 self._provenance_store_path,
             )
 
-        for client in self._mcp_clients:
-            try:
-                bridges = await client.connect()
-                for bridge in bridges:
-                    self.registry.register(
-                        name=bridge.name,
-                        description=bridge.description,
-                        input_schema=bridge.input_schema,
-                        fn=bridge,
-                    )
-            except MCPConnectionError as exc:
-                logger.warning("MCP server failed to connect: %s", exc)
+        # clients and config entries are parallel by construction; zip_longest
+        # keeps every client connectable even if the lists ever diverge.
+        from itertools import zip_longest
+
+        for client, mcp_cfg in zip_longest(self._mcp_clients, self._mcp_server_configs):
+            if client is None:
+                continue
+            retries = mcp_cfg.connect_retries if mcp_cfg is not None else 0
+            backoff = (
+                mcp_cfg.connect_retry_backoff_seconds
+                if mcp_cfg is not None
+                else 0.0
+            )
+            bridges = await _connect_mcp_with_retry(client, retries, backoff)
+            if bridges is None:
+                continue
+            for bridge in bridges:
+                self.registry.register(
+                    name=bridge.name,
+                    description=bridge.description,
+                    input_schema=bridge.input_schema,
+                    fn=bridge,
+                )
 
     def new_session(
         self,

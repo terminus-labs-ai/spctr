@@ -367,13 +367,21 @@ def _make_runtime_config(**agent_kwargs: Any) -> Any:
         agent=AgentConfig(name="test", **agent_kwargs),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline=_minimal_pipeline_dict(),
+        # "" disables the persistent provenance store: the default resolves
+        # to ~/.sr2-spectre/provenance.db, and every initialize() here would
+        # open the real aiosqlite store and leak its worker thread (the very
+        # spc-5 hang shape) past the closed event loop.
+        provenance_store_path="",
     )
 
 
-def _stdio_server(name: str) -> Any:
+def _stdio_server(name: str, **kwargs: Any) -> Any:
     from sr2_spectre.config import McpServerConfig
 
-    return McpServerConfig(name=name, type="stdio", command=[f"server_{name}"])
+    # connect_retries=0 keeps these cages fail-fast: they test the
+    # tolerate-and-warn path, not the spc-5 boot-race retry loop.
+    kwargs.setdefault("connect_retries", 0)
+    return McpServerConfig(name=name, type="stdio", command=[f"server_{name}"], **kwargs)
 
 
 def _bridge(name: str) -> MagicMock:

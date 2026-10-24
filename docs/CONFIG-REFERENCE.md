@@ -94,6 +94,13 @@ External MCP (Model Context Protocol) servers to connect at startup. Tools from 
 - **`args`** (list[str], optional): Additional arguments for the command.
 - **`env`** (dict[str, str], optional): Environment variables for the subprocess.
 - **`url`** (str, required for http): Server URL.
+- **`connect_retries`** (int, default: 5): Failed startup connects are retried
+  with exponential backoff before the server is tolerated as absent (spc-5:
+  after a reboot, a containerized server like glyph becomes reachable ~35s
+  after the agents start). `0` restores fail-fast behavior.
+- **`connect_retry_backoff_seconds`** (float, default: 2.0): Base delay for
+  the retry schedule (`base * 2**attempt`); the default budget covers ~62s
+  (2+4+8+16+32), inside systemd's default 90s start timeout.
 
 ### `agent.skills` (list[SkillConfig])
 

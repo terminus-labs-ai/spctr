@@ -88,6 +88,13 @@ class McpServerConfig(BaseModel):
     args: list[str] = Field(default_factory=list)
     env: dict[str, str] = Field(default_factory=dict)
     url: str = ""
+    # Boot-race tolerance (spc-5): a dependent server (e.g. the glyph docker
+    # container) can be reachable ~35s after boot while agents start at t+0.
+    # Failed connects are retried with exponential backoff before the server
+    # is tolerated as absent. Defaults cover ~62s (2+4+8+16+32), inside
+    # systemd's default 90s start timeout. 0 restores fail-fast behavior.
+    connect_retries: int = Field(default=5, ge=0)
+    connect_retry_backoff_seconds: float = Field(default=2.0, ge=0)
 
 
 class SkillConfig(BaseModel):

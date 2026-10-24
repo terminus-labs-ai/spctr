@@ -57,15 +57,17 @@ class MCPClient:
                 url = self._transport_kwargs["url"]
                 transport_ctx = sse_client(url=url)
 
-            self._transport_ctx = transport_ctx
             # streamablehttp_client yields a 3-tuple (read, write, get_session_id);
             # sse_client/stdio_client yield 2. Positional slice tolerates both.
+            # Assign AFTER a successful enter (spc-5): close() must never
+            # __aexit__ a context whose __aenter__ failed or never ran.
             entered = await transport_ctx.__aenter__()
+            self._transport_ctx = transport_ctx
             read, write = entered[0], entered[1]
 
             session_ctx = ClientSession(read, write)
-            self._session_ctx = session_ctx
             session = await session_ctx.__aenter__()
+            self._session_ctx = session_ctx
 
             await session.initialize()
             result = await session.list_tools()
@@ -84,15 +86,35 @@ class MCPClient:
             task = asyncio.current_task()
             if task is not None and task.cancelling() > 0:
                 raise  # genuine external cancellation — must propagate
-            await self.close()
+            await self._close_quietly()
             raise MCPConnectionError(str(exc)) from exc
         except Exception as exc:
+            # Same cleanup as the spurious-cancel path (spc-5): a generic
+            # transport failure (e.g. httpx.ReadError during a boot race) can
+            # leave the transport and/or session contexts entered. Close them
+            # so neither the retry loop nor the continue-on-warning path
+            # strands half-open contexts and their threads.
+            await self._close_quietly()
             raise MCPConnectionError(str(exc)) from exc
 
         return [
             MCPToolBridge(mcp_tool=tool, call_tool=session.call_tool)
             for tool in result.tools
         ]
+
+    async def _close_quietly(self) -> None:
+        """Best-effort close during a failed connect (spc-5).
+
+        Teardown errors must not replace the MCPConnectionError the caller
+        converts and retries on; close() is also idempotent-safe here because
+        only successfully-entered contexts are tracked.
+        """
+        try:
+            await self.close()
+        except BaseException as close_exc:  # noqa: BLE001 — never mask the cause
+            logging.getLogger(__name__).debug(
+                "MCP close during failed connect raised (ignored): %r", close_exc
+            )
 
     async def close(self) -> None:
         """Exit session and transport context managers. Safe to call before connect()."""
