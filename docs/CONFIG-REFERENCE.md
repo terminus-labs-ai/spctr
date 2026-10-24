@@ -614,10 +614,19 @@ not just the agent file.
 | `models.default.stream_retries`, `models.default.stream_retry_backoff_seconds` | New retry settings apply to the next streamed call |
 | `pipeline.*` | Each conversation rebuilds its SR2 on its next turn |
 | `agent.tools` | Tools added, removed, or reconfigured |
-| `agent.skills`, `agent.skills_dirs` | Skill registry rebuilt |
+| `agent.skills`, `agent.skills_dirs` | Skill registry rebuilt. Also rebuilt when the skill *files* inside `agent.skills_dirs` change on disk — adding, editing, or removing a skill needs no config edit at all; it is picked up on the next message (spc-110). |
 | `agent.tool_result_max_bytes` | New truncation limit |
 | `discord.*` except `token` | Channel filters, threading, streaming, embeds |
 | `zulip.channels`, `zulip.allowed_user_ids` | Which channels are admitted and the area each routes to, from the next message |
+
+The `skills_dirs` file watch is best effort: if a configured directory or skill
+file cannot be read during a rescan (mid-edit save, permissions), the previous
+skill registry stays in force, at most one warning is logged per distinct
+failure, and the next successful scan rebuilds and logs recovery. A failed
+signature seed at startup logs its warning as plain text (`signature seeding
+failed at startup`) rather than the `Type: message` form used for mid-run
+rescan failures; either way the effect is the same — the first message that
+rebuilds re-seeds it.
 
 ### What needs a restart
 
@@ -680,11 +689,16 @@ systemctl --user restart sr2-discord@<agent>
 Steady state is one config re-read plus an equality check, synchronously on the
 interface's event loop, once per message. Measured at **~6 ms/message** against
 a real agent file with an `extends:` chain (`~/.sr2/agents/miranda.yaml`,
-2 MCP servers, 8 tools).
+2 MCP servers, 8 tools). Since spc-110 each message additionally stats every
+skill file in every configured `agent.skills_dirs` entry (one stat per flat
+`<dir>/<name>.md` and per bundled `<dir>/<name>/SKILL.md`) to watch for on-disk
+skill edits; the measured figure predates that rescan, whose cost scales with
+the number of skill files and is small next to the config read.
 
 Rebuild work — tools, skills, the LLM handle, SR2 instances — is gated on an
-observed change, so a reload that finds nothing new costs the re-read and the
-compare, nothing more. That cost is paid per inbound message, so it scales with
+observed change (config or, for skills, the `skills_dirs` file signature), so a
+reload that finds nothing new costs the re-read, the skill-file stats, and the
+compares, nothing more. That cost is paid per inbound message, so it scales with
 traffic, not with config size.
 
 ### Implementation
