@@ -110,8 +110,9 @@ class RemindersConfig(BaseModel):
         timezone: IANA zone; ``at`` times and all rendered times use it.
             Required (nonempty) when enabled.
         store_path: SQLite file for this agent's reminders. Defaults to
-            ``~/.sr2/state/{agent}/reminders.sqlite`` — the interface
-            substitutes ``{agent}`` with the agent name at wiring time.
+            ``$SR2_HOME/state/{agent}/reminders.sqlite`` (SR2_HOME
+            defaulting to ``~/.sr2``) — the interface substitutes
+            ``{agent}`` with the agent name at wiring time.
         poll_seconds: Delivery loop poll interval.
         zulip_topic: Topic reminders are posted to on Zulip (FR9).
     """
@@ -123,11 +124,16 @@ class RemindersConfig(BaseModel):
     zulip_topic: str = "reminders"
 
     def resolved_store_path(self, agent_name: str) -> str:
-        """Store path with ``{agent}`` substituted, then expanded."""
-        from pathlib import Path
+        """Store path with ``{agent}`` substituted, then expanded.
 
-        raw = self.store_path or f"~/.sr2/state/{agent_name}/reminders.sqlite"
-        return str(Path(raw.replace("{agent}", agent_name)).expanduser())
+        An empty ``store_path`` resolves under the active SR2_HOME
+        (spc-160): ``$SR2_HOME/state/<agent_name>/reminders.sqlite``.
+        """
+        if self.store_path:
+            return str(
+                Path(self.store_path.replace("{agent}", agent_name)).expanduser()
+            )
+        return str(resolve_sr2_home() / "state" / agent_name / "reminders.sqlite")
 
 
 class SituationSourceConfig(BaseModel):

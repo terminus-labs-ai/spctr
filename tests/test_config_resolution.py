@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sr2_spectre.config import load_merged_config, resolve_sr2_home
+from sr2_spectre.config import (
+    RemindersConfig,
+    load_merged_config,
+    resolve_sr2_home,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -55,6 +59,107 @@ class TestResolveSr2Home:
         result = resolve_sr2_home(env=None)
         assert result == Path("/tmp/sr2-test-home").resolve()
 
+
+# ---------------------------------------------------------------------------
+# RemindersConfig.resolved_store_path — SR2_HOME-rooted default (spc-160)
+# ---------------------------------------------------------------------------
+
+class TestRemindersStorePathResolution:
+    """AC1-AC4: default store path follows SR2_HOME (spc-160).
+
+    The autouse conftest fixture already points SR2_HOME at a per-test
+    temp dir; tests below set or delete it explicitly where required.
+    """
+
+    def test_default_follows_sr2_home_env(self, monkeypatch, tmp_path):
+        """AC1: empty store_path resolves under the environment's SR2_HOME."""
+        home = tmp_path / "home"
+        monkeypatch.setenv("SR2_HOME", str(home))
+        path = Path(RemindersConfig(enabled=True).resolved_store_path("miranda"))
+        assert path == (
+            resolve_sr2_home() / "state" / "miranda" / "reminders.sqlite"
+        )
+
+    def test_default_tracks_sr2_home_changes(self, monkeypatch, tmp_path):
+        """AC1: resolution is dynamic — a later SR2_HOME value is followed."""
+        first = tmp_path / "first"
+        monkeypatch.setenv("SR2_HOME", str(first))
+        assert (
+            Path(RemindersConfig(enabled=True).resolved_store_path("miranda"))
+            == resolve_sr2_home() / "state" / "miranda" / "reminders.sqlite"
+        )
+        second = tmp_path / "second"
+        monkeypatch.setenv("SR2_HOME", str(second))
+        path = Path(RemindersConfig(enabled=True).resolved_store_path("miranda"))
+        assert path == resolve_sr2_home() / "state" / "miranda" / "reminders.sqlite"
+        assert path.is_relative_to(second.resolve())
+
+    def test_agent_name_interpolated_into_default(self, monkeypatch, tmp_path):
+        """AC1: the agent name parameter lands in the default, not a fixed name."""
+        monkeypatch.setenv("SR2_HOME", str(tmp_path / "home"))
+        path = Path(RemindersConfig(enabled=True).resolved_store_path("other-bot"))
+        assert path == (
+            resolve_sr2_home() / "state" / "other-bot" / "reminders.sqlite"
+        )
+
+    def test_default_without_sr2_home_env_is_tilde_sr2_state(self, monkeypatch):
+        """AC2: SR2_HOME unset — default is ~/.sr2/state/<agent>/reminders.sqlite."""
+        monkeypatch.delenv("SR2_HOME", raising=False)
+        path = Path(RemindersConfig(enabled=True).resolved_store_path("miranda"))
+        expected = (
+            Path("~/.sr2").expanduser().resolve()
+            / "state"
+            / "miranda"
+            / "reminders.sqlite"
+        )
+        assert path == expected
+
+    def test_explicit_store_path_used_verbatim(self, monkeypatch, tmp_path):
+        """AC3: an explicit store_path is never re-rooted under SR2_HOME."""
+        monkeypatch.setenv("SR2_HOME", str(tmp_path / "home"))
+        explicit = tmp_path / "elsewhere" / "reminders.sqlite"
+        path = RemindersConfig(
+            enabled=True, store_path=str(explicit)
+        ).resolved_store_path("miranda")
+        assert path == str(explicit)
+
+    def test_explicit_store_path_substitutes_agent(self, monkeypatch, tmp_path):
+        """AC3: {agent} still substitutes in an explicit store_path."""
+        monkeypatch.setenv("SR2_HOME", str(tmp_path / "home"))
+        raw = str(tmp_path / "data" / "{agent}" / "reminders.sqlite")
+        path = RemindersConfig(
+            enabled=True, store_path=raw
+        ).resolved_store_path("miranda")
+        assert path == str(tmp_path / "data" / "miranda" / "reminders.sqlite")
+
+    def test_explicit_store_path_expands_tilde(self, monkeypatch, tmp_path):
+        """AC3: ~ still expands in an explicit store_path."""
+        monkeypatch.setenv("SR2_HOME", str(tmp_path / "home"))
+        path = RemindersConfig(
+            enabled=True, store_path="~/custom-reminders/{agent}.sqlite"
+        ).resolved_store_path("miranda")
+        assert path == str(
+            Path("~").expanduser() / "custom-reminders" / "miranda.sqlite"
+        )
+
+    def test_default_store_creation_stays_inside_sr2_home(
+        self, monkeypatch, tmp_path
+    ):
+        """AC4: creating the default store writes only inside the temp SR2_HOME."""
+        home = tmp_path / "sr2_home"
+        monkeypatch.setenv("SR2_HOME", str(home))
+        path = Path(RemindersConfig(enabled=True).resolved_store_path("miranda"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+        assert path.resolve().is_relative_to(home.resolve())
+        assert path.read_bytes() == b""
+
+    def test_enabled_config_needs_no_store_path_for_wiring(self, monkeypatch, tmp_path):
+        """AC1: enabled=True is constructible with empty store_path (spc-138 regression)."""
+        monkeypatch.setenv("SR2_HOME", str(tmp_path / "home"))
+        block = RemindersConfig(enabled=True, timezone="UTC")
+        assert block.store_path == ""
+        assert block.resolved_store_path("miranda") != ""
 
 # ---------------------------------------------------------------------------
 # load_merged_config — helpers
