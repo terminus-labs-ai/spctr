@@ -221,6 +221,9 @@ class LoggedLLM:
         out_chars = 0
         usage: dict[str, Any] | None = None
         finish: Any = None
+        # obsidian-la2z: the backend's real model id, reported on the end
+        # event; the requested pool name is already in model.start.
+        served_model: Any = None
         terminal, data = "model.cancel", {}
         try:
             async for event in self._inner.stream(request):
@@ -237,10 +240,16 @@ class LoggedLLM:
                 elif event.type == "usage" and event.usage is not None:
                     usage = event.usage.model_dump()
                 elif event.type == "end":
-                    finish = (event.meta or {}).get("finish_reason")
+                    end_meta = event.meta or {}
+                    finish = end_meta.get("finish_reason")
+                    served_model = end_meta.get("served_model")
                 yield event
             terminal = "model.end"
-            data = {"finish_reason": finish, "usage": usage}
+            data = {
+                "finish_reason": finish,
+                "served_model": served_model,
+                "usage": usage,
+            }
         except asyncio.CancelledError:
             raise
         except Exception as exc:
