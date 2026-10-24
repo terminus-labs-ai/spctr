@@ -357,3 +357,114 @@ class TestPersistenceAcrossRestart:
             assert runtime._provenance_store is None
         finally:
             Path(db_path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# G. Regression (spc-130): store connected but never written after N turns
+# ---------------------------------------------------------------------------
+
+
+class TestProvenanceWritesLandOnTurns:
+    """Regression for spc-130: the store was connected but raw-content resolvers
+    never wrote entries because add_content skipped the store for the 'old path'.
+
+    These tests run a real SR2 pipeline (not mocked) with a mock LLM and assert
+    that the provenance store grows after turns complete.
+    """
+
+    @pytest.mark.asyncio
+    async def test_store_grows_after_single_turn(self, tmp_path):
+        """A single turn through the real pipeline writes entries to the store."""
+        from sr2.pipeline.stores.sqlite import SQLiteProvenanceStore
+        from sr2.protocols.llm import StreamEvent
+        from sr2_spectre.session import Session
+        from sr2_spectre.tools.registry import ToolRegistry
+
+        db_path = str(tmp_path / "prov.db")
+        store = SQLiteProvenanceStore(db_path=db_path)
+        await store.connect()
+
+        class _MockLLM:
+            async def stream(self, request):
+                yield StreamEvent(type="text", text="Hello!")
+
+            async def complete(self, request):
+                from sr2.protocols.llm import CompletionResponse
+                from sr2.models import TextBlock as TB
+                return CompletionResponse(
+                    id="r", content=[TB(text="Hello!")], stop_reason="end_turn"
+                )
+
+        config = _make_config()
+        registry = ToolRegistry()
+        session = Session(
+            frame_id="test-frame",
+            config=config,
+            llm=_MockLLM(),
+            registry=registry,
+            provenance_store=store,
+        )
+
+        # Run a turn
+        events = [ev async for ev in session.stream_message("Hi there")]
+        assert any(hasattr(ev, "text") for ev in events)
+
+        # The store must have entries — this is the regression assertion.
+        entries = await store.get_session("test-frame")
+        assert len(entries) > 0, (
+            "Provenance store is connected but was never written after a turn. "
+            "This is the spc-130 bug: raw-content resolvers must produce entries."
+        )
+
+        await store.close()
+
+    @pytest.mark.asyncio
+    async def test_store_grows_after_multiple_turns(self, tmp_path):
+        """Multiple turns each add entries to the store (row count grows)."""
+        from sr2.pipeline.stores.sqlite import SQLiteProvenanceStore
+        from sr2.protocols.llm import StreamEvent
+        from sr2_spectre.session import Session
+        from sr2_spectre.tools.registry import ToolRegistry
+
+        db_path = str(tmp_path / "prov.db")
+        store = SQLiteProvenanceStore(db_path=db_path)
+        await store.connect()
+
+        call_count = 0
+
+        class _MockLLM:
+            async def stream(self, request):
+                nonlocal call_count
+                call_count += 1
+                yield StreamEvent(type="text", text=f"Response {call_count}")
+
+            async def complete(self, request):
+                from sr2.protocols.llm import CompletionResponse
+                from sr2.models import TextBlock as TB
+                return CompletionResponse(
+                    id="r", content=[TB(text="ok")], stop_reason="end_turn"
+                )
+
+        config = _make_config()
+        registry = ToolRegistry()
+        session = Session(
+            frame_id="multi-frame",
+            config=config,
+            llm=_MockLLM(),
+            registry=registry,
+            provenance_store=store,
+        )
+
+        # Turn 1
+        [ev async for ev in session.stream_message("First")]
+        count_after_1 = len(await store.get_session("multi-frame"))
+        assert count_after_1 > 0, "No entries after first turn"
+
+        # Turn 2
+        [ev async for ev in session.stream_message("Second")]
+        count_after_2 = len(await store.get_session("multi-frame"))
+        assert count_after_2 > count_after_1, (
+            f"Store did not grow between turns: {count_after_1} → {count_after_2}"
+        )
+
+        await store.close()
