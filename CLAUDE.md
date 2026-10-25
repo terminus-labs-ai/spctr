@@ -124,10 +124,10 @@ above.
 
 ## Architecture Overview
 
-Workflow role agent files (including the tool-less single-call voter,
-`~/.sr2-workflow/agents/role-voter.yaml`) live beside the `role-<x>.yaml`
-files under `~/.sr2-workflow/agents/`; the voter's contract is rendered by
-`src/sr2_spectre/review.py`.
+Workflow role agent files (`role-<x>.yaml`) live under `~/.sr2-workflow/agents/`.
+The quorum voter is no longer part of Spectre: it runs as the standalone
+vault-tools invoker (`workflow/quorum_invoker.py`, configured by the `quorum:`
+block in `workflow/agent-models.yaml`, prompt `workflow/roles/quorum-voter.md`).
 
 ### Resolver/transformer pipeline
 
