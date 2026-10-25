@@ -140,6 +140,7 @@ class ZulipDMInterface:
         # comes from the same response's top-level user_id.
         self._bot_ids: set[int] = set()
         self._bot_user_id: int | None = None
+        self._started = False
         # The one Session serving the DM, created on the first admitted
         # message and owned (closed) by this interface.
         self._session: Any = None
@@ -170,6 +171,7 @@ class ZulipDMInterface:
         self._bot_ids = bot_ids_from_registration(registration)
         own = registration.get("user_id")
         self._bot_user_id = own if isinstance(own, int) else None
+        self._started = True
         self._running = True
         logger.info(
             "Zulip DM interface started: origin=%s queue registered bot=%s",
@@ -180,6 +182,7 @@ class ZulipDMInterface:
     async def stop(self) -> None:
         """Close the DM Session, then the transport."""
         self._running = False
+        self._started = False
         if self._session is not None:
             try:
                 self._session.close()

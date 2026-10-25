@@ -442,13 +442,18 @@ def test_implements_the_interface_protocol():
 
 def test_start_registers_queue_and_reads_bot_identity(patched_credentials):
     """Bot identity (including her OWN user_id) comes from registration —
-    no extra HTTP identity call."""
+    no extra HTTP identity call. ``_started`` marks the registered-queue
+    state (the promoted channel's public readiness fact)."""
     client = FakeDMClient()
     iface = _dm_interface(patched_credentials, client)
+    assert iface._started is False
     asyncio.run(iface.start(agent=None))
     assert client.register_calls == 1
     assert iface.bot_user_id == BOT_ID
+    assert iface._started is True
     assert {STRANGER_BOT_ID}.issubset(iface._bot_ids)
+    asyncio.run(iface.stop())
+    assert iface._started is False
 
 
 def test_start_without_peer_fails_explicitly(patched_credentials):
