@@ -616,9 +616,9 @@ wiring time. Resolved against `SR2_HOME` (the spc-160 lesson).
 | `run_now` | Execute a schedule's payload immediately through the normal path; the next cron occurrence is unchanged. |
 | `list` | List this agent's active schedules sorted by next run: ID, local next run (weekday, date, time, zone), cron, destination, payload summary (first 40 characters) and last status. |
 
-The tool schema includes all actions and fields from the start; `list` and
-`channel` are functional as of this bead; the `agent` payload type and
-`instruction`/`agent` fields become functional in spc-187.
+The tool schema includes all actions and fields from the start; `list`,
+`channel`, and the `agent` payload type (with `instruction`/`agent` fields)
+are all functional.
 
 ### Named-channel destination (FR9–FR11)
 
@@ -646,6 +646,23 @@ Runs a shell command with captured stdout/stderr to a log file under
 Non-zero exit or timeout posts one `⚠️` line to the destination channel
 with the first stderr line (capped at 200 characters) or the timeout note.
 The schedule stays active.
+
+### Agent payload
+
+Runs a headless dispatch turn via `sr2-spectre dispatch --agent <name>
+--prompt-file <tmp> --timeout <agent_timeout_seconds> --out <tmp>` with
+the stored instruction. The engine reads the JSON envelope and posts the
+result to the destination channel.
+
+- **Status `done`:** posts the envelope's `message` field verbatim, split
+  into chunks of at most 2000 characters (breaking at the last newline at
+  or before the limit). An empty message posts nothing.
+- **Any other status** (`failed`, `needs-input`, `escalation`, `timeout`,
+  `error`): posts one `⚠️` line naming the status. The schedule stays active.
+
+The `agent` field defaults to the creating agent. The `instruction` field
+is required (max 4000 characters, validated at create time). Prompt and
+envelope are logged under `~/.sr2/logs/schedules/<agent>/<YYYY-MM-DD>/`.
 
 ### Platform scoping
 

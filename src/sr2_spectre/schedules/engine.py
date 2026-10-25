@@ -21,6 +21,7 @@ from datetime import datetime, timedelta
 from typing import Awaitable, Callable
 from zoneinfo import ZoneInfo
 
+from sr2_spectre.schedules.agent import AgentResult, run_agent_dispatch, split_message
 from sr2_spectre.schedules.command import CommandResult, run_command
 from sr2_spectre.schedules.cron import CronSpec, parse_cron
 from sr2_spectre.schedules.store import Schedule, ScheduleStore
@@ -54,8 +55,10 @@ class ScheduleEngine:
         tz: ZoneInfo,
         agent_name: str,
         command_timeout: float = 600.0,
+        agent_timeout: float = 600.0,
         platform: str | None = None,
         clock: Callable[[], datetime] | None = None,
+        agent_runner: Callable | None = None,
     ) -> None:
         self._schedule_store = store
         self._send = send
@@ -63,8 +66,10 @@ class ScheduleEngine:
         self._timezone = tz
         self._name = agent_name
         self._command_timeout = command_timeout
+        self._agent_timeout = agent_timeout
         self._platform = platform
         self._now_fn = clock or (lambda: datetime.now(ZoneInfo("UTC")))
+        self._agent_runner = agent_runner  # injectable for tests
         self._task: asyncio.Task | None = None
 
     def _now(self) -> datetime:
@@ -202,8 +207,8 @@ class ScheduleEngine:
             result = await self._run_command_payload(payload, sched)
             await self._handle_command_result(sched, result)
         elif sched.payload_type == "agent":
-            # spc-187 scope — inert for now
-            pass
+            result = await self._run_agent_payload(payload, sched)
+            await self._handle_agent_result(sched, result)
 
         success = result is None or result.success
         await self._schedule_store.advance_after_run_async(
@@ -249,6 +254,50 @@ class ScheduleEngine:
                 self._name, sched.id,
             )
 
+    async def _run_agent_payload(self, payload: dict, sched: Schedule) -> AgentResult:
+        """Execute an agent payload via the dispatch CLI (spc-187, FR27)."""
+        target_agent = payload.get("agent", self._name)
+        instruction = payload.get("instruction", "")
+        runner = self._agent_runner or run_agent_dispatch
+        return await runner(
+            target_agent,
+            instruction,
+            timeout=self._agent_timeout,
+            agent=self._name,
+            clock=self._now_fn,
+        )
+
+    async def _handle_agent_result(self, sched: Schedule, result: AgentResult) -> None:
+        """Post agent result to the destination channel (spc-187, FR27).
+
+        On ``done``: post the final message verbatim, split at 2000 chars.
+        On any other status: post the one-line ⚠️ form with the status.
+        The schedule stays active regardless.
+        """
+        label_part = f" ({sched.label})" if sched.label else ""
+        if result.success:
+            if not result.message:
+                return
+            chunks = split_message(result.message)
+            for chunk in chunks:
+                try:
+                    await self._send(sched.dest_channel_id, chunk)
+                except Exception:
+                    logger.exception(
+                        "schedule agent post error: agent=%s id=%s",
+                        self._name, sched.id,
+                    )
+                    break
+        else:
+            message = f"⚠️ Schedule {sched.id}{label_part} failed: {result.error_line}"
+            try:
+                await self._send(sched.dest_channel_id, message)
+            except Exception:
+                logger.exception(
+                    "schedule failure post error: agent=%s id=%s",
+                    self._name, sched.id,
+                )
+
     async def execute_now(self, sched: Schedule) -> None:
         """Run a schedule immediately (FR33: run_now).
 
@@ -268,6 +317,11 @@ class ScheduleEngine:
         if sched.payload_type == "command":
             result = await self._run_command_payload(payload, sched)
             await self._handle_command_result(sched, result)
+            status = "ok" if result.success else "failed"
+            error = None if result.success else result.error_line
+        elif sched.payload_type == "agent":
+            result = await self._run_agent_payload(payload, sched)
+            await self._handle_agent_result(sched, result)
             status = "ok" if result.success else "failed"
             error = None if result.success else result.error_line
         else:
