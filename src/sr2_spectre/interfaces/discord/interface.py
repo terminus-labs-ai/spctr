@@ -417,6 +417,12 @@ class DiscordInterface:
     # Wire the engine into the tool so run_now works.
     if hasattr(schedules, "tool") and schedules.tool is not None:
       schedules.tool._engine = engine
+      # FR10/FR11 (spc-186): the same post-construction seam seats the
+      # guild-scoped channel resolver on the schedule tool. The Runtime
+      # built this tool before any interface existed to register one.
+      set_resolver = getattr(schedules.tool, "set_channel_resolver", None)
+      if set_resolver is not None:
+        set_resolver(self._resolve_channel)
     self._schedules_engine = engine
     self._schedules_stamp = getattr(agent, "schedules_stamped", 0)
     self._schedules_start_task = asyncio.ensure_future(engine.start())

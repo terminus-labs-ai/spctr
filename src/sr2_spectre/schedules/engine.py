@@ -71,8 +71,9 @@ class ScheduleEngine:
         return self._now_fn()
 
     async def start(self) -> None:
-        """Recover crashed runs and start the polling task."""
+        """Catch up missed runs, recover crashed runs, start the polling task."""
         await self._recover()
+        await self._catch_up()
         self._task = asyncio.ensure_future(self._run())
 
     async def stop(self) -> None:
@@ -102,6 +103,59 @@ class ScheduleEngine:
             logger.info(
                 "schedule recovered: agent=%s id=%s", self._name, sched.id
             )
+
+    async def _catch_up(self) -> None:
+        """FR30: missed occurrences run once at start, then advance past now.
+
+        An ordinary overdue active row (``next_run_at`` in the past, not
+        the claim sentinel — those are the crash rows ``_recover`` handles)
+        is caught up per its ``on_miss``:
+
+        - ``skip``: advance past now without firing. ``last_status`` and
+          ``last_error`` record the skip so the row is inspectable.
+        - otherwise (``run_late``): claim the row (the platform-scoped
+          claim, so a concurrent second process stays out and one start
+          catches up a row at most once), then execute through the same
+          ``_execute`` path the poll uses — the fired log line is marked
+          late because the fire time is more than five minutes past the
+          missed occurrence. ``_execute`` advances to the next cron
+          occurrence strictly after now, so nothing replays or refires.
+        """
+        now = self._now()
+        overdue = await self._schedule_store.due_async(now, self._platform)
+        for sched in overdue:
+            if sched.on_miss == "skip":
+                try:
+                    spec = parse_cron(sched.cron)
+                    next_run = spec.next_after(now, self._timezone)
+                except Exception:
+                    next_run = now + timedelta(hours=1)
+                await self._schedule_store.advance_after_run_async(
+                    sched.id, next_run, now, "skipped", None
+                )
+                logger.info(
+                    "schedule missed run skipped: agent=%s id=%s",
+                    self._name, sched.id,
+                )
+                continue
+            if not await self._schedule_store.claim_async(sched.id, self._platform):
+                continue
+            try:
+                await self._execute(sched, now)
+            except Exception:
+                # FR29: a payload failure never stops the engine.
+                logger.exception(
+                    "schedule catch-up error: agent=%s id=%s",
+                    self._name, sched.id,
+                )
+                try:
+                    spec = parse_cron(sched.cron)
+                    next_run = spec.next_after(now, self._timezone)
+                except Exception:
+                    next_run = now + timedelta(hours=1)
+                await self._schedule_store.advance_after_run_async(
+                    sched.id, next_run, now, "failed", "catch-up error"
+                )
 
     async def _run(self) -> None:
         while True:

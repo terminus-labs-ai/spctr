@@ -614,11 +614,30 @@ wiring time. Resolved against `SR2_HOME` (the spc-160 lesson).
 | `create` | Create a schedule with a 5-field cron, a payload (`command` or `agent`), optional `label` and `channel`. |
 | `cancel` | Remove a schedule by `id`; it never fires again. |
 | `run_now` | Execute a schedule's payload immediately through the normal path; the next cron occurrence is unchanged. |
-| `list` | List this agent's active schedules sorted by next run. |
+| `list` | List this agent's active schedules sorted by next run: ID, local next run (weekday, date, time, zone), cron, destination, payload summary (first 40 characters) and last status. |
 
 The tool schema includes all actions and fields from the start; `list` and
 `channel` are functional as of this bead; the `agent` payload type and
 `instruction`/`agent` fields become functional in spc-187.
+
+### Named-channel destination (FR9–FR11)
+
+`create` with `channel` resolves the name to one text channel of the
+**origin's own platform** (Discord: exact, case-insensitive, inside the
+origin guild; threads never match). The destination is the resolved
+channel; omitting `channel` targets the channel the request came from.
+Zero matches, multiple matches, or a name prefixed with the other
+platform (`zulip#general` from Discord) return a tool error and store
+nothing — cross-platform schedules are refused outright, as with reminders.
+
+### Missed runs at startup (FR30)
+
+Schedules do not fire while the process is down. On start, a schedule
+whose `next_run_at` is in the past runs once for the most recent missed
+occurrence — marked late in the log — and then advances to the next cron
+occurrence after now; never more than one catch-up run per schedule per
+start. A schedule created with `on_miss: skip` (a store-level setting;
+rows default to `run_late`) advances past now without firing.
 
 ### Command payload
 

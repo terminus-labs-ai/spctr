@@ -1,8 +1,9 @@
-"""The ``schedule`` tool (spc-185, FR24–FR26, FR32–FR33).
+"""The ``schedule`` tool (spc-185, FR24–FR26, FR32–FR33; spc-186, FR31, FR9–FR11).
 
-One tool with an ``action`` field (NFR Tool schema economy). This bead
-implements ``create``, ``cancel`` and ``run_now``; ``list`` lands in
-spc-186, the agent payload in spc-187.
+One tool with an ``action`` field (NFR Tool schema economy). spc-185
+implemented ``create``, ``cancel`` and ``run_now``; spc-186 completes
+``list`` (FR31) and the ``channel`` destination (FR9–FR11); the agent
+payload lands in spc-187.
 
 Origin plumbing follows the reminder tool's pattern: the owning interface
 records the turn's origin on a ContextVar before the turn runs, and the
@@ -29,6 +30,20 @@ NO_INTERFACE_ERROR = "Error: Schedules need the Discord interface"
 # FR25: max payload sizes.
 COMMAND_MAX = 4000
 AGENT_INSTRUCTION_MAX = 4000
+
+# FR11: a channel naming the other platform is refused outright. Mirrors
+# the reminder tool's constant with the tool's own noun.
+CROSS_PLATFORM_ERROR = "Error: Cross-platform schedules are not supported"
+
+# FR10/FR11: the platform a channel name may prefix ("discord#x", "zulip#x").
+_PLATFORM_PREFIXES = ("discord", "zulip")
+
+# FR10: the guard message when a resolver yields an unusable match.
+MALFORMED_RESOLVER_ERROR = "Error: channel lookup returned an unusable result"
+
+# FR10/FR11: the tool's answer to a named-channel create when no owning
+# interface registered a resolver.
+NO_RESOLVER_ERROR = "Error: named channels are not available in this build"
 
 
 @dataclass(frozen=True)
@@ -109,6 +124,22 @@ class ScheduleTool:
         self._get_origin = origin_getter
         self._now_fn = clock or (lambda: datetime.now(tz=ZoneInfo("UTC")))
         self._engine = engine
+        # FR10: the owning interface registers its channel resolver here
+        # (spc-186). The Runtime constructs this tool before any interface
+        # exists, so the seam is post-construction, mirroring how the
+        # engine is wired.
+        self._schedule_channel_resolver: Any = None
+
+    def set_channel_resolver(self, resolver: Any) -> None:
+        """Register the owning interface's named-channel resolver (FR10/FR11).
+
+        ``resolver`` is ``async (platform, name[, scope]) -> list`` of
+        matches, each carrying ``channel_id`` and ``channel_name`` (the
+        FR10 match shape). A resolver marked ``spectre_platform ==
+        "discord"`` is called with the reminder turn scope, exactly as
+        the reminder tool calls it: that scope carries the guild.
+        """
+        self._schedule_channel_resolver = resolver
 
     def _now(self) -> datetime:
         return self._now_fn()
@@ -186,7 +217,14 @@ class ScheduleTool:
         # FR24/FR9: destination defaults to origin channel root
         dest_channel_id = origin.channel_id
         dest_channel_name = origin.channel_name
-        # channel field lands in spc-186; for now only origin is used
+        # FR10/FR11: resolve a named destination after validation; nothing
+        # is stored when the name does not resolve to exactly one channel.
+        if channel is not None:
+            resolved = await self._resolve_channel(channel, origin)
+            if isinstance(resolved, str):
+                return resolved
+            dest_channel_id = str(resolved.channel_id)
+            dest_channel_name = str(resolved.channel_name)
 
         now = self._now()
         next_run = spec.next_after(now, self._timezone)
@@ -223,6 +261,48 @@ class ScheduleTool:
             f"({payload_type}: {payload_summary})"
         )
 
+    async def _resolve_channel(
+        self, channel: str, origin: ScheduleOrigin
+    ) -> Any:
+        """FR10/FR11: resolve a named destination. Returns an error string
+        or the single match. Mirrors the reminder tool's resolver."""
+        name = channel.strip()
+        if name.startswith("#"):
+            name = name[1:].strip()
+        prefix, sep, rest = name.partition("#")
+        if sep and prefix.lower() in _PLATFORM_PREFIXES:
+            # FR11: naming the other platform is refused before lookup.
+            if prefix.lower() != origin.platform:
+                return CROSS_PLATFORM_ERROR
+            name = rest.strip()
+        if self._schedule_channel_resolver is None:
+            return NO_RESOLVER_ERROR
+        # FR10: a Discord resolver scopes its match to the origin guild;
+        # it is the only resolver that takes a scope, and the reminder
+        # turn scope is what carries the guild (spc-141).
+        if getattr(self._schedule_channel_resolver, "spectre_platform", None) == "discord":
+            from sr2_spectre.reminders import tool as reminders_tool
+
+            scope = reminders_tool.turn_scope.get()
+            matches = await self._schedule_channel_resolver(origin.platform, name, scope)
+        else:
+            matches = await self._schedule_channel_resolver(origin.platform, name)
+        # Guard: a resolver returning anything but the documented match
+        # shape (e.g. raw channel dicts) is a tool error, not an exception.
+        if matches and not all(
+            hasattr(m, "channel_id") and hasattr(m, "channel_name")
+            for m in matches
+        ):
+            logger.error(
+                "%s: resolver returned %r", MALFORMED_RESOLVER_ERROR, matches[0]
+            )
+            return MALFORMED_RESOLVER_ERROR
+        if not matches:
+            return f"Error: channel '{channel}' not found on this platform"
+        if len(matches) > 1:
+            return f"Error: channel '{channel}' is ambiguous on this platform"
+        return matches[0]
+
     async def _cancel(self, id: str | None, origin: ScheduleOrigin) -> str:
         """FR32: cancel removes the schedule."""
         if not id:
@@ -253,7 +333,7 @@ class ScheduleTool:
         return f"Schedule {id} executed. Next run remains as scheduled."
 
     async def _list(self, origin: ScheduleOrigin) -> str:
-        """FR31: list active schedules (spc-186 completes this)."""
+        """FR31: this agent's active schedules sorted by next run."""
         rows = await self._schedule_store.list_for_agent_async(origin.agent)
         if not rows:
             return "No schedules."
