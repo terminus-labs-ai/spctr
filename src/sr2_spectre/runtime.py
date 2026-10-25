@@ -176,6 +176,14 @@ class Runtime:
         self._reminders_invalidated: int = 0
         self._reminders_for(config)
 
+        # Schedules (spc-185, FR23): one switch registers the ``schedule``
+        # tool and the engine. Disabled (the default) registers neither.
+        self.schedules_enabled: bool = False
+        self.schedules: Any = None
+        self._schedules_seq: int = 0
+        self._schedules_invalidated: int = 0
+        self._schedules_for(config)
+
     def _reminders_for(self, config: SpectreConfig) -> None:
         """Register (or skip) the reminder tool per ``agent.reminders``.
 
@@ -325,6 +333,60 @@ class Runtime:
         """
         return self._reminders_invalidated
 
+    # ---- schedules (spc-185, FR23) ----------------------------------------
+
+    def _schedules_for(self, config: SpectreConfig) -> None:
+        """Register (or skip) the schedule tool per ``agent.schedules``."""
+        from sr2_spectre.schedules import ScheduleStore
+        from sr2_spectre.tools.schedule_tool import ScheduleTool
+        from zoneinfo import ZoneInfo
+
+        block = config.agent.schedules
+        agent_name = config.agent.name
+        self.schedules_enabled = bool(block.enabled)
+        if not block.enabled:
+            self.schedules = None
+            self.registry.unregister(ScheduleTool.name)
+            return
+        if not block.timezone:
+            raise ValueError(
+                "agent.schedules.enabled is true but agent.schedules.timezone "
+                "is empty; an IANA timezone is required when schedules are "
+                "enabled."
+            )
+        store = ScheduleStore(block.resolved_store_path(agent_name))
+        tz = ZoneInfo(block.timezone)
+        tool = ScheduleTool(
+            store=store,
+            timezone=block.timezone,
+            agent_name=agent_name,
+            origin_getter=lambda: None,  # interface sets scope via ContextVar
+        )
+        self.registry.register(
+            name=ScheduleTool.name,
+            description=ScheduleTool.description,
+            input_schema=ScheduleTool.input_schema,
+            fn=tool.__call__,
+        )
+        self.schedules = SimpleNamespace(
+            store=store,
+            tool=tool,
+            agent_name=agent_name,
+            poll_seconds=block.poll_seconds,
+            tz=tz,
+            command_timeout=block.command_timeout_seconds,
+            agent_timeout=block.agent_timeout_seconds,
+        )
+        self._schedules_seq += 1
+
+    @property
+    def schedules_seq(self) -> int:
+        return self._schedules_seq
+
+    @property
+    def schedules_stamped(self) -> int:
+        return self._schedules_invalidated
+
     def _wire_plan_resolver(self, config: SpectreConfig) -> None:
         """Build the PlanResolver and the active_frame_provider SR2 gets.
 
@@ -419,27 +481,42 @@ class Runtime:
             # loop (R3).
             self._reminders_invalidated += 1
 
+        # Schedules (spc-185, FR23): same pattern as reminders.
+        schedules_changed = config.agent.schedules != previous.agent.schedules
+        if schedules_changed:
+            self._schedules_for(config)
+            self._schedules_invalidated += 1
+
         if config == previous:
             # Nothing but the reload itself happened (the reminders branch
             # above already re-seated if the block moved).
+            changed: list[str] = []
             if reminders_changed:
-                logger.info("Applied config reload: agent.reminders")
-                return ["agent.reminders"]
+                changed.append("agent.reminders")
+            if schedules_changed:
+                changed.append("agent.schedules")
+            if changed:
+                logger.info("Applied config reload: %s", ", ".join(changed))
+                return changed
             return []
 
         self.config = config
         applied: list[str] = []
         if reminders_changed:
             applied.append("agent.reminders")
+        if schedules_changed:
+            applied.append("agent.schedules")
+        if reminders_changed or schedules_changed:
             # Align the comparison base for everything below: the reminders
             # branch already re-seated, and the remaining branches and the
             # late early-return judge the REST of the config.
+            agent_updates: dict = {}
+            if reminders_changed:
+                agent_updates["reminders"] = config.agent.reminders
+            if schedules_changed:
+                agent_updates["schedules"] = config.agent.schedules
             previous = previous.model_copy(
-                update={
-                    "agent": previous.agent.model_copy(
-                        update={"reminders": config.agent.reminders}
-                    )
-                }
+                update={"agent": previous.agent.model_copy(update=agent_updates)}
             )
 
         # Models and endpoints. The LiveLLM swap reaches sessions that are

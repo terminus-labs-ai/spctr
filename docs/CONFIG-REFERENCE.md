@@ -588,6 +588,54 @@ mid-send row). Run one process per platform per agent.
 
 ---
 
+## Schedules (agent.schedules)
+
+```yaml
+agent:
+  schedules:
+    enabled: true
+    timezone: America/Phoenix
+    poll_seconds: 30.0
+    command_timeout_seconds: 600.0
+    agent_timeout_seconds: 600.0
+    # store_path: ~/.sr2/state/{agent}/schedules.sqlite   # default
+```
+
+One switch enables BOTH the `schedule` tool and the schedule engine; disabled
+(the default) registers neither. `timezone` is required (nonempty) when
+enabled and is the zone cron expressions are interpreted in. `store_path`
+supports `~` and `${VAR}`; `{agent}` is substituted with the agent name at
+wiring time. Resolved against `SR2_HOME` (the spc-160 lesson).
+
+### Tool actions
+
+| Action | Description |
+|--------|-------------|
+| `create` | Create a schedule with a 5-field cron, a payload (`command` or `agent`), optional `label` and `channel`. |
+| `cancel` | Remove a schedule by `id`; it never fires again. |
+| `run_now` | Execute a schedule's payload immediately through the normal path; the next cron occurrence is unchanged. |
+| `list` | List this agent's active schedules sorted by next run. |
+
+The tool schema includes all actions and fields from the start; `list` and
+`channel` are functional as of this bead; the `agent` payload type and
+`instruction`/`agent` fields become functional in spc-187.
+
+### Command payload
+
+Runs a shell command with captured stdout/stderr to a log file under
+`~/.sr2/logs/schedules/<agent>/<YYYY-MM-DD>/`. Exit 0 posts nothing.
+Non-zero exit or timeout posts one `⚠️` line to the destination channel
+with the first stderr line (capped at 200 characters) or the timeout note.
+The schedule stays active.
+
+### Platform scoping
+
+Same pattern as reminders (spc-176): each interface runs its own engine,
+and each engine's due selection, claim, and recovery only touch rows
+created on its platform.
+
+---
+
 ## Live reload
 
 A long-running interface re-reads the **whole resolved config on every inbound

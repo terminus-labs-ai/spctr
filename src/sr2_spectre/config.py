@@ -142,6 +142,39 @@ class RemindersConfig(BaseModel):
         return str(resolve_sr2_home() / "state" / agent_name / "reminders.sqlite")
 
 
+class SchedulesConfig(BaseModel):
+    """Per-agent schedule settings (spc-185, FR23).
+
+    One switch enables BOTH the ``schedule`` tool and the schedule engine;
+    disabled (the default) registers neither.
+
+    Attributes:
+        enabled: Register the tool and start the engine.
+        timezone: IANA zone; cron is interpreted in this zone.
+            Required (nonempty) when enabled.
+        store_path: SQLite file for this agent's schedules. Defaults to
+            ``$SR2_HOME/state/{agent}/schedules.sqlite``.
+        poll_seconds: Engine poll interval.
+        command_timeout_seconds: Default timeout for command payloads.
+        agent_timeout_seconds: Default timeout for agent payloads (spc-187).
+    """
+
+    enabled: bool = False
+    timezone: str = ""
+    store_path: str = ""
+    poll_seconds: float = Field(default=30.0, gt=0)
+    command_timeout_seconds: float = Field(default=600.0, gt=0)
+    agent_timeout_seconds: float = Field(default=600.0, gt=0)
+
+    def resolved_store_path(self, agent_name: str) -> str:
+        """Store path with ``{agent}`` substituted, then expanded."""
+        if self.store_path:
+            return str(
+                Path(self.store_path.replace("{agent}", agent_name)).expanduser()
+            )
+        return str(resolve_sr2_home() / "state" / agent_name / "schedules.sqlite")
+
+
 class SituationSourceConfig(BaseModel):
     """One declared situation source (sr2-102 / FR22).
 
@@ -205,6 +238,7 @@ class AgentConfig(BaseModel):
     tool_result_max_bytes: int = Field(default=65536)
     tool_limit_notice: str = Field(default="Tool iteration limit reached; stopping.")
     reminders: RemindersConfig = Field(default_factory=RemindersConfig)
+    schedules: SchedulesConfig = Field(default_factory=SchedulesConfig)
 
 
 class SpectreConfig(BaseModel):

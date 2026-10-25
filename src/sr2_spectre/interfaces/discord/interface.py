@@ -43,6 +43,8 @@ from sr2_spectre.reminders import (
   ReminderOrigin,
 )
 from sr2_spectre.reminders import tool as reminders_tool
+from sr2_spectre.schedules import ScheduleEngine
+from sr2_spectre.tools.schedule_tool import ScheduleOrigin, ScheduleTurnScope, schedule_turn_scope
 from sr2_spectre.interfaces.discord.handler import (
   CommandContext,
   chunk_message,
@@ -113,6 +115,10 @@ class DiscordInterface:
     self._reminders_loop: Any = None
     self._reminders_stamp: int | None = None
     self._reminders_start_task: Any = None
+    # Schedules (spc-185, FR23/FR35): the engine this interface owns.
+    self._schedules_engine: Any = None
+    self._schedules_stamp: int | None = None
+    self._schedules_start_task: Any = None
 
   @property
   def config(self) -> DiscordConfig:
@@ -158,6 +164,7 @@ class DiscordInterface:
     # resolver — see _wire_reminder_channel_lookup.
     self._wire_reminder_channel_lookup(agent)
     self._start_reminders(agent)
+    self._start_schedules(agent)
 
   def _apply_agent_config(self) -> None:
     """Hand the agent the config the adapter just reloaded.
@@ -379,10 +386,115 @@ class DiscordInterface:
     if self._reminders_loop is None and handle is not None:
       self._start_reminders(self._agent)
 
+  # ---- schedules (spc-185, FR23/FR35) ---------------------------------------
+
+  def _start_schedules(self, agent: Any) -> None:
+    """Start the schedule engine when this agent has a schedules handle."""
+    schedules = getattr(agent, "schedules", None)
+    if schedules is None:
+      return
+    if not asyncio.iscoroutinefunction(
+      getattr(schedules.store, "recover_claimed_async", None)
+    ):
+      return
+
+    async def send(channel_id: str, content: str) -> None:
+      _message, error = await self._adapter.try_send_message(
+        int(channel_id), content
+      )
+      if error is not None:
+        raise error
+
+    engine = ScheduleEngine(
+      schedules.store,
+      send=send,
+      poll_seconds=schedules.poll_seconds,
+      tz=schedules.tz,
+      agent_name=schedules.agent_name,
+      command_timeout=schedules.command_timeout,
+      platform="discord",
+    )
+    # Wire the engine into the tool so run_now works.
+    if hasattr(schedules, "tool") and schedules.tool is not None:
+      schedules.tool._engine = engine
+    self._schedules_engine = engine
+    self._schedules_stamp = getattr(agent, "schedules_stamped", 0)
+    self._schedules_start_task = asyncio.ensure_future(engine.start())
+
+  async def _stop_schedules(self) -> None:
+    """End the engine; unrun rows are left intact (FR35)."""
+    engine = self._schedules_engine
+    self._schedules_engine = None
+    self._schedules_stamp = None
+    if engine is None:
+      return
+    try:
+      await engine.stop()
+    except asyncio.CancelledError:
+      pass
+
+  async def _sync_schedules(self) -> None:
+    """Re-seat the engine after a live config reload (FR23)."""
+    runtime = self._runtime_of(self._agent)
+    stamp = getattr(runtime, "schedules_stamped", None) if runtime else None
+    if self._schedules_stamp is not None:
+      if stamp == self._schedules_stamp:
+        return
+      await self._stop_schedules()
+    handle = getattr(self._agent, "schedules", None)
+    if self._schedules_engine is None and handle is not None:
+      self._start_schedules(self._agent)
+
+  # ---- schedules turn scope ------------------------------------------------
+
+  def _schedules_origin_for(
+    self,
+    channel_obj: Any,
+    area: tuple[int | None, str | None],
+    message: Any,
+  ) -> ScheduleOrigin:
+    """The schedule origin of THIS turn (same logic as reminders)."""
+    channel_id, channel_name = area
+    root_id = channel_id if channel_id is not None else getattr(channel_obj, "id", None)
+    root_name = (
+      channel_name
+      if channel_name is not None
+      else str(getattr(channel_obj, "name", "") or "")
+    )
+    author_id = getattr(getattr(message, "author", None), "id", None)
+    if author_id is None:
+      author_id = getattr(message, "author_id", None)
+    return ScheduleOrigin(
+      agent=self._agent.config.agent.name,
+      platform="discord",
+      requester_id=str(author_id) if author_id is not None else "",
+      requester_mention=f"<@{author_id}>" if author_id is not None else "",
+      channel_id=str(root_id) if root_id is not None else "",
+      channel_name=root_name,
+    )
+
+  def _schedules_turn_open(
+    self,
+    message: Any,
+    channel_obj: Any,
+    area: tuple[int | None, str | None],
+  ) -> str:
+    schedule_turn_scope.set(
+      ScheduleTurnScope(origin=self._schedules_origin_for(channel_obj, area, message))
+    )
+    return "open"
+
+  def _schedules_turn_close(self, token: Any) -> None:
+    if token is None:
+      return
+    if schedule_turn_scope.get() is not None:
+      schedule_turn_scope.set(None)
+
   async def stop(self) -> None:
     """Stop the Discord bot and clean up sessions."""
     self._running = False
     await self._stop_reminders()
+    await self._stop_schedules()
     if self._adapter is not None:
       await self._adapter.stop()
     self._session_map.clear()
@@ -575,8 +687,12 @@ class DiscordInterface:
     reminders_token = self._reminders_turn_open(
       message, channel_obj, self._adapter.area_channel(channel_obj)
     )
+    schedules_token = self._schedules_turn_open(
+      message, channel_obj, self._adapter.area_channel(channel_obj)
+    )
     try:
       await self._sync_reminders()
+      await self._sync_schedules()
       # Parse slash commands
       command, rest = parse_slash_command(content)
 
@@ -595,6 +711,7 @@ class DiscordInterface:
       # Regular message — process through the agent (cancellable via /stop)
       await self._run_agent(content, target_channel_id)
     finally:
+      self._schedules_turn_close(schedules_token)
       self._reminders_turn_close(reminders_token)
 
   def _command_context(self, channel_id: int) -> CommandContext:
@@ -828,10 +945,17 @@ class DiscordInterface:
       channel_obj,
       self._adapter.area_channel(channel_obj) if channel_obj else (None, None),
     )
+    schedules_token = self._schedules_turn_open(
+      interaction,
+      channel_obj,
+      self._adapter.area_channel(channel_obj) if channel_obj else (None, None),
+    )
     try:
       await self._sync_reminders()
+      await self._sync_schedules()
       await self._dispatch_slash(name, text, interaction, channel_id, channel_obj)
     finally:
+      self._schedules_turn_close(schedules_token)
       self._reminders_turn_close(reminders_token)
 
   async def _dispatch_slash(
