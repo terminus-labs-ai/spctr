@@ -14,10 +14,22 @@ no-area and an unconfigured channel is never routed. The former temporary
 gate (:func:`validate_no_area_only_routing`, spc-119/123 intermediate
 contract) only validates mapping shape now — live vault existence is never
 probed at config time.
+
+INTERFACE MODES (spc-992): ``mode`` selects which Zulip interface the
+``--interface zulip`` front door builds. ``"stream"`` (the default, so every
+config written before spc-992 parses unchanged) is the stream/topic-shaped
+``ZulipInterface``. ``"direct"`` is the DM-only variant
+(``ZulipDMInterface``): private messages with ``peer_id`` only, no
+topics, no ``channels`` routing map. Both modes decide admission through the
+ONE :func:`admits_human_trigger` core below, so the security-relevant rule
+never exists in two copies.
 """
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+#: The accepted values of ``ZulipConfig.mode``.
+ZULIP_MODES = ("stream", "direct")
 
 
 class ZulipConfig(BaseModel):
@@ -34,6 +46,13 @@ class ZulipConfig(BaseModel):
             area; a nonempty value is that channel's area identity, mapped
             through :func:`resolve_channel_area` on every inbound message.
             There is no implicit channel-name or working-directory fallback.
+            Stream mode only: direct mode routes no channels at all.
+        mode: Which Zulip interface variant the config drives — ``"stream"``
+            (default; stream/topic chats, area routing) or ``"direct"`` (DMs
+            with ``peer_id`` only, no topics and no area routing).
+        peer_id: Direct mode: the human user ID this bot exchanges DMs with,
+            in both directions. Strict integer, like every other ID here.
+            Stream mode ignores it.
     """
     model_config = ConfigDict(strict=True)
 
@@ -41,6 +60,45 @@ class ZulipConfig(BaseModel):
     api_url: str | None = None
     allowed_user_ids: list[int] = Field(default_factory=list)
     channels: dict[int, str] = Field(default_factory=dict)
+    mode: str = "stream"
+    peer_id: int | None = None
+
+    @field_validator("mode")
+    @classmethod
+    def _mode_is_known(cls, value: str) -> str:
+        if value not in ZULIP_MODES:
+            raise ValueError(
+                "Zulip `mode` must be one of "
+                f"{', '.join(repr(name) for name in ZULIP_MODES)}; "
+                f"got {value!r}."
+            )
+        return value
+
+
+def admits_human_trigger(
+    *,
+    sender_id: int,
+    sender_is_bot: bool,
+    allowed_user_ids,
+) -> bool:
+    """THE admission rule: an allowlisted human, and nothing else (spc-992).
+
+    One implementation serves every Zulip interface mode — the stream/topic
+    :func:`is_configured_no_area_channel` front door and the DM variant
+    :func:`admits_direct_message` both delegate their human/bot decision
+    here, so the security-relevant rule cannot drift between them.
+
+    Two clauses, in force order:
+
+    1. A bot-authored message never triggers, even when its ID is on the
+       allowlist (reply-loop prevention outranks the allowlist).
+    2. Membership is decided on the configured integer IDs: an event
+       carrying a stringified ID (or no ID) is not a match, and an empty
+       allowlist is an explicit nobody.
+    """
+    if sender_is_bot:
+        return False
+    return sender_id in allowed_user_ids
 
 
 def is_configured_no_area_channel(
@@ -50,23 +108,106 @@ def is_configured_no_area_channel(
     sender_is_bot: bool,
     config: ZulipConfig,
 ) -> bool:
-    """Decide whether one message event may trigger a model turn.
+    """Stream mode: decide whether one message event may trigger a model turn.
 
     A turn is admitted only when the channel is explicitly configured (any
-    area, including the no-area ``""``), the sender is a human on the
-    allowlist, and the message is not bot-authored (the bot rule outranks
-    the allowlist so replies can never loop). Membership is decided on the
-    configured integer IDs — an event carrying a stringified ID is not a
-    match, and there is no channel-name fallback. The name is historical
-    (spc-119/123 admitted no-area channels only); since spc-120 it is the
-    trigger admission for every configured channel — the routed area itself
-    comes from :func:`resolve_channel_area`.
+    area, including the no-area ``""``) and the human/bot rule below admits
+    the sender. Channel membership is decided on configured integer IDs — an
+    event carrying a stringified ID is not a match, and there is no
+    channel-name fallback. The human/bot decision is the single shared
+    :func:`admits_human_trigger` core, never a second copy of it. The name
+    is historical (spc-119/123 admitted no-area channels only); since spc-120
+    it is the trigger admission for every configured channel — the routed
+    area itself comes from :func:`resolve_channel_area`.
     """
-    if sender_is_bot:
-        return False
     if channel_id not in config.channels:
         return False
-    return sender_id in config.allowed_user_ids
+    return admits_human_trigger(
+        sender_id=sender_id,
+        sender_is_bot=sender_is_bot,
+        allowed_user_ids=config.allowed_user_ids,
+    )
+
+
+def admits_direct_message(
+    *,
+    message: dict,
+    allowed_user_ids,
+    bot_ids,
+    bot_user_id: int | None = None,
+    peer_id: int | None = None,
+    message_id_field: str = "id",
+) -> bool:
+    """Direct mode: decide whether one event message may trigger a turn (spc-992).
+
+    DM-shape checks on top of the same shared :func:`admits_human_trigger`
+    core the stream mode calls — this function adds no human/bot policy of
+    its own, only what a DM has that a stream event check does not:
+
+    * the message is a private message (a stream post is never admitted,
+      allowlist or not);
+    * the sender ID and the message ID are real integers — a stringified ID
+      is not a match;
+    * the sender is not a bot, per the realm registration metadata
+      (``bot_ids``) nor the bot's own account (``bot_user_id``), which that
+      metadata does not always list;
+    * when a *peer_id* is configured, only that peer's DMs are admitted.
+    """
+    if message.get("type") != "private":
+        return False
+    sender_id = message.get("sender_id")
+    if not isinstance(sender_id, int):
+        return False
+    if not isinstance(message.get(message_id_field), int):
+        return False
+    if sender_id == bot_user_id:
+        return False  # her own reply: the realm metadata does not always mark it
+    return admits_human_trigger(
+        sender_id=sender_id,
+        sender_is_bot=sender_id in bot_ids,
+        allowed_user_ids=allowed_user_ids,
+    ) and (peer_id is None or sender_id == peer_id)
+
+
+def bot_ids_from_registration(registration: dict) -> set[int]:
+    """Collect bot user IDs from registration realm metadata (spc-992: shared).
+
+    Message events carry no bot flag; per the register-queue contract the
+    ``realm_users`` array (every account, ``is_bot`` marks bots) plus the
+    ``realm_bots`` array are the real server metadata that identifies bots
+    by ``user_id``. Both Zulip interface modes read bot identity through
+    this one function — an invented per-event bot flag never decides
+    admission.
+    """
+    bot_ids: set[int] = set()
+    for entry in registration.get("realm_users") or []:
+        if isinstance(entry, dict) and entry.get("is_bot") is True:
+            user_id = entry.get("user_id")
+            if isinstance(user_id, int):
+                bot_ids.add(user_id)
+    for entry in registration.get("realm_bots") or []:
+        if isinstance(entry, dict):
+            bot_id = entry.get("bot_id")
+            if isinstance(bot_id, int):
+                bot_ids.add(bot_id)
+    return bot_ids
+
+
+def validate_direct_mode(config: ZulipConfig) -> None:
+    """Validate the DM block's shape at direct-mode startup (spc-992).
+
+    Direct mode needs exactly one thing stream mode does not: a peer to DM.
+    Without it the bot could receive but never reply, so startup fails
+    explicitly (the strict schema already rejects a stringified
+    ``peer_id``). Called by ``ZulipDMInterface.start()``; stream mode never
+    calls it and never reads ``peer_id``.
+    """
+    if not isinstance(config.peer_id, int):
+        raise ValueError(
+            "Zulip direct mode needs a `peer_id`: the integer user ID of "
+            "the human this bot exchanges DMs with. Add "
+            "`zulip.peer_id: <user-id>` to the config."
+        )
 
 
 def resolve_channel_area(

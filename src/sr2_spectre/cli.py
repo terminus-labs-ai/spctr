@@ -215,7 +215,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _load_interface(interface_name: str, **kwargs: Any) -> Any:
-    """Load an interface class by name."""
+    """Load an interface class by name.
+
+    ``zulip`` is config-selectable (spc-992): with ``mode: direct`` in the
+    zulip block the front door resolves to the DM-only variant. Callers
+    that build the interface config themselves (tests, embedders) pass it
+    through ``kwargs["config"]``; the run path resolves it below from the
+    loaded config instead.
+    """
     known_interfaces = {
         "single_shot": "sr2_spectre.interfaces.single_shot.SingleShotInterface",
         "repl": "sr2_spectre.interfaces.repl.REPLInterface",
@@ -223,6 +230,13 @@ def _load_interface(interface_name: str, **kwargs: Any) -> Any:
         "discord": "sr2_spectre.interfaces.discord.interface.DiscordInterface",
         "zulip": "sr2_spectre.interfaces.zulip.interface.ZulipInterface",
     }
+    if interface_name == "zulip":
+        config = kwargs.get("config")
+        if config is not None and getattr(config, "mode", None) == "direct":
+            known_interfaces = {
+                **known_interfaces,
+                "zulip": "sr2_spectre.interfaces.zulip.direct.ZulipDMInterface",
+            }
 
     class_path = known_interfaces.get(interface_name, interface_name)
     module_path, class_name = class_path.rsplit(".", 1)
@@ -432,7 +446,14 @@ async def run_async(argv: list[str] | None = None) -> None:
         # for discord that means an empty-token config and a hard startup crash
         # (regression from f49b853, which split resolve/instantiate but left
         # this call argless).
-        interface_cls = _load_interface(interface_name)
+        interface_cls = _load_interface(
+            interface_name,
+            # spc-992: the zulip front door is config-selectable, and the
+            # block it selects on is the one built into interface_kwargs
+            # above — passed here so resolution and instantiation read the
+            # same object.
+            **interface_kwargs,
+        )
         interface = interface_cls(**interface_kwargs)
 
         await interface.start(agent)

@@ -56,6 +56,7 @@ from sr2_spectre.interfaces.zulip.client import (
 )
 from sr2_spectre.interfaces.zulip.config import (
     ZulipConfig,
+    bot_ids_from_registration,
     is_configured_no_area_channel,
     resolve_channel_area,
     validate_no_area_only_routing,
@@ -201,25 +202,13 @@ class ZulipInterface:
         )
 
     def _read_bot_ids(self, registration: dict[str, Any]) -> set[int]:
-        """Collect bot user IDs from registration realm metadata.
+        """Bot user IDs from registration realm metadata.
 
-        Message events carry no bot flag; per the register-queue contract the
-        ``realm_users`` array (every account, ``is_bot`` marks bots) plus the
-        ``realm_bots`` array are the real server metadata that identifies
-        bots by ``user_id``.
+        The shared reader (spc-992): both Zulip interface modes derive bot
+        identity from the same register-queue metadata, never from a flag a
+        message event carries.
         """
-        bot_ids: set[int] = set()
-        for entry in registration.get("realm_users") or []:
-            if isinstance(entry, dict) and entry.get("is_bot") is True:
-                user_id = entry.get("user_id")
-                if isinstance(user_id, int):
-                    bot_ids.add(user_id)
-        for entry in registration.get("realm_bots") or []:
-            if isinstance(entry, dict):
-                bot_id = entry.get("bot_id")
-                if isinstance(bot_id, int):
-                    bot_ids.add(bot_id)
-        return bot_ids
+        return bot_ids_from_registration(registration)
 
     async def stop(self) -> None:
         """Close every interface-owned Session, then the transport."""

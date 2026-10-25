@@ -292,6 +292,20 @@ class ZulipClient:
         )
         return payload["id"]
 
+    async def send_direct(self, to: int, content: str) -> Any:
+        """Send one private message (POST /api/v1/messages, type=private).
+
+        The private-message destination is a JSON-encoded LIST of recipient
+        user IDs (send-message contract), so the integer *to* is encoded
+        here — the one place that encoding lives, and interface code never
+        repeats it (spc-992). A private message has no topic; the empty
+        topic field is sent for the realms that expect it. Returns the new
+        message ID like :meth:`send_message`.
+        """
+        return await self.send_message(
+            type="private", to=json.dumps([to]), topic="", content=content
+        )
+
     # -- request core ----------------------------------------------------------
 
     async def _request(
