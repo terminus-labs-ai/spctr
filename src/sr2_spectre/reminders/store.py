@@ -88,8 +88,8 @@ def _utcnow() -> datetime:
 
 # spc-157: retries are scheduled from this column instead of moving
 # ``due_at``. A store file created before it existed (the spc-139 schema)
-# gains the column additively on connect; existing rows keep NULL and
-# stay deliverable (their next attempt is due at ``due_at``).
+# gains the column additively when the store opens; existing rows keep NULL
+# and stay deliverable (their next attempt is due at ``due_at``).
 _RETRY_COLUMN = "next_attempt_at"
 
 
@@ -141,7 +141,17 @@ class ReminderStore:
         self._path = str(path)
         if self._path != ":memory:":
             Path(self._path).parent.mkdir(parents=True, exist_ok=True)
-        self._connect()
+        # spc-163: migrate once here, not on every connection. The store is
+        # built once per process (runtime.py), so the schema probe runs once
+        # for the life of the file instead of once per operation. ``_connect``
+        # stays a pure open so a statement-level spy sees only the statements
+        # an operation needs.
+        conn = self._connect()
+        try:
+            self._migrate(conn)
+            conn.commit()
+        finally:
+            conn.close()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self._path, timeout=10.0)
@@ -149,8 +159,6 @@ class ReminderStore:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA busy_timeout = 10000")
         conn.execute(_SCHEMA)
-        self._migrate(conn)
-        conn.commit()
         return conn
 
     @staticmethod

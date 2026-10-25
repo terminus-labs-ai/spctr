@@ -118,6 +118,40 @@ def test_r1_queries_derive_from_columns(store):
     assert values_part.count("?") == len(_COLUMNS) - 2
 
 
+def test_r1_migration_probe_does_not_fire_per_operation(tmp_path: Path):
+    """spc-163: the schema-migration probe (``PRAGMA table_info``) runs
+    once when the store is built, not on every connection. The spy below
+    sees only the statements an operation actually needs; a migration
+    smuggled into ``_connect()`` would add a ``PRAGMA table_info`` line to
+    every store call and couple this column-dedup file to the migration's
+    concerns."""
+    record_sql: list[str] = []
+
+    class SpyConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):
+            record_sql.append(sql)
+            return super().execute(sql, *args, **kwargs)
+
+    # Build the store with the real connect: construction owns migration.
+    store = ReminderStore(tmp_path / "reminders.sqlite")
+
+    real_connect = sqlite3.connect
+
+    def spy_connect(path, *args, **kwargs):
+        kwargs["factory"] = SpyConnection
+        return real_connect(path, *args, **kwargs)
+
+    sqlite3.connect = spy_connect
+    try:
+        store.create(_row())
+        store.get("r1")
+        store.due(now=NOW + timedelta(hours=1))
+    finally:
+        sqlite3.connect = real_connect
+
+    assert [s for s in record_sql if "table_info" in s.lower()] == []
+
+
 # ---------------------------------------------------------------------------
 # R2 — round trip create → get → due preserves every field
 # ---------------------------------------------------------------------------
