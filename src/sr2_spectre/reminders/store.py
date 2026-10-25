@@ -24,8 +24,9 @@ from typing import Callable, Iterable
 # The reminder column set, named once (spc-144). ``_SCHEMA``, the SELECTs
 # (``due``, ``get``) and the INSERT (``create``) all derive from this
 # single definition, and rows map back to ``Reminder`` by column name via
-# ``sqlite3.Row`` — adding a column means editing one tuple (plus its
-# CREATE TABLE clause).
+# ``sqlite3.Row``. Adding a column means editing this tuple, its CREATE
+# TABLE clause, and (if it starts NULL and should be excluded from the
+# INSERT) the ``_INSERT_COLUMNS`` filter.
 _COLUMNS = (
     "id",
     "agent",
@@ -50,13 +51,14 @@ _COLUMNS = (
     "next_attempt_at",
 )
 
-# Columns ``create`` inserts: every column above except the two that
-# start NULL. ``status`` and ``attempts`` carry the fixed 'pending'/0 of
-# the pre-spc-144 INSERT; ``last_error`` starts NULL and
-# ``next_attempt_at`` starts NULL (a first attempt is due at ``due_at``).
+# Columns ``create`` inserts: every column except ``delivered_at`` (which
+# is always NULL on a fresh row and defaults to NULL in the DDL).
 _INSERT_COLUMNS = tuple(
-    c for c in _COLUMNS if c not in ("delivered_at", "next_attempt_at")
+    c for c in _COLUMNS if c != "delivered_at"
 )
+
+# Columns whose values need ``_ts()`` conversion when binding to SQL.
+_TS_BINDINGS = frozenset({"due_at", "created_at", "next_attempt_at"})
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS reminders (
@@ -201,25 +203,28 @@ class ReminderStore:
             conn.execute(
                 f"""INSERT INTO reminders ({", ".join(_INSERT_COLUMNS)})
                     VALUES ({", ".join(['?'] * len(_INSERT_COLUMNS))})""",
-                (
-                    new_id,
-                    row.agent,
-                    row.platform,
-                    row.requester_id,
-                    row.requester_mention,
-                    row.origin_channel_id,
-                    row.dest_channel_id,
-                    row.dest_channel_name,
-                    row.dest_topic,
-                    row.text,
-                    _ts(row.due_at),
-                    _ts(row.created_at),
-                    "pending",
-                    0,
-                    None,
-                ),
+                self._insert_params(row, new_id),
             )
         return new_id
+
+    @staticmethod
+    def _insert_params(row: Reminder, new_id: str) -> tuple:
+        """Build INSERT parameters from the row, keyed by ``_INSERT_COLUMNS``.
+
+        ``id`` is replaced by the freshly allocated *new_id*; timestamp
+        columns are converted via ``_ts()``; every other column is read
+        straight from the dataclass field of the same name.
+        """
+        values = []
+        for col in _INSERT_COLUMNS:
+            if col == "id":
+                values.append(new_id)
+            elif col in _TS_BINDINGS:
+                raw = getattr(row, col)
+                values.append(None if raw is None else _ts(raw))
+            else:
+                values.append(getattr(row, col))
+        return tuple(values)
 
     def due(
         self,

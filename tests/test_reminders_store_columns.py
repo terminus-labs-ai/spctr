@@ -1,8 +1,9 @@
-"""Reminders store column dedup (spc-144).
+"""Reminders store column dedup (spc-144, spc-165).
 
-Direct-profile unit tests for the spc-144 AC subset (R1, R2). The store
-refactor names the reminder column set once and maps rows to ``Reminder``
-by column name; behavior must not change.
+Direct-profile unit tests for the spc-144 AC subset (R1, R2) and the
+spc-165 value-binding fix. The store refactor names the reminder column
+set once and maps rows to ``Reminder`` by column name; behavior must not
+change.
 
 - R1: one module-level column definition; ``due()``, ``get()`` and
   ``create()`` derive from it; row mapping is by name, not index.
@@ -31,7 +32,7 @@ NOW = datetime(2026, 10, 15, 22, 0, 0, tzinfo=UTC)
 
 
 def _row(**overrides) -> Reminder:
-    """A fully populated pending reminder row (all fifteen fields)."""
+    """A fully populated pending reminder row (all seventeen fields)."""
     base = dict(
         id="r1",
         agent="miranda",
@@ -112,10 +113,10 @@ def test_r1_queries_derive_from_columns(store):
     inside = insert_sqls[0].split("INSERT INTO reminders", 1)[1]
     inside = inside.split("VALUES")[0]
     listed = [c.strip() for c in inside.strip().strip("()").split(",")]
-    assert listed == [c for c in _COLUMNS if c not in ("delivered_at", "next_attempt_at")]
+    assert listed == [c for c in _COLUMNS if c != "delivered_at"]
     # One bound placeholder per listed column.
     values_part = insert_sqls[0].split("VALUES", 1)[1]
-    assert values_part.count("?") == len(_COLUMNS) - 2
+    assert values_part.count("?") == len(_COLUMNS) - 1
 
 
 def test_r1_migration_probe_does_not_fire_per_operation(tmp_path: Path):
@@ -171,7 +172,7 @@ def test_r2_round_trip_preserves_every_field(store):
 
     assert [r.id for r in in_due] == [created_id]
     for got in (by_id, in_due[0]):
-        # Field-by-field equality over all sixteen dataclass fields.
+        # Field-by-field equality over all seventeen dataclass fields.
         assert dataclasses.asdict(got) == dataclasses.asdict(_row())
         assert isinstance(got.due_at, datetime)
         assert isinstance(got.created_at, datetime)
@@ -212,3 +213,57 @@ def test_r2_round_trip_after_delivered(store):
     # Past-due delivered rows only surface when 'delivered' is requested.
     in_due = store.due(now=delivered_at, statuses=("delivered",))[0]
     assert dataclasses.asdict(in_due) == dataclasses.asdict(got)
+
+
+# ---------------------------------------------------------------------------
+# R3 — create() binds next_attempt_at (spc-165)
+# ---------------------------------------------------------------------------
+
+
+def test_r3_create_preserves_next_attempt_at(store):
+    """spc-165: create() must persist a supplied next_attempt_at so that
+    an import or restore of an in-flight reminder keeps its retry
+    schedule instead of silently dropping it."""
+    retry_at = NOW + timedelta(minutes=5)
+    row = _row(next_attempt_at=retry_at)
+    created_id = store.create(row)
+    got = store.get(created_id)
+    assert got.next_attempt_at == retry_at
+
+
+def test_r3_create_next_attempt_at_defaults_to_none(store):
+    """spc-165: when next_attempt_at is not supplied (default None),
+    create() writes NULL and the round-trip returns None."""
+    created_id = store.create(_row())
+    got = store.get(created_id)
+    assert got.next_attempt_at is None
+
+
+# ---------------------------------------------------------------------------
+# R4 — _row_to_reminder covers every column in _COLUMNS (spc-165)
+# ---------------------------------------------------------------------------
+
+
+def test_r4_row_to_reminder_completeness(store):
+    """spc-165: _row_to_reminder must map every _COLUMNS entry to a
+    Reminder field; adding a column without updating the mapping must
+    fail here, not silently drop data."""
+    created_id = store.create(_row())
+    # Read the raw row to confirm all columns are present.
+    with store._connect() as conn:
+        raw = conn.execute(
+            "SELECT * FROM reminders WHERE id = ?", (created_id,)
+        ).fetchone()
+    raw_keys = set(raw.keys())
+    assert raw_keys == set(_COLUMNS), (
+        f"DB columns and _COLUMNS diverge: extra={raw_keys - set(_COLUMNS)}, "
+        f"missing={set(_COLUMNS) - raw_keys}"
+    )
+    # The mapping produces a Reminder with every field populated.
+    got = store.get(created_id)
+    field_names = {f.name for f in dataclasses.fields(Reminder)}
+    assert field_names == set(_COLUMNS), (
+        f"_COLUMNS and Reminder fields diverge: "
+        f"extra={set(_COLUMNS) - field_names}, "
+        f"missing={field_names - set(_COLUMNS)}"
+    )
