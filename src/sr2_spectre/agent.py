@@ -157,6 +157,25 @@ class Agent:
         """
         return self._runtime.reminders_stamped
 
+    @property
+    def schedules(self) -> Any:
+        """The Runtime's schedules handle (None when disabled, FR23).
+
+        The owning interface reads this in ``start()`` to launch the
+        schedule engine with its own send callable.
+        """
+        return self._runtime.schedules
+
+    @property
+    def schedules_seq(self) -> int:
+        """The Runtime's schedules reseat counter. See Runtime.schedules_seq."""
+        return self._runtime.schedules_seq
+
+    @property
+    def schedules_stamped(self) -> int:
+        """The Runtime's schedules reload stamp; see ``reminders_stamped``."""
+        return self._runtime.schedules_stamped
+
     # ---- Run context delegation ----
 
     @property

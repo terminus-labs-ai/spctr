@@ -481,6 +481,37 @@ class TestAgentBackwardCompat:
         await agent.initialize()
         mock_client.connect.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_discord_starts_schedule_engine_for_real_agent(self, tmp_path):
+        """spc-1000: production hands DiscordInterface a real Agent, so the
+        engine must start from the Agent's own schedules passthroughs."""
+        from sr2_spectre.agent import Agent
+        from sr2_spectre.config import SchedulesConfig
+        from sr2_spectre.interfaces.discord.config import DiscordConfig
+        from sr2_spectre.interfaces.discord.interface import DiscordInterface
+
+        cfg = _make_config(schedules=SchedulesConfig(
+            enabled=True,
+            timezone="America/Phoenix",
+            store_path=str(tmp_path / "schedules.sqlite"),
+            poll_seconds=999.0,
+        ))
+        with patch("sr2_spectre.session.SR2") as MockSR2:
+            MockSR2.return_value = MagicMock()
+            agent = Agent(config=cfg)
+
+        assert agent.schedules is agent._runtime.schedules
+        assert agent.schedules_stamped == agent._runtime.schedules_stamped
+
+        interface = DiscordInterface(config=DiscordConfig(token="test"))
+        interface._adapter = MagicMock()
+        interface._start_schedules(agent)
+        try:
+            assert interface._schedules_engine is not None
+            assert interface._schedules_stamp == agent._runtime.schedules_stamped
+        finally:
+            await interface._stop_schedules()
+
 
 # ---------------------------------------------------------------------------
 # H. Runtime.aclose()
