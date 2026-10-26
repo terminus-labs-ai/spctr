@@ -254,6 +254,9 @@ def _configure_logging(level: str, log_file: str) -> None:
 
     import litellm
     litellm.suppress_debug_info = True
+    # LiteLLM drops cached clients after an hour without closing them; on the
+    # aiohttp transport each one logs "Unclosed client session" at GC.
+    litellm.disable_aiohttp_transport = True
 
     numeric = getattr(logging, level)
     file_path = Path(log_file)
