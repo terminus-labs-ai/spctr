@@ -109,7 +109,7 @@ class TestAC29List:
         """One row renders the whole FR31 line exactly."""
         store = ScheduleStore(tmp_path / "schedules")
         store.create(_make_schedule(
-            id="s2", id="s1",
+            id="s1",
             next_run_at=datetime(2026, 10, 21, 14, 0, tzinfo=UTC),
             cron="0 7 * * *",
             payload=json.dumps({"command": "echo hello world", "cwd": None}),
@@ -135,12 +135,12 @@ class TestAC29List:
         store = ScheduleStore(tmp_path / "schedules")
         # Created first, due LATER; its summary says "later".
         store.create(_make_schedule(
-            id="s2", id="s1",
+            id="s1",
             next_run_at=datetime(2026, 10, 23, 14, 0, tzinfo=UTC),
             payload=json.dumps({"command": "later", "cwd": None}),
         ))
         store.create(_make_schedule(
-            id="s2", id="s1",
+            id="s2",
             next_run_at=datetime(2026, 10, 22, 14, 0, tzinfo=UTC),
             payload=json.dumps({"command": "sooner", "cwd": None}),
         ))
@@ -160,7 +160,7 @@ class TestAC29List:
         store = ScheduleStore(tmp_path / "schedules")
         long_command = "A" * 40 + "B" * 20
         store.create(_make_schedule(
-            id="s2", id="s1",
+            id="s1",
             payload=json.dumps({"command": long_command, "cwd": None}),
         ))
         tool = _make_tool(store)
@@ -175,7 +175,7 @@ class TestAC29List:
         store = ScheduleStore(tmp_path / "schedules")
         store.create(_make_schedule(last_status=None))
         store.create(_make_schedule(
-            id="s2", id="s1",
+            id="s2",
             next_run_at=NOW + timedelta(hours=2), last_status="failed",
         ))
         tool = _make_tool(store)
@@ -235,7 +235,7 @@ class TestAC30NamedChannel:
         )
         assert "Schedule s0 set" in result
         assert "#random" in result
-        row = store.get("s1")
+        row = store.get("s0")
         assert row.dest_channel_id == "777"
         assert row.dest_channel_name == "random"
 
@@ -253,7 +253,7 @@ class TestAC30NamedChannel:
             command="echo hi", channel="random",
         )
         assert "Schedule s0 set" in result
-        assert store.get("s1").dest_channel_id == "777"
+        assert store.get("s0").dest_channel_id == "777"
 
     async def test_zero_matches_stores_nothing(self, tmp_path):
         store = ScheduleStore(tmp_path / "schedules")
@@ -325,7 +325,7 @@ class TestAC30NamedChannel:
             command="echo hi", channel="discord#general",
         )
         assert "Schedule s0 set" in result
-        assert store.get("s1").dest_channel_id == "777"
+        assert store.get("s0").dest_channel_id == "777"
 
     async def test_resolver_absent_stores_nothing(self, tmp_path):
         """FR10: a named create with no registered resolver errors and
@@ -373,7 +373,7 @@ class TestAC30NamedChannel:
             command="echo hi",
         )
         assert "Schedule s0 set" in result
-        row = store.get("s1")
+        row = store.get("s0")
         assert row.dest_channel_id == "100"
         assert row.dest_channel_name == "general"
 
@@ -403,7 +403,7 @@ class TestAC31StartupCatchUp:
         store = ScheduleStore(tmp_path / "schedules")
         marker = tmp_path / "fired.count"
         store.create(_make_schedule(
-            id="s2", id="s1",
+            id="s1",
             next_run_at=NOW - timedelta(hours=2),  # missed occurrence
             payload=json.dumps(
                 {"command": f"printf x >> {marker}", "cwd": str(tmp_path)}
@@ -443,7 +443,7 @@ class TestAC31StartupCatchUp:
         store = ScheduleStore(tmp_path / "schedules")
         marker = tmp_path / "fired.count"
         store.create(_make_schedule(
-            id="s2", id="s1",
+            id="s1",
             cron="* * * * *",
             next_run_at=NOW - timedelta(hours=2),
             payload=json.dumps(
@@ -469,7 +469,7 @@ class TestAC31StartupCatchUp:
         store = ScheduleStore(tmp_path / "schedules")
         marker = tmp_path / "fired.count"
         store.create(_make_schedule(
-            id="s2", id="s1",
+            id="s1",
             on_miss="skip",
             next_run_at=NOW - timedelta(hours=2),
             payload=json.dumps(
@@ -503,7 +503,7 @@ class TestAC31StartupCatchUp:
             {"command": f"printf x >> {marker}", "cwd": str(tmp_path)}
         )
         store.create(_make_schedule(
-            id="s2", id="s1",
+            id="s1",
             next_run_at=NOW - timedelta(hours=2), payload=payload,
         ))
         sent: list = []
@@ -525,7 +525,7 @@ class TestAC31StartupCatchUp:
         marker = tmp_path / "fired.count"
         future = datetime(2026, 10, 21, 14, 0, tzinfo=UTC)
         store.create(_make_schedule(
-            id="s2", id="s1",
+            id="s1",
             next_run_at=future,
             payload=json.dumps(
                 {"command": f"printf x >> {marker}", "cwd": str(tmp_path)}
@@ -551,7 +551,7 @@ class TestAC31StartupCatchUp:
         store = ScheduleStore(tmp_path / "schedules")
         marker = tmp_path / "fired.count"
         store.create(_make_schedule(
-            id="s2", id="s1",
+            id="s1",
             platform="zulip",
             next_run_at=NOW - timedelta(hours=2),
             payload=json.dumps(
@@ -658,7 +658,7 @@ class TestDiscordWiring:
                 command="echo hi", channel="#random",
             )
             assert "Schedule s0 set" in result
-            row = store.get("s1")
+            row = store.get("s0")
             assert row.dest_channel_id == "777"
             assert row.dest_channel_name == "random"
             adapter.guild_channels.assert_called_once_with(555)

@@ -88,7 +88,7 @@ class TestAC32CreateAgentPayload:
                 instruction="Summarize the beads closed this week",
             )
             assert "Schedule s0 set" in result
-            row = store.get("s1")
+            row = store.get("s0")
             assert row is not None
             assert row.payload_type == "agent"
             payload = json.loads(row.payload)
@@ -113,7 +113,7 @@ class TestAC32CreateAgentPayload:
                 agent="edi",
             )
             assert "Schedule s0 set" in result
-            row = store.get("s1")
+            row = store.get("s0")
             payload = json.loads(row.payload)
             assert payload["agent"] == "edi"
             assert payload["instruction"] == "Do the thing"

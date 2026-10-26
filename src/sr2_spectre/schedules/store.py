@@ -59,6 +59,7 @@ USER_KEYS = (
     "command",
     "cwd",
     "on_miss",
+    "payload_agent",
 )
 RUNTIME_KEYS = ("next_run_at", "last_run_at", "last_status", "last_error")
 
@@ -117,16 +118,18 @@ def _split_document(text: str) -> dict[str, str] | None:
     has no closing fence.  The body is everything after the second fence
     line, byte-for-byte; a missing body is empty.
     """
-    lines = text.split("\n")
-    if not lines or lines[0].strip() != "---":
+    if not text.startswith("---\n"):
         return None
-    for idx in range(1, len(lines)):
-        if lines[idx].strip() == "---":
-            head = "\n".join(lines[1:idx])
-            # Body: everything after the closing fence line, byte-for-byte.
-            body = text.split("\n", idx + 1)[1][idx + 1 :].lstrip("\n")
-            return {"head": head, "body": body}
-    return None
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        return None
+    head = text[4:end]
+    # Body: everything after the closing fence line, byte-for-byte, minus
+    # exactly one separator newline (the blank line the renderer puts
+    # between the fence and the body).
+    rest = text[end + len("\n---\n") :]
+    body = rest[1:] if rest.startswith("\n") else rest
+    return {"head": head, "body": body}
 
 
 def _render_scalar(key: str, value: object) -> str:
@@ -170,9 +173,14 @@ def _payload_json(payload_type: str, user: list[tuple[str, object]], body: str) 
     """Reconstruct the increment-2 JSON ``payload`` string from the file."""
     values = dict(user)
     if payload_type == "agent":
+        # The payload target is ``payload_agent`` when the file carries an
+        # explicit one; otherwise the file's ``agent`` (owning agent)
+        # default, exactly as increment 2 stored it.
+        target = values.get("payload_agent")
+        if not target:
+            target = values.get("agent", "") or ""
         return json.dumps(
-            {"agent": values.get("agent_target", "") or "", "instruction": body},
-            ensure_ascii=False,
+            {"agent": target, "instruction": body}, ensure_ascii=False
         )
     return json.dumps({"command": values.get("command", "") or "", "cwd": values.get("cwd")})
 
@@ -309,6 +317,10 @@ class ScheduleStore:
             return None, "command schedule missing 'command'", None
         if payload_type == "agent" and not doc["body"].strip():
             return None, "agent schedule has empty body", None
+        # An explicit target agent renders as ``payload_agent``; the plain
+        # ``agent`` key is the owning agent, never the payload target.
+        if "payload_agent" in data and not isinstance(data["payload_agent"], str):
+            return None, "invalid payload_agent value", None
         on_miss = data.get("on_miss", "run_late")
         if on_miss not in ("run_late", "skip"):
             return None, f"unknown on_miss {on_miss!r}", None
@@ -370,20 +382,21 @@ class ScheduleStore:
             type=row.payload_type,
             on_miss=row.on_miss,
         )
+        body = ""
         if row.payload_type == "command":
             payload = json.loads(row.payload)
             if payload.get("command"):
                 values["command"] = payload["command"]
             if payload.get("cwd"):
                 values["cwd"] = payload["cwd"]
-        else:
-            values["agent_target"] = json.loads(row.payload).get("agent", "")
-        ordered = [(k, values[k]) for k in USER_KEYS if k in values]
-        body = ""
         if row.payload_type == "agent":
-            body = json.loads(row.payload).get("instruction", "")
-            if body:
-                body += "\n"
+            payload = json.loads(row.payload)
+            # An explicit target agent renders as payload_agent; the
+            # default (owning agent) round-trips through the agent key.
+            if payload.get("agent"):
+                values["payload_agent"] = payload["agent"]
+            body = payload.get("instruction", "")
+        ordered = [(k, values[k]) for k in USER_KEYS if k in values]
         return _render_document(ordered, _runtime_list(row), body)
 
     def _load_one(self, filename: str) -> Schedule | None:
