@@ -226,9 +226,16 @@ async def test_terminal_exports_session_id_when_context_set(
 async def test_terminal_no_session_id_outside_turn_env_inherited(
     monkeypatch,
 ) -> None:
-    """Unset context: SPECTRE_SESSION_ID is absent; environment is inherited."""
+    """Unset context and unset parent var: SPECTRE_SESSION_ID is absent.
+
+    The test isolates SPECTRE_SESSION_ID so the assertion holds regardless
+    of the parent environment (spc-1005: once bots export the variable,
+    pytest runs through the terminal tool inherit it, and an unisolated
+    "absent" assertion fails while production behaves correctly).
+    """
     from sr2_spectre.tools.builtins.terminal import TerminalTool
 
+    monkeypatch.delenv("SPECTRE_SESSION_ID", raising=False)
     monkeypatch.setenv("SPC137_INHERIT_PROBE", "inherited-ok")
     probe = (
         '[ -n "${SPECTRE_SESSION_ID+x}" ] && echo present || echo absent; '
@@ -239,3 +246,21 @@ async def test_terminal_no_session_id_outside_turn_env_inherited(
     assert lines[0] == "absent"
     # Inheritance is otherwise unchanged: the probe variable still arrives.
     assert lines[1] == "inherited-ok"
+
+
+@pytest.mark.asyncio
+async def test_terminal_inherited_session_id_passes_through(
+    monkeypatch,
+) -> None:
+    """Unset context, exported parent value: the command sees it unchanged.
+
+    spc-137 AC3: outside a turn the tool passes no env override, so an
+    inherited SPECTRE_SESSION_ID from the parent environment reaches the
+    command verbatim (the behavior spc-1005's "absent" assertion was
+    breaking when the parent exported the variable).
+    """
+    from sr2_spectre.tools.builtins.terminal import TerminalTool
+
+    monkeypatch.setenv("SPECTRE_SESSION_ID", "parent-x")
+    out = await TerminalTool()(command='echo "$SPECTRE_SESSION_ID"')
+    assert out.splitlines()[0] == "parent-x"
