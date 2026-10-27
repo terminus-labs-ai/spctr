@@ -282,6 +282,71 @@ async def test_pointer_write_failure_changes_nothing(monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# apply_config failure after the pointer write — spc-1001 rollback
+# ---------------------------------------------------------------------------
+
+
+def _agent_whose_apply_fails(config: SpectreConfig, exc: Exception) -> MagicMock:
+    """Mock agent whose apply_config raises, leaving agent.config untouched.
+
+    A failed apply must not re-seat the config: the mock keeps the original
+    config object, matching "the in-process model is unchanged".
+    """
+    agent = MagicMock()
+    del agent.config
+    agent.config = config
+    agent.apply_config.side_effect = exc
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_apply_failure_restores_existing_pointer_content(
+    tmp_path, monkeypatch
+) -> None:
+    """AC1: apply_config raises and the pointer existed — old content returns."""
+    pointer = tmp_path / "active_model"
+    pointer.write_text("default\n")
+    monkeypatch.setenv("SR2_ACTIVE_MODEL_FILE", str(pointer))
+    config = _spectre_with_models("default")
+    agent = _agent_whose_apply_fails(config, RuntimeError("llm retarget failed"))
+    interface = REPLInterface()
+    buf = _console_capturing(interface)
+
+    await interface._handle_command(agent, "/change-model", "fast")
+
+    # The failed switch is fully rolled back on disk: exact prior content,
+    # not merely a file that mentions the old name.
+    assert pointer.read_text() == "default\n"
+    assert agent.config.active_model == "default"  # AC4
+    text = _plain_text(buf)
+    assert "Could not apply the switch" in text  # AC3
+    assert "Switched to" not in text
+
+
+@pytest.mark.asyncio
+async def test_apply_failure_removes_newly_created_pointer(
+    tmp_path, monkeypatch
+) -> None:
+    """AC2: apply_config raises and the pointer did not exist — it is gone."""
+    pointer = tmp_path / "active_model"
+    monkeypatch.setenv("SR2_ACTIVE_MODEL_FILE", str(pointer))
+    config = _spectre_with_models("default")
+    agent = _agent_whose_apply_fails(config, RuntimeError("llm retarget failed"))
+    interface = REPLInterface()
+    buf = _console_capturing(interface)
+
+    await interface._handle_command(agent, "/change-model", "fast")
+
+    # The write succeeded, the apply did not: no pointer may survive the
+    # failed switch.
+    assert not pointer.exists()
+    assert agent.config.active_model == "default"  # AC4
+    text = _plain_text(buf)
+    assert "Could not apply the switch" in text  # AC3
+    assert "Switched to" not in text
+
+
+# ---------------------------------------------------------------------------
 # AC5 — unknown name: error lists available models; nothing changes
 # ---------------------------------------------------------------------------
 

@@ -693,6 +693,11 @@ class REPLInterface:
                 self.console.print(markup, style=style or None)
             return
 
+        # Save the pointer's prior state so a failed apply below can roll the
+        # file back: the pointer and the in-process model never diverge.
+        pointer_existed = pointer is not None and pointer.exists()
+        pointer_previous = pointer.read_text() if pointer_existed else None
+
         if pointer is not None:
             # Persist first: a failed write must leave the in-process model
             # untouched, so the pointer and the running session never diverge.
@@ -709,6 +714,16 @@ class REPLInterface:
         try:
             agent.apply_config(new_config)
         except Exception as exc:
+            # The pointer already names the new model: restore it to the
+            # state saved above so it cannot outlive a switch that failed.
+            if pointer is not None:
+                try:
+                    if pointer_previous is None:
+                        pointer.unlink(missing_ok=True)
+                    else:
+                        pointer.write_text(pointer_previous)
+                except OSError:
+                    pass
             self.console.print(f"[red]Could not apply the switch: {exc}[/red]")
             return
         for markup, style in lines:
