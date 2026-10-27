@@ -99,14 +99,17 @@ def default_root_layout(tmp_path: Path, monkeypatch) -> None:
     """Stage the same three candidates under the *default* roots.
 
     Production leaves ``knowledge_root`` out of the config
-    (``~/.sr2/agents/edi.yaml``), so the active project name selects the
-    directory that is globbed — ``~/.sr2/knowledge/<project>`` — not just the
-    frontmatter filter applied to files already found.
+    (``$SR2_HOME/agents/edi.yaml``), so the active project name selects the
+    directory that is globbed — ``$SR2_HOME/knowledge/<project>`` — not just
+    the frontmatter filter applied to files already found.
+
+    spc-1004: the default roots follow ``SR2_HOME``, so the staging points
+    ``SR2_HOME`` at ``home`` instead of faking ``Path.home()``.
     """
     home = tmp_path / "home"
-    (home / ".sr2" / "plans").mkdir(parents=True)
+    (home / "plans").mkdir(parents=True)
     for project, body in (("alpha", ALPHA), ("envproj", ENV), ("gitrepo", GITREPO)):
-        root = home / ".sr2" / "knowledge" / project
+        root = home / "knowledge" / project
         root.mkdir(parents=True)
         write_knowledge(root, "k.md", project, body)
 
@@ -114,7 +117,7 @@ def default_root_layout(tmp_path: Path, monkeypatch) -> None:
     repo.mkdir()
     (repo / ".git").mkdir()
 
-    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setenv("SR2_HOME", str(home))
     monkeypatch.setenv("SR2_PROJECT", "envproj")
     monkeypatch.chdir(repo)
 

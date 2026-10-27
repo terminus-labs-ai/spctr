@@ -863,18 +863,19 @@ class TestPlanResolverResolvedContent:
 
 
 class TestPlanResolverDefaultPaths:
-    def test_default_plans_root(self, tmp_path, monkeypatch):
-        """Default plans_root expands to ~/.sr2/plans."""
-        # Use a fake home
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
-        resolver = PlanResolver(make_config())
-        assert resolver._plans_root == tmp_path / ".sr2" / "plans"
+    def test_default_plans_root(self):
+        """Default plans_root is $SR2_HOME/plans (spc-1004: SR2_HOME, not ~/.sr2)."""
+        from sr2_spectre.config import resolve_sr2_home
 
-    def test_default_knowledge_root(self, tmp_path, monkeypatch):
-        """Default knowledge_root expands to ~/.sr2/knowledge/<project>."""
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        resolver = PlanResolver(make_config())
+        assert resolver._plans_root == resolve_sr2_home() / "plans"
+
+    def test_default_knowledge_root(self):
+        """Default knowledge_root is $SR2_HOME/knowledge/<project> (spc-1004)."""
+        from sr2_spectre.config import resolve_sr2_home
+
         resolver = PlanResolver(make_config(project="myproject"))
-        assert resolver._knowledge_root == tmp_path / ".sr2" / "knowledge" / "myproject"
+        assert resolver._knowledge_root == resolve_sr2_home() / "knowledge" / "myproject"
 
 
 # ---------------------------------------------------------------------------

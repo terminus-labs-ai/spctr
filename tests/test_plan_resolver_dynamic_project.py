@@ -410,19 +410,19 @@ class TestAutoProjectDefaultKnowledgeRoot:
     async def test_default_knowledge_root_with_auto_project(
         self, tmp_path, monkeypatch
     ):
-        """Default knowledge_root resolves to ~/.sr2/knowledge/<derived-project>."""
-        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        """Default knowledge_root resolves to $SR2_HOME/knowledge/<derived-project>."""
+        monkeypatch.setenv("SR2_HOME", str(tmp_path))
         monkeypatch.setenv("SR2_PROJECT", "derived-proj")
 
         # Create the default knowledge dir structure
-        knowledge_dir = tmp_path / ".sr2" / "knowledge" / "derived-proj"
+        knowledge_dir = tmp_path / "knowledge" / "derived-proj"
         knowledge_dir.mkdir(parents=True)
         write_knowledge_file(
             knowledge_dir, "arch.md", project="derived-proj", body="Default root knowledge."
         )
 
         # Create plans dir at default location
-        plans_dir = tmp_path / ".sr2" / "plans"
+        plans_dir = tmp_path / "plans"
         plans_dir.mkdir(parents=True)
 
         resolver = PlanResolver(make_config(project="__auto__"))

@@ -28,6 +28,7 @@ from sr2.pipeline.models import ResolvedContent
 from sr2.pipeline.token_counting import CHARS_PER_TOKEN
 from sr2.pipeline.utils import PHASE_MAP, build_subscriptions
 
+from sr2_spectre.config import resolve_sr2_home
 from sr2_spectre.planning.budget import LayerBudget
 from sr2_spectre.planning.frontmatter import (
     parse_file,
@@ -142,7 +143,7 @@ class PlanResolver:
 
         # Optional: roots with defaults
         plans_root_raw: str = config.config.get(
-            "plans_root", str(Path.home() / ".sr2" / "plans")
+            "plans_root", str(resolve_sr2_home() / "plans")
         )
         self._plans_root = Path(plans_root_raw).expanduser().resolve()
 
@@ -152,17 +153,17 @@ class PlanResolver:
         if self._knowledge_root_explicit:
             knowledge_root_raw: str = config.config.get(
                 "knowledge_root",
-                str(Path.home() / ".sr2" / "knowledge" / raw_project),
+                str(resolve_sr2_home() / "knowledge" / raw_project),
             )
             self._knowledge_root = Path(knowledge_root_raw).expanduser().resolve()
         else:
             # Default knowledge_root — will be resolved dynamically when __auto__.
             # For explicit projects, resolve now.
             if not self._is_auto:
-                self._knowledge_root = Path.home().expanduser() / ".sr2" / "knowledge" / raw_project
+                self._knowledge_root = resolve_sr2_home() / "knowledge" / raw_project
             else:
                 # Placeholder — resolved in _resolve_knowledge_root().
-                self._knowledge_root = Path.home() / ".sr2" / "knowledge" / raw_project
+                self._knowledge_root = resolve_sr2_home() / "knowledge" / raw_project
 
         self._max_tokens: int | None = config.config.get("max_tokens")
 
@@ -244,7 +245,7 @@ class PlanResolver:
         if not self._is_auto or self._knowledge_root_explicit:
             return self._knowledge_root
 
-        return Path.home().expanduser() / ".sr2" / "knowledge" / project
+        return resolve_sr2_home() / "knowledge" / project
 
     # ------------------------------------------------------------------
     # Public API

@@ -47,11 +47,18 @@ class CommandResult:
 
 
 def log_dir_for(agent: str, now: datetime | None = None) -> Path:
-    """Log directory: ~/.sr2/logs/schedules/<agent>/<YYYY-MM-DD>/"""
+    """Log directory: ``$SR2_HOME/logs/schedules/<agent>/<YYYY-MM-DD>/``
+
+    SR2_HOME defaults to ``~/.sr2`` (spc-1004). Imported lazily:
+    ``sr2_spectre.config`` reaches the discord interface, which imports
+    ``sr2_spectre.schedules`` — a module-level import here would be circular.
+    """
+    from sr2_spectre.config import resolve_sr2_home
+
     if now is None:
         now = datetime.now(timezone.utc)
     date_str = now.strftime("%Y-%m-%d")
-    return Path.home() / ".sr2" / "logs" / "schedules" / agent / date_str
+    return resolve_sr2_home() / "logs" / "schedules" / agent / date_str
 
 
 async def run_command(

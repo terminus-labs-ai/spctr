@@ -25,6 +25,7 @@ from sr2.pipeline.tracing import CollectingTracer, render_compiled_request, rend
 from sr2_spectre.agent import Agent
 from sr2_spectre.config import SpectreConfig
 from sr2_spectre.config import load_resolved_config as _resolve_merged_config
+from sr2_spectre.config import resolve_sr2_home
 from sr2_spectre.config_source import SpectreConfigSource
 from sr2_spectre.interfaces.discord.config import DiscordConfig
 from sr2_spectre.interfaces.discord.config_source import (
@@ -134,7 +135,7 @@ def resolve_agent_config_path(
         FileNotFoundError: If the resolved YAML file does not exist.
     """
     if agents_dir is None:
-        agents_dir = Path(os.environ.get("SR2_HOME", str(Path.home() / ".sr2"))) / "agents"
+        agents_dir = resolve_sr2_home() / "agents"
     else:
         agents_dir = Path(agents_dir).expanduser().resolve()
 

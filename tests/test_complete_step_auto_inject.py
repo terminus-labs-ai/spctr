@@ -148,8 +148,11 @@ class TestAutoInjectWithPlanResolver:
         assert spec is not None
         tool_instance = spec.fn.__self__
         assert isinstance(tool_instance, CompleteStepTool)
-        # Default plans_root is ~/.sr2/plans
-        expected = Path.home() / ".sr2" / "plans"
+        # Default plans_root is $SR2_HOME/plans (spc-1004): the conftest
+        # SR2_HOME fixture drives it, not Path.home().
+        from sr2_spectre.config import resolve_sr2_home
+
+        expected = resolve_sr2_home() / "plans"
         assert tool_instance._plans_root == expected.resolve()
 
 

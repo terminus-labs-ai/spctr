@@ -25,6 +25,7 @@ from typing import Any
 
 import yaml
 
+from sr2_spectre.config import resolve_sr2_home
 from sr2_spectre.planning import TaskFrontmatter, TaskStatus, parse_file, split_frontmatter
 from sr2_spectre.tools.output import PostExecuteEvent, ToolOutput
 
@@ -132,7 +133,7 @@ class CompleteStepTool:
     _VERIFY_TIMEOUT = 120
 
     def __init__(self, plans_root: str | None = None) -> None:
-        raw = plans_root or str(Path.home() / ".sr2" / "plans")
+        raw = plans_root or str(resolve_sr2_home() / "plans")
         self._plans_root = Path(raw).expanduser().resolve()
 
     # ------------------------------------------------------------------
