@@ -149,7 +149,10 @@ channel ID and the URL-escaped exact topic (`topic_frame_id()` in
 `sr2_spectre.interfaces.zulip`), so two topics can never collide on a bare
 name. Set the per-Session run context with an explicit `area` (`""` for
 no-area channels; never `None`, which permits fallback) and drive the
-conversation with `session.handle_user_message()`.
+conversation with `session.handle_user_message()`. Derive a channel's area
+with the shared helpers in `sr2_spectre.interfaces.common`
+(`resolve_area`, `derive_area_name`), as Discord and Zulip both do, rather
+than a second copy of the rule.
 
 ### Available event types
 
@@ -310,7 +313,7 @@ the full hot-versus-restart breakdown, and
 `interfaces/discord/config_source.py` for a worked example — `DiscordConfigView`
 shows how one read per message can serve both the interface's own settings and
 the agent's. `interfaces/zulip/config_source.py` (`ZulipConfigView`) is the
-same pattern for a channel→area routing slice: it reports the newly
+same pattern for a channel admission and area routing slice: it reports the newly
 loaded slice on every reload. Where one of the slice's own fields cannot
 change under the live process (the Zulip adapter pins `zuliprc`/`api_url`
 because the transport and Session identities are built from them), the

@@ -477,8 +477,9 @@ zulip:
   zuliprc: ~/.sr2/secrets/zulip/miranda.zuliprc
   api_url: null
   allowed_user_ids: [8]
-  channels:
-    42: ""
+  channels: []            # empty = every channel the queue delivers
+  channel_areas:
+    "2": ""
 ```
 
 | Field | Type | Default | Description |
@@ -486,18 +487,22 @@ zulip:
 | `zuliprc` | str | required | Path to the bot zuliprc (`[api]`: `email`, `key`, `site` — the standard format Zulip downloads; the historical `[zulip]` section is also accepted, with `[api]` preferred when both are present) |
 | `api_url` | str or null | `null` | Optional API origin override (loopback/testing); the zuliprc `site` stays canonical |
 | `allowed_user_ids` | list[int] | `[]` | Human user IDs that may trigger a turn (empty = nobody; bot messages never trigger) |
-| `channels` | dict[int, str] | `{}` | Channel ID to area identity; `""` means explicitly no area. Keys are **integer** IDs — a quoted `"42"` is rejected |
+| `channels` | list[int] | `[]` | Stream mode: channel IDs that may trigger a turn. Empty admits every channel the event queue delivers (every public channel, plus private channels the bot is subscribed to); nonempty admits only the listed IDs. Entries are **integer** IDs — a quoted `"42"` is rejected, and the old ID→area mapping form fails validation |
+| `channel_areas` | dict[str, str] | `{}` | Stream mode: channel ID **written as a string** (`"42"`) to area identity; `""` means explicitly no area. An integer key is rejected. A channel with no key takes its area from its name, as Discord does |
 
 A missing, unreadable, malformed or incomplete zuliprc fails startup with
 `ZulipCredentialError` naming the path and the reason, never the file's
-contents. Startup validates the `channels` mapping's shape only — integer
-IDs to string area identities; a named area that does not exist in the
-vault yet is a valid mapping and is resolved when a message routes to it.
+contents. Startup validates the shape of `channels` and `channel_areas`
+only; a named area that does not exist in the vault yet is valid and is
+resolved when a message routes to it.
 
 ### Transport
 
 `ZulipClient(credentials=..., config=..., request_timeout=...)` (from
-`sr2_spectre.interfaces.zulip`) is the public HTTP transport: `register()`,
+`sr2_spectre.interfaces.zulip`) is the public HTTP transport: `register()`
+(subscribes to `message` events and fetches `realm_user` state; in stream
+mode it also sets `all_public_streams`, so public channels deliver
+messages without a bot subscription),
 `get_events(queue_id, last_event_id)`, `get_topic_messages(channel_id,
 topic)` and `send_message(type=, to=, topic=, content=)`. Requests go only
 to `api_url` when set, otherwise the zuliprc `site` — with HTTP Basic,
@@ -514,19 +519,21 @@ Selecting `--interface zulip` runs `ZulipInterface` with the validated
 zuliprc, validates the routing mapping's shape, and registers the event
 queue — it fetches no history and makes no model request.
 
-- Only allowed human users in configured channels trigger turns;
+- Only allowed human users in admitted channels trigger turns;
   bots (identified by the registration realm metadata, since message
-  events carry no bot flag) and unconfigured channels are ignored without
-  model work. A channel added to `channels` on disk admits its next
-  message without a restart; removing one stops admission the same way.
-- A configured channel routes to its mapped area through the existing
-  resolvers; `""` stays the explicit no-area. An unmapped channel is never
-  admitted, and routing never consults the channel name or the working
-  directory, so a message can never accidentally inherit the service's
-  area.
+  events carry no bot flag) and channels outside a nonempty `channels`
+  list are ignored without model work. A `channels` edit on disk applies
+  to the next event batch without a restart.
+- A turn's area is `channel_areas["<channel id>"]` when that key exists
+  (`""` stays the explicit no-area); otherwise it is the channel name
+  derived exactly as Discord derives it — lowercased, leading and trailing
+  non-alphanumerics stripped (`Fractured-Roots!` → `fractured-roots`). A
+  name with nothing alphanumeric gives no area. No area is always `""`;
+  routing never consults the working directory, so a message can never
+  accidentally inherit the service's area.
 - Each (channel, exact topic) owns one Session; the frame identity carries
   the agent, the resolved server origin, the channel ID and the escaped
-  topic. Every turn runs under the channel's current mapped area from the
+  topic. Every turn runs under the channel's current area from the
   config read that trigger arrived on — a routing edit applies to every
   topic in that channel on its next message, including topics whose
   Session already exists — and never falls back to the working directory.
@@ -543,8 +550,8 @@ queue — it fetches no history and makes no model request.
 ### Config reload (Zulip)
 
 The Zulip interface re-reads the **whole** resolved config on every inbound
-event batch — not just this section — so `channels`, `allowed_user_ids`
-and everything outside `zulip` apply to the next message, with the same
+event batch — not just this section — so `channels`, `channel_areas`,
+`allowed_user_ids` and everything outside `zulip` apply to the next message, with the same
 last-good guarantees as the [Live reload](#live-reload) section below: a
 malformed or mid-save file keeps the last known-good config in force and
 never takes the process down. `zuliprc` and `api_url` are the interface's

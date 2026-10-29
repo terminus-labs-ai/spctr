@@ -71,3 +71,12 @@ pipeline:
       resolvers:
         - type: session   # prior turns from this session
         - type: input     # current user message
+
+# Zulip interface (--interface zulip) — see docs/CONFIG-REFERENCE.md
+# zulip:
+#   zuliprc: ~/.sr2/secrets/zulip/miranda.zuliprc   # bot credentials; never inline
+#   mode: stream            # or direct (DMs with peer_id only)
+#   allowed_user_ids: [8]   # human user IDs that may trigger a turn
+#   channels: []            # integer channel IDs; empty = every channel the queue delivers
+#   channel_areas:          # string channel ID -> area; "" = no area; else the channel name
+#     "2": ""
