@@ -123,6 +123,10 @@ continue with the remaining registry entries.
 
 Maximum size of a tool result before truncation. Results exceeding this limit are truncated to prevent context explosion.
 
+### `agent.tool_limit_notice` (str, default: `"Tool iteration limit reached; stopping."`)
+
+Text emitted when the tool loop reaches its iteration limit (`ToolLoopLimitError`). The notice is appended to the assistant response and saved in conversation history. [Live-reloadable](#live-reload): existing sessions use the updated text without a restart.
+
 ---
 
 ## Models section
@@ -745,6 +749,7 @@ not just the agent file.
 | `agent.tools` | Tools added, removed, or reconfigured |
 | `agent.skills`, `agent.skills_dirs` | Skill registry rebuilt. Also rebuilt when the skill *files* inside `agent.skills_dirs` change on disk — adding, editing, or removing a skill needs no config edit at all; it is picked up on the next message (spc-110). |
 | `agent.tool_result_max_bytes` | New truncation limit |
+| `agent.tool_limit_notice` | New notice text when the tool loop reaches its iteration limit |
 | `discord.*` except `token` | Channel filters, threading, streaming, embeds |
 | `zulip.channels`, `zulip.users`, `zulip.mention_only`, `zulip.channel_areas` | Which channels and users are admitted, whether a new topic needs a mention, and the area each channel routes to, from the next message |
 
