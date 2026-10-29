@@ -133,7 +133,8 @@ def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
     config = ZulipConfig(
         zuliprc=str(store_dir / "zuliprc"),
         allowed_user_ids=[8],
-        channels={42: ""},
+        channels=[42],
+        channel_areas={"42": ""},
     )
 
     class _FakeClient:

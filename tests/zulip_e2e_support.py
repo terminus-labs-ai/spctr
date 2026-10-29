@@ -895,6 +895,8 @@ zulip:
   allowed_user_ids: [{diego_id}, 9]
   channels:
 {channels_yaml}
+  channel_areas:
+{channel_areas_yaml}
 """
 
 
@@ -967,8 +969,12 @@ class Harness:
         if channels is None:
             channels = {CONFIGURED_CHANNEL: "sr2-spectre"} if self.nonempty_area \
                 else {CONFIGURED_CHANNEL: ""}
-        channels_yaml = "\n".join(
-            f"    {ch}: {area!r}" for ch, area in channels.items())
+        # spc-1012 shape: the mapping's IDs become the ``channels`` list (one
+        # block entry per line) and its areas the string-keyed
+        # ``channel_areas`` overrides, so line edits stay unique per channel.
+        channels_yaml = "\n".join(f"    - {ch}" for ch in channels)
+        channel_areas_yaml = "\n".join(
+            f'    "{ch}": {area!r}' for ch, area in channels.items())
         config_text = _CONFIG_TEMPLATE.format(
             base_url=f"{model.base_url}/v1",
             topics_root=str(topics_root),
@@ -976,6 +982,7 @@ class Harness:
             api_url=zulip.base_url,
             diego_id=DIEGO_ID,
             channels_yaml=channels_yaml,
+            channel_areas_yaml=channel_areas_yaml,
         )
         config_path = workdir / "config.yaml"
         config_path.write_text(config_text, encoding="utf-8")
