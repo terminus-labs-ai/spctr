@@ -281,12 +281,15 @@ async def test_AC8_d_failure_in_message_1_never_stops_message_2(
         {**script, "three": ["third answer"]},
         **first_failures,
     )
+    # Topics run concurrently, so entries of different topics interleave;
+    # each topic's own entries keep their order.
     two = log.index(("STREAM", "two"))
-    assert log[two - 1][0] == "POST" and log[two - 1][1]["topic"] == "t2"
-    second_id = log[two + 1][1]
-    assert log[two + 1] == ("PATCH", second_id, "second answer", True)
-    assert ("STREAM", "three") in log
-    assert log[-1][0] == "PATCH" and log[-1][2:] == ("third answer", True)
+    assert any(e[0] == "POST" and e[1]["topic"] == "t2" for e in log[:two])
+    assert any(e[0] == "PATCH" and e[2:] == ("second answer", True)
+               for e in log[two:])
+    three = log.index(("STREAM", "three"))
+    assert any(e[0] == "PATCH" and e[2:] == ("third answer", True)
+               for e in log[three:])
 
 
 async def test_AC8_d_model_error_batch_delivers_message_2_exactly(monkeypatch):
