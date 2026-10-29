@@ -476,7 +476,8 @@ inline in this config, and never echoed into an error or log line:
 zulip:
   zuliprc: ~/.sr2/secrets/zulip/miranda.zuliprc
   api_url: null
-  allowed_user_ids: [8]
+  users: []               # empty = any human
+  mention_only: false     # stream mode only
   channels: []            # empty = every channel the queue delivers
   channel_areas:
     "2": ""
@@ -486,7 +487,8 @@ zulip:
 |-------|------|---------|-------------|
 | `zuliprc` | str | required | Path to the bot zuliprc (`[api]`: `email`, `key`, `site` — the standard format Zulip downloads; the historical `[zulip]` section is also accepted, with `[api]` preferred when both are present) |
 | `api_url` | str or null | `null` | Optional API origin override (loopback/testing); the zuliprc `site` stays canonical |
-| `allowed_user_ids` | list[int] | `[]` | Human user IDs that may trigger a turn (empty = nobody; bot messages never trigger) |
+| `users` | list[int] | `[]` | Both modes: user IDs that may trigger a turn. Empty admits any human; nonempty admits only the listed **integer** IDs. A bot (marked `is_bot` in the registration's `realm_users`) or the bot's own account never triggers, whatever this list holds. Replaces `allowed_user_ids`: a config that still carries `allowed_user_ids` fails startup with an error naming `users`. Direct mode's `peer_id` restriction still applies |
+| `mention_only` | bool | `false` | Stream mode: when `true`, a message in a topic with no active Session in this process triggers only if it mentions the bot — `@**<full name>**`, `@**<full name>\|<user id>**` or the silent `@_**…**` form of either. Wildcard mentions (`@**all**`, `@**everyone**`, `@**channel**`, `@**topic**`) do not count. A topic that already has an active Session needs no mention. Direct mode ignores it |
 | `channels` | list[int] | `[]` | Stream mode: channel IDs that may trigger a turn. Empty admits every channel the event queue delivers (every public channel, plus private channels the bot is subscribed to); nonempty admits only the listed IDs. Entries are **integer** IDs — a quoted `"42"` is rejected, and the old ID→area mapping form fails validation |
 | `channel_areas` | dict[str, str] | `{}` | Stream mode: channel ID **written as a string** (`"42"`) to area identity; `""` means explicitly no area. An integer key is rejected. A channel with no key takes its area from its name, as Discord does |
 
@@ -519,11 +521,14 @@ Selecting `--interface zulip` runs `ZulipInterface` with the validated
 zuliprc, validates the routing mapping's shape, and registers the event
 queue — it fetches no history and makes no model request.
 
-- Only allowed human users in admitted channels trigger turns;
-  bots (identified by the registration realm metadata, since message
-  events carry no bot flag) and channels outside a nonempty `channels`
-  list are ignored without model work. A `channels` edit on disk applies
-  to the next event batch without a restart.
+- Only human users the `users` list admits (empty = any human) in
+  admitted channels trigger turns; bots (identified by the registration
+  realm metadata, since message events carry no bot flag), the bot's own
+  account (the registration `user_id`) and channels outside a nonempty
+  `channels` list are ignored without model work. With `mention_only`, a
+  topic with no active Session starts only on a mention of the bot's
+  registration `full_name`. A `channels`, `users` or `mention_only` edit
+  on disk applies to the next event batch without a restart.
 - A turn's area is `channel_areas["<channel id>"]` when that key exists
   (`""` stays the explicit no-area); otherwise it is the channel name
   derived exactly as Discord derives it — lowercased, leading and trailing
@@ -551,7 +556,7 @@ queue — it fetches no history and makes no model request.
 
 The Zulip interface re-reads the **whole** resolved config on every inbound
 event batch — not just this section — so `channels`, `channel_areas`,
-`allowed_user_ids` and everything outside `zulip` apply to the next message, with the same
+`users`, `mention_only` and everything outside `zulip` apply to the next message, with the same
 last-good guarantees as the [Live reload](#live-reload) section below: a
 malformed or mid-save file keeps the last known-good config in force and
 never takes the process down. `zuliprc` and `api_url` are the interface's
@@ -708,7 +713,7 @@ not just the agent file.
 | `agent.skills`, `agent.skills_dirs` | Skill registry rebuilt. Also rebuilt when the skill *files* inside `agent.skills_dirs` change on disk — adding, editing, or removing a skill needs no config edit at all; it is picked up on the next message (spc-110). |
 | `agent.tool_result_max_bytes` | New truncation limit |
 | `discord.*` except `token` | Channel filters, threading, streaming, embeds |
-| `zulip.channels`, `zulip.allowed_user_ids` | Which channels are admitted and the area each routes to, from the next message |
+| `zulip.channels`, `zulip.users`, `zulip.mention_only`, `zulip.channel_areas` | Which channels and users are admitted, whether a new topic needs a mention, and the area each channel routes to, from the next message |
 
 The `skills_dirs` file watch is best effort: if a configured directory or skill
 file cannot be read during a rescan (mid-edit save, permissions), the previous
