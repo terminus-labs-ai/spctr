@@ -71,6 +71,7 @@ from sr2_spectre.interfaces.common import chunk_message, tail_for_stream
 from sr2_spectre.interfaces.zulip.client import (
     ZulipClient,
     ZulipError,
+    ZulipQueueExpiredError,
     load_zulip_credentials,
 )
 from sr2_spectre.interfaces.zulip.config import (
@@ -326,6 +327,18 @@ class ZulipInterface:
         self._client = ZulipClient(
             credentials=self._credentials, config=self._config
         )
+        await self._register()
+        self._wire_reminder_channel_lookup(agent)
+        self._start_reminders(agent)
+        self._running = True
+        logger.info(
+            "Zulip interface started: origin=%s queue registered bot=%s",
+            self._origin,
+            self._credentials.email,
+        )
+
+    async def _register(self) -> None:
+        """Register an event queue and take its snapshot (start and expiry)."""
         registration = await self._client.register()
         self._queue_id: str = str(registration["queue_id"])
         self._last_event_id: int = int(registration["last_event_id"])
@@ -335,14 +348,6 @@ class ZulipInterface:
         full_name = registration.get("full_name")
         self._bot_full_name = full_name if isinstance(full_name, str) else None
         self._channel_names = self._read_channel_names(registration)
-        self._wire_reminder_channel_lookup(agent)
-        self._start_reminders(agent)
-        self._running = True
-        logger.info(
-            "Zulip interface started: origin=%s queue registered bot=%s",
-            self._origin,
-            self._credentials.email,
-        )
 
     def _read_bot_ids(self, registration: dict[str, Any]) -> set[int]:
         """Bot user IDs from registration realm metadata.
@@ -525,6 +530,16 @@ class ZulipInterface:
                 response = await self._client.get_events(
                     self._queue_id, self._last_event_id
                 )
+            except ZulipQueueExpiredError:
+                # The server collected the queue; the old ID never recovers.
+                # Messages sent while it was gone are not redelivered.
+                logger.warning("Zulip event queue expired; registering a new one")
+                try:
+                    await self._register()
+                except ZulipError as exc:
+                    logger.error("Zulip queue re-registration failed: %s", exc)
+                    await asyncio.sleep(2.0)
+                continue
             except ZulipError as exc:
                 # Transport failure: log and back off; never model work.
                 logger.error("Zulip event poll failed: %s", exc)

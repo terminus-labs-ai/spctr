@@ -38,6 +38,12 @@ _DEFAULT_REQUEST_TIMEOUT = 30.0
 # interface's log-and-back-off path re-arms — while covering five heartbeat
 # intervals of server silence. Every other request keeps ``request_timeout``.
 _DEFAULT_EVENT_POLL_TIMEOUT = 300.0
+# The server garbage-collects an event queue nobody polls for 10 minutes by
+# default (https://zulip.com/api/register-queue). The interfaces poll
+# between turns, so a long tool-heavy turn starved the queue and every later
+# poll failed with BAD_EVENT_QUEUE_ID. One hour covers long turns; a queue
+# that still expires is re-registered by the interface.
+_DEFAULT_IDLE_QUEUE_TIMEOUT = 3600
 
 
 class ZulipError(Exception):
@@ -57,6 +63,14 @@ class ZulipAuthError(ZulipError):
 
     Declared here for the transport slice (spc-124); raised there, never
     with secret material in the message.
+    """
+
+
+class ZulipQueueExpiredError(ZulipError):
+    """The server no longer knows the event queue (``BAD_EVENT_QUEUE_ID``).
+
+    The queue was garbage-collected after going unpolled; the caller must
+    register a new one. Retrying the old queue ID can never succeed.
     """
 
 
@@ -217,7 +231,9 @@ class ZulipClient:
         realm's ``realm_users`` (https://zulip.com/api/register-queue). In
         stream mode the queue also registers with ``all_public_streams``,
         so every public channel delivers messages without a bot
-        subscription; direct mode does not (spc-1012, FR1).
+        subscription; direct mode does not (spc-1012, FR1). The queue asks
+        for ``idle_queue_timeout`` so a long turn does not let the server
+        collect it.
 
         Returns the protocol dict; ``queue_id`` is an OPAQUE STRING passed
         through untouched, ``last_event_id`` an int.
@@ -225,6 +241,7 @@ class ZulipClient:
         data = {
             "event_types": json.dumps(["message"]),
             "fetch_event_types": json.dumps(["message", "realm_user"]),
+            "idle_queue_timeout": str(_DEFAULT_IDLE_QUEUE_TIMEOUT),
         }
         if self._all_public_streams:
             data["all_public_streams"] = "true"
@@ -383,6 +400,10 @@ class ZulipClient:
                 f"Zulip server rejected authentication (HTTP {status}): "
                 f"{method} {_API_PREFIX}{path}"
             )
+        if status == 400 and _error_code(raw_body) == "BAD_EVENT_QUEUE_ID":
+            raise ZulipQueueExpiredError(
+                f"Zulip event queue expired: {method} {_API_PREFIX}{path}"
+            )
         if status >= 400:
             raise ZulipTransportError(
                 f"Zulip server error (HTTP {status}): "
@@ -410,3 +431,19 @@ class ZulipClient:
                 f"{method} {_API_PREFIX}{path}"
             )
         return payload
+
+
+def _error_code(raw_body: bytes) -> str | None:
+    """The ``code`` of a Zulip error body, or None when absent or malformed.
+
+    The code is only compared against known constants, never interpolated
+    into a message, so an untrusted body cannot leak through it.
+    """
+    try:
+        payload = json.loads(raw_body)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    code = payload.get("code")
+    return code if isinstance(code, str) else None
