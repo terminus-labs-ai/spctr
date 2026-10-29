@@ -480,6 +480,8 @@ inline in this config, and never echoed into an error or log line:
 zulip:
   zuliprc: ~/.sr2/secrets/zulip/miranda.zuliprc
   api_url: null
+  mode: stream
+  peer_id: null            # required integer user ID when mode is direct
   users: []               # empty = any human
   mention_only: false     # stream mode only
   channels: []            # empty = every channel the queue delivers
@@ -502,6 +504,8 @@ zulip:
 |-------|------|---------|-------------|
 | `zuliprc` | str | required | Path to the bot zuliprc (`[api]`: `email`, `key`, `site` — the standard format Zulip downloads; the historical `[zulip]` section is also accepted, with `[api]` preferred when both are present) |
 | `api_url` | str or null | `null` | Optional API origin override (loopback/testing); the zuliprc `site` stays canonical |
+| `mode` | str | `"stream"` | Selects the variant used by `--interface zulip`: `stream` for stream/topic chats and area routing, or `direct` for private messages with one peer and no topics or area routing. Other values fail config validation |
+| `peer_id` | int or null | `null` | Direct mode: the human user ID used for inbound admission and outbound DMs. Required at direct-mode startup; missing or `null` raises `ValueError` before connecting. Must be an unquoted integer: strings, booleans and floats fail config validation. Stream mode ignores it |
 | `users` | list[int] | `[]` | Both modes: user IDs that may trigger a turn. Empty admits any human; nonempty admits only the listed **integer** IDs. A bot (marked `is_bot` in the registration's `realm_users`) or the bot's own account never triggers, whatever this list holds. Replaces `allowed_user_ids`: a config that still carries `allowed_user_ids` fails startup with an error naming `users`. Direct mode's `peer_id` restriction still applies |
 | `mention_only` | bool | `false` | Stream mode: when `true`, a message in a topic with no active Session in this process triggers only if it mentions the bot — `@**<full name>**`, `@**<full name>\|<user id>**` or the silent `@_**…**` form of either. Wildcard mentions (`@**all**`, `@**everyone**`, `@**channel**`, `@**topic**`) do not count. A topic that already has an active Session needs no mention. Direct mode ignores it |
 | `channels` | list[int] | `[]` | Stream mode: channel IDs that may trigger a turn. Empty admits every channel the event queue delivers (every public channel, plus private channels the bot is subscribed to); nonempty admits only the listed IDs. Entries are **integer** IDs — a quoted `"42"` is rejected, and the old ID→area mapping form fails validation |
@@ -517,11 +521,19 @@ zulip:
 | `tool_result_ok_line` | str | ``"✓ `{name}` - `{content}`"`` | Stream mode: the line a successful tool result appends; `{content}` is the result with newlines shown as `\|`. Direct mode ignores it |
 | `tool_result_error_line` | str | ``"✖ `{name}` - `{content}`"`` | Stream mode: the line a failed tool result appends; same placeholders as `tool_result_ok_line`. Direct mode ignores it |
 
-A missing, unreadable, malformed or incomplete zuliprc fails startup with
-`ZulipCredentialError` naming the path and the reason, never the file's
-contents. Startup validates the shape of `channels` and `channel_areas`
-only; a named area that does not exist in the vault yet is valid and is
-resolved when a message routes to it.
+For direct mode, replace the Zulip block with a minimal configuration like this example, substituting the intended human's user ID for `8`:
+
+```yaml
+zulip:
+  zuliprc: ~/.sr2/secrets/zulip/miranda.zuliprc
+  mode: direct
+  peer_id: 8
+  users: [8]
+```
+
+Launch with `--interface zulip`; `mode` selects the variant. Direct mode admits private messages only from `peer_id`, subject to the shared human/bot and `users` rules. If `users` is nonempty, it must include the peer to admit their messages; an empty list still admits only the configured peer. Direct mode ignores `mention_only`, `channels`, `channel_areas` and the stream working-indicator fields.
+
+A missing, unreadable, malformed or incomplete zuliprc fails startup with `ZulipCredentialError` naming the path and the reason, never the file's contents. Stream-mode routing validation checks the shape of `channels` and `channel_areas`; a named area that does not exist in the vault yet is valid and is resolved when a message routes to it.
 
 ### Transport
 
