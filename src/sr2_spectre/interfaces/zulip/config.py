@@ -3,30 +3,33 @@
 The schema follows the spec's Interfaces section: ``zuliprc`` (credential
 path, no inline key), an optional ``api_url`` override (loopback test
 endpoints; the zuliprc ``site`` stays the canonical origin), explicit
-integer-ID allowlists, and ``channels`` mapping channel ID → area identity
-(``""`` = explicitly no area). There is no channel-name or working-directory
-fallback, and string forms of an ID (e.g. a YAML-quoted ``"42"``) are not
-admitted in place of the integer.
+integer-ID allowlists, and Discord's channel options (spc-1012):
+``channels`` is a list of integer channel IDs (empty = every channel the
+event queue delivers) and ``channel_areas`` maps a channel ID written as a
+string to an area identity (``""`` = explicitly no area). Without an
+override the area is the channel name, derived by the one
+:func:`sr2_spectre.interfaces.common.derive_area_name` Discord uses; it
+never falls back to the working directory.
 
-ROUTING CONTRACT (spc-120): a mapped nonempty area is valid configuration
-and routes through the existing resolvers; ``""`` stays the explicit
-no-area and an unconfigured channel is never routed. The former temporary
-gate (:func:`validate_no_area_only_routing`, spc-119/123 intermediate
-contract) only validates mapping shape now — live vault existence is never
-probed at config time.
+ROUTING CONTRACT: a nonempty area is valid configuration and routes
+through the existing resolvers; no area is always ``""``. The startup
+validator (:func:`validate_no_area_only_routing`) only checks shape — live
+vault existence is never probed at config time.
 
 INTERFACE MODES (spc-992): ``mode`` selects which Zulip interface the
 ``--interface zulip`` front door builds. ``"stream"`` (the default, so every
 config written before spc-992 parses unchanged) is the stream/topic-shaped
 ``ZulipInterface``. ``"direct"`` is the DM-only variant
 (``ZulipDMInterface``): private messages with ``peer_id`` only, no
-topics, no ``channels`` routing map. Both modes decide admission through the
+topics, no channel admission or area routing. Both modes decide admission through the
 ONE :func:`admits_human_trigger` core below, so the security-relevant rule
 never exists in two copies.
 """
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from sr2_spectre.interfaces.common import resolve_area
 
 #: The accepted values of ``ZulipConfig.mode``.
 ZULIP_MODES = ("stream", "direct")
@@ -42,11 +45,14 @@ class ZulipConfig(BaseModel):
         allowed_user_ids: Human user IDs whose messages may trigger a turn.
             Empty admits no one; bot-authored messages never trigger even if
             an ID appears here (reply-loop prevention).
-        channels: Channel ID → area identity. ``""`` means explicitly no
-            area; a nonempty value is that channel's area identity, mapped
-            through :func:`resolve_channel_area` on every inbound message.
-            There is no implicit channel-name or working-directory fallback.
-            Stream mode only: direct mode routes no channels at all.
+        channels: Integer channel IDs admitted in stream mode. Empty admits
+            every channel the event queue delivers (every public channel,
+            plus private channels the bot is subscribed to); nonempty admits
+            only the listed IDs. Direct mode ignores it.
+        channel_areas: Channel ID written as a string → area identity.
+            ``""`` means explicitly no area. A channel with no key here
+            takes its area from its name (:func:`resolve_channel_area`).
+            Stream mode only.
         mode: Which Zulip interface variant the config drives — ``"stream"``
             (default; stream/topic chats, area routing) or ``"direct"`` (DMs
             with ``peer_id`` only, no topics and no area routing).
@@ -59,7 +65,8 @@ class ZulipConfig(BaseModel):
     zuliprc: str
     api_url: str | None = None
     allowed_user_ids: list[int] = Field(default_factory=list)
-    channels: dict[int, str] = Field(default_factory=dict)
+    channels: list[int] = Field(default_factory=list)
+    channel_areas: dict[str, str] = Field(default_factory=dict)
     mode: str = "stream"
     peer_id: int | None = None
 
@@ -110,17 +117,15 @@ def is_configured_no_area_channel(
 ) -> bool:
     """Stream mode: decide whether one message event may trigger a model turn.
 
-    A turn is admitted only when the channel is explicitly configured (any
-    area, including the no-area ``""``) and the human/bot rule below admits
-    the sender. Channel membership is decided on configured integer IDs — an
-    event carrying a stringified ID is not a match, and there is no
-    channel-name fallback. The human/bot decision is the single shared
+    A turn is admitted when the channel passes the ``channels`` list (empty
+    admits every delivered channel; nonempty admits only the listed integer
+    IDs — a stringified ID is not a match) and the human/bot rule below
+    admits the sender. The human/bot decision is the single shared
     :func:`admits_human_trigger` core, never a second copy of it. The name
-    is historical (spc-119/123 admitted no-area channels only); since spc-120
-    it is the trigger admission for every configured channel — the routed
+    is historical (spc-119/123 admitted no-area channels only); the routed
     area itself comes from :func:`resolve_channel_area`.
     """
-    if channel_id not in config.channels:
+    if config.channels and channel_id not in config.channels:
         return False
     return admits_human_trigger(
         sender_id=sender_id,
@@ -214,34 +219,42 @@ def resolve_channel_area(
     *,
     channel_id: int,
     config: ZulipConfig,
-) -> str | None:
-    """Decide the area identity for one channel: ``""``, a name, or ``None``.
+    channel_name: str | None = None,
+) -> str:
+    """Decide the area identity for one channel: a name, or ``""``.
 
-    The answer comes only from the configured mapping. A configured channel
-    gets exactly its mapped value — ``""`` is the explicit no-area and must
-    be returned as such, never collapsed into ``None`` (consumers treat
-    ``None`` as "may fall back"). An unconfigured channel gets a positive
-    non-answer of ``None``: this decision never consults the working
-    directory, ``SR2_AREA``, or a channel name, so an unmapped channel can
-    never accidentally inherit the service's area.
+    ``channel_areas[str(channel_id)]`` wins when the key exists (``""``
+    stays the explicit no-area). Otherwise the area is *channel_name* (a
+    stream message's ``display_recipient``) derived by the one
+    :func:`sr2_spectre.interfaces.common.resolve_area` Discord uses. No area
+    is always ``""``, never ``None``: this decision never consults the
+    working directory or ``SR2_AREA``, so a channel can never accidentally
+    inherit the service's area.
     """
-    return config.channels.get(channel_id)
+    area, _provenance = resolve_area(
+        channel_id, channel_name, config.channel_areas
+    )
+    return area or ""
 
 
 def validate_no_area_only_routing(config: ZulipConfig) -> None:
-    """Validate the routing mapping's shape at startup.
+    """Validate the channel options' shape at startup.
 
-    The temporary spc-119/123 gate that rejected any nonempty area is lifted
-    (spc-120): mapped areas are supported routing now. What stays is the
-    shape guard — every key an integer, every value a string (the strict
-    ``ZulipConfig`` schema enforces both) — and nothing else: a named area
-    that does not exist in the vault yet is a valid mapping, so this
-    validation opens no vault.
+    A shape guard only — ``channels`` integer IDs, ``channel_areas`` string
+    keys to string areas (the strict ``ZulipConfig`` schema enforces both);
+    a named area that does not exist in the vault yet is valid, so this
+    validation opens no vault. The name is historical (spc-119/123).
     """
-    for channel_id, area in config.channels.items():
-        if not isinstance(channel_id, int) or not isinstance(area, str):
+    for channel_id in config.channels:
+        if not isinstance(channel_id, int):
             raise ValueError(
-                "Zulip channel mapping is malformed: each entry must map an "
-                f"integer channel ID to a string area identity, got "
-                f"{channel_id!r}: {type(area).__name__}."
+                "Zulip `channels` is malformed: each entry must be an "
+                f"integer channel ID, got {type(channel_id).__name__}."
+            )
+    for key, area in config.channel_areas.items():
+        if not isinstance(key, str) or not isinstance(area, str):
+            raise ValueError(
+                "Zulip `channel_areas` is malformed: each entry must map a "
+                "channel ID written as a string to a string area identity, "
+                f"got {type(key).__name__}: {type(area).__name__}."
             )

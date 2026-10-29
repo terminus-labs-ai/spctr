@@ -18,10 +18,12 @@ whole-config reload:
   ``zuliprc`` path and ``api_url`` override are pinned for the process:
   the transport, the registered queue and the Session identities are built
   from the startup values.
-- A configured channel routes to its mapped area through the existing
-  resolvers; a mapped ``""`` stays the explicit no-area
-  (``RunContext(area="")``). An unmapped channel is never admitted, so the
-  routing decision never falls back to the working directory.
+- Admission and areas follow Discord (spc-1012): ``channels`` lists the
+  admitted channel IDs (empty = every channel the queue delivers; the
+  queue registers with ``all_public_streams``), and the area is the
+  ``channel_areas`` override or else the channel name derived by the
+  shared Discord helper. No area is ``RunContext(area="")``; routing never
+  falls back to the working directory.
 - Bot identity comes from real server metadata: the registration response's
   ``realm_users`` (and ``realm_bots``) arrays carry ``user_id``/``is_bot``
   per https://zulip.com/api/register-queue; a message event never carries an
@@ -34,8 +36,8 @@ whole-config reload:
   until complete history restoration ships. Fresh messages this process
   already admitted in-process never make a new topic look populated. A probe
   failure or malformed answer blocks the model turn with an explicit error.
-- Only allowed human users in configured channels trigger turns; bot
-  messages and unconfigured channels are ignored without model work.
+- Only allowed human users in admitted channels trigger turns; bot
+  messages and unadmitted channels are ignored without model work.
 - All model turns are serialized globally (one Miranda turn at a time);
   concurrent messages in the same topic share one Session and keep ordered
   history; distinct topics are isolated.
@@ -506,11 +508,15 @@ class ZulipInterface:
         channel_id = message["stream_id"]
         message_id = message["id"]
         topic = str(message.get("subject", ""))
-        # The area comes only from the mapping on this message's own read:
-        # "" stays the explicit no-area, a name routes through the existing
-        # resolvers, and an unmapped channel was never admitted above — so
-        # this process can never fall back to the working-directory area.
-        area = resolve_channel_area(channel_id=channel_id, config=config)
+        # The area comes from this message's own read: the channel_areas
+        # override, else the channel name (display_recipient) derived as
+        # Discord derives it, else "" — never the working-directory area.
+        channel_name = message.get("display_recipient")
+        area = resolve_channel_area(
+            channel_id=channel_id,
+            config=config,
+            channel_name=channel_name if isinstance(channel_name, str) else None,
+        )
         frame_id = topic_frame_id(
             self._agent.config.agent.name, self._origin, channel_id, topic
         )

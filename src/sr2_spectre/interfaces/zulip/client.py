@@ -160,7 +160,8 @@ class ZulipClient:
 
     Args:
         credentials: The bot identity from :func:`load_zulip_credentials`.
-        config: The ``zulip`` config block; only ``api_url`` matters here.
+        config: The ``zulip`` config block; only ``api_url`` and ``mode``
+            (stream mode registers with ``all_public_streams``) matter here.
         request_timeout: Seconds that bound each NON-event request.
         event_poll_timeout: Seconds that bound the events long poll
             (GET /api/v1/events). Defaults to
@@ -179,6 +180,7 @@ class ZulipClient:
         event_poll_timeout: float | None = None,
     ) -> None:
         self._origin = (config.api_url or credentials.site).rstrip("/")
+        self._all_public_streams = config.mode == "stream"
         self._timeout = (
             _DEFAULT_REQUEST_TIMEOUT if request_timeout is None else request_timeout
         )
@@ -210,12 +212,23 @@ class ZulipClient:
     async def register(self) -> dict[str, Any]:
         """Register an event queue (POST /api/v1/register).
 
+        Subscribes to ``message`` events and fetches ``realm_user`` state, so
+        the answer carries the bot's own ``user_id``, ``full_name`` and the
+        realm's ``realm_users`` (https://zulip.com/api/register-queue). In
+        stream mode the queue also registers with ``all_public_streams``,
+        so every public channel delivers messages without a bot
+        subscription; direct mode does not (spc-1012, FR1).
+
         Returns the protocol dict; ``queue_id`` is an OPAQUE STRING passed
         through untouched, ``last_event_id`` an int.
         """
-        return await self._request(
-            "POST", "/register", data={"events": json.dumps(["message"])}
-        )
+        data = {
+            "event_types": json.dumps(["message"]),
+            "fetch_event_types": json.dumps(["message", "realm_user"]),
+        }
+        if self._all_public_streams:
+            data["all_public_streams"] = "true"
+        return await self._request("POST", "/register", data=data)
 
     async def get_events(
         self, queue_id: str, last_event_id: int = -1

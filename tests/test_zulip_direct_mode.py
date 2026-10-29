@@ -67,7 +67,8 @@ def _stream_config(**kw: Any) -> ZulipConfig:
     base: dict[str, Any] = {
         "zuliprc": ZULIPRC,
         "allowed_user_ids": [DIEGO_ID],
-        "channels": {STREAM_CHANNEL: ""},
+        "channels": [STREAM_CHANNEL],
+        "channel_areas": {str(STREAM_CHANNEL): ""},
     }
     base.update(kw)
     return ZulipConfig(**base)
@@ -229,7 +230,7 @@ def test_bot_ids_from_registration_reads_both_arrays():
 
 def test_mode_defaults_to_stream_existing_configs_parse_unchanged():
     cfg = ZulipConfig(
-        zuliprc=ZULIPRC, allowed_user_ids=[DIEGO_ID], channels={STREAM_CHANNEL: ""}
+        zuliprc=ZULIPRC, allowed_user_ids=[DIEGO_ID], channels=[STREAM_CHANNEL]
     )
     assert cfg.mode == "stream"
     assert cfg.peer_id is None
