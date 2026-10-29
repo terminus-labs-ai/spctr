@@ -326,8 +326,7 @@ class ZulipInterface:
         """Validate config, load credentials, register the event queue.
 
         No history is fetched and no model request is made at startup:
-        populated topics are only discovered when a user message triggers in
-        them, and are refused until history restoration ships.
+        topic archives are restored when a user message first triggers in them.
         """
         validate_no_area_only_routing(self._config)
         self._agent = agent
@@ -800,13 +799,13 @@ class ZulipInterface:
         candidate_ids: set[int],
         area: str | None = None,
     ) -> tuple[Any, list[Any]] | None:
-        """Probe cold-topic history and create the Session for a new topic.
+        """Restore an archived topic, or probe an unarchived cold topic.
 
         Called only for topics this process does not yet own. The trigger
         message and eligible siblings in the current batch are already inside
         fetched history, so their IDs are excluded. Any other message,
         including bot-only alerts — means the topic is populated and is refused with an
-        explicit reply and no model work until history restoration ships.
+        explicit reply and no model work when no archive exists.
         Messages this process admitted to a Session earlier
         (``candidate_ids``) are likewise fresh in-process messages, not
         prior content; a refused trigger never joins them and stays prior
@@ -821,6 +820,10 @@ class ZulipInterface:
         never inferred from the working directory. Omitted (``None``) by a
         caller with no routing read, which behaves as the explicit no-area.
         """
+        session = self._agent.create_session(frame_id)
+        restored = await session.restore_history()
+        if restored.history or restored.restore_failed:
+            return session, set()
         try:
             response = await self._client.get_topic_messages(channel_id, topic)
             messages = response.get("messages")
@@ -832,6 +835,7 @@ class ZulipInterface:
                 "Topic history probe failed for channel %s: %s", channel_id, exc
             )
             await self._send_reply(channel_id, topic, _PROBE_FAILURE_TEXT)
+            session.close()
             return None
         # The trigger (and any trigger this process already admitted to a
         # Session) appears in the fetch without being prior content; each is
@@ -850,8 +854,8 @@ class ZulipInterface:
                 channel_id, topic,
             )
             await self._send_reply(channel_id, topic, _REFUSAL_TEXT)
+            session.close()
             return None
-        session = self._agent.create_session(frame_id)
         session.set_run_context(
             RunContext(
                 interface="zulip",

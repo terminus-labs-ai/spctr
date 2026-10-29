@@ -37,6 +37,7 @@ from sr2_spectre.events import (
     AgentToolStart,
 )
 from sr2_spectre.live_llm import LoggedLLM, RetryingLLM
+from sr2_spectre.resume import ResumeResult, load_resumable_history
 from sr2_spectre.run_log import SessionLog, SessionLogManager, SessionTracer
 from sr2_spectre.session_identity import current_session_id
 from sr2_spectre.tools.output import ToolOutput
@@ -76,6 +77,8 @@ class Session:
         self._registry = registry
         self.history: list[Message] = []
         self._lock = asyncio.Lock()
+        self._resume_result: ResumeResult | None = None
+        self._restore_failed_notice: str | None = None
 
         # Kept so the SR2 can be rebuilt when a config reload changes the
         # pipeline. Everything here is either shared process-wide (stores, the
@@ -136,6 +139,7 @@ class Session:
         ``self.history`` and re-seeds SR2 from it at the top of every turn, so
         a fresh SR2 loses no conversation state.
         """
+        self._archive_ready = False
         llm = self._llm
         tracer = self._tracer
         if self._log_manager is not None:
@@ -160,6 +164,23 @@ class Session:
             provenance_store=self._provenance_store,
             memory_store=self._memory_store,
         )
+
+    def attach_provenance_store(self, store: "ProvenanceStore") -> None:
+        """Attach the Runtime's store when initialization finishes."""
+        self._provenance_store = store
+        self._sr2_stale = True
+
+    async def restore_history(self) -> ResumeResult:
+        """Restore this frame once, before the interface admits its first turn."""
+        async with self._lock:
+            if self._resume_result is None:
+                self._resume_result = await load_resumable_history(
+                    self._provenance_store, self.frame_id, self.config.agent.resume
+                )
+                self.history[:] = self._resume_result.history
+                if self._resume_result.restore_failed:
+                    self._restore_failed_notice = self.config.agent.resume.restore_failed_notice
+            return self._resume_result
 
     def apply_config(
         self,
@@ -371,6 +392,13 @@ class Session:
         """Stream agent events for a user message, serialized by _lock."""
         async with self._lock:
             self._refresh_sr2_if_stale()
+            if not self._archive_ready:
+                await self.sr2.continue_archive()
+                self._archive_ready = True
+            if self._restore_failed_notice is not None:
+                notice = self._restore_failed_notice
+                self._restore_failed_notice = None
+                yield AgentTextDelta(text=notice + "\n\n")
             self.history.append(Message(role="user", content=[TextBlock(text=text)]))
 
             prior = self.history[:-1]

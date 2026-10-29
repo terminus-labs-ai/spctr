@@ -365,6 +365,7 @@ class ZulipDMInterface:
             session = self._session
             if session is None:
                 session = self._ensure_session(message.sender_id)
+                await session.restore_history()
                 self._session = session
                 session.set_run_context(
                     RunContext(

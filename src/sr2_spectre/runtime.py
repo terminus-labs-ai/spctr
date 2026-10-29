@@ -900,6 +900,8 @@ class Runtime:
                 db_path=self._provenance_store_path
             )
             await self._provenance_store.connect()
+            for session in list(self._sessions):
+                session.attach_provenance_store(self._provenance_store)
             logger.info(
                 "Connected persistent provenance store: %s",
                 self._provenance_store_path,

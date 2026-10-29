@@ -7,6 +7,13 @@
 agent:
   name: my-agent
 
+  # Restore Zulip topic/DM history from the provenance archive at Session creation.
+  # agent.resume.enabled: false starts empty and suppresses restore notices.
+  resume:
+    enabled: true
+    interrupted_marker: "[This turn was interrupted by a restart before it finished.]"
+    restore_failed_notice: "Earlier context for this conversation could not be restored."
+
   # Built-in tools to register. Each tool is a Python class loaded by class_path.
   # Remove tools you don't want, or add custom ones.
   tools:

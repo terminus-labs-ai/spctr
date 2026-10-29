@@ -34,6 +34,18 @@ Human-readable name for the agent. Used in logs and session identifiers.
 **Restart required to change.** Frame ids are derived from it, so changing it
 under a running process would orphan every open conversation.
 
+### `agent.resume`
+
+Zulip topic and DM Sessions restore their text history from the provenance database at creation. Keep `provenance_store_path` on persistent storage to retain conversations across restarts. History is read once per Session, without replaying tools. A populated topic without an archive remains refused.
+
+| Field | Default | Behavior |
+|-------|---------|----------|
+| `agent.resume.enabled` | `true` | Restore history for new Sessions. `false` starts empty, reads no rewind records, and emits no restore notice. Archive writes and turn numbering continue. |
+| `agent.resume.interrupted_marker` | `[This turn was interrupted by a restart before it finished.]` | Assistant text used when the last archived turn did not finish. |
+| `agent.resume.restore_failed_notice` | `Earlier context for this conversation could not be restored.` | Prefix of the first reply when the archive cannot be read or no provenance store is configured. Emitted once and excluded from history. |
+
+Changes apply when a Session is created; they do not reload an existing conversation's history. Archive restoration is currently wired for Zulip; TUI and REPL resume are separate work.
+
 ### `agent.tools` (list[ToolConfig])
 
 Built-in tools to register. Each entry:
