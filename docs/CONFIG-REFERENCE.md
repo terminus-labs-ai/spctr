@@ -481,6 +481,11 @@ zulip:
   channels: []            # empty = every channel the queue delivers
   channel_areas:
     "2": ""
+  # working indicator (stream mode)
+  max_message_length: 10000
+  thinking_message: "⏳ Thinking..."
+  empty_response_message: "(No response generated)"
+  error_message: "Error: {error}"
 ```
 
 | Field | Type | Default | Description |
@@ -491,6 +496,10 @@ zulip:
 | `mention_only` | bool | `false` | Stream mode: when `true`, a message in a topic with no active Session in this process triggers only if it mentions the bot — `@**<full name>**`, `@**<full name>\|<user id>**` or the silent `@_**…**` form of either. Wildcard mentions (`@**all**`, `@**everyone**`, `@**channel**`, `@**topic**`) do not count. A topic that already has an active Session needs no mention. Direct mode ignores it |
 | `channels` | list[int] | `[]` | Stream mode: channel IDs that may trigger a turn. Empty admits every channel the event queue delivers (every public channel, plus private channels the bot is subscribed to); nonempty admits only the listed IDs. Entries are **integer** IDs — a quoted `"42"` is rejected, and the old ID→area mapping form fails validation |
 | `channel_areas` | dict[str, str] | `{}` | Stream mode: channel ID **written as a string** (`"42"`) to area identity; `""` means explicitly no area. An integer key is rejected. A channel with no key takes its area from its name, as Discord does |
+| `max_message_length` | int | `10000` | Stream mode: the longest single message the bot sends (Zulip's limit). A longer answer is split with the same chunking Discord uses: the first chunk replaces the placeholder and the rest follow as new messages in order. Direct mode ignores it |
+| `thinking_message` | str | `"⏳ Thinking..."` | Stream mode: the placeholder posted in the triggering topic as soon as a turn is admitted, before the model call; the answer replaces it by edit. Direct mode ignores it |
+| `empty_response_message` | str | `"(No response generated)"` | Stream mode: what the placeholder shows when the model answers with no text. Direct mode ignores it |
+| `error_message` | str | `"Error: {error}"` | Stream mode: what the placeholder shows when the model turn fails; `{error}` is replaced by the error text. Nothing else is sent for that turn. Direct mode ignores it |
 
 A missing, unreadable, malformed or incomplete zuliprc fails startup with
 `ZulipCredentialError` naming the path and the reason, never the file's
@@ -506,7 +515,9 @@ resolved when a message routes to it.
 mode it also sets `all_public_streams`, so public channels deliver
 messages without a bot subscription),
 `get_events(queue_id, last_event_id)`, `get_topic_messages(channel_id,
-topic)` and `send_message(type=, to=, topic=, content=)`. Requests go only
+topic)`, `send_message(type=, to=, topic=, content=)` (returns the new
+message ID) and `update_message(message_id, content)` (edits one message
+with `PATCH /api/v1/messages/{id}`). Requests go only
 to `api_url` when set, otherwise the zuliprc `site` — with HTTP Basic,
 redirects never followed, and queue IDs treated as opaque strings. A
 401/403 or protocol-level error raises `ZulipAuthError`; timeout,
@@ -542,6 +553,16 @@ queue — it fetches no history and makes no model request.
   config read that trigger arrived on — a routing edit applies to every
   topic in that channel on its next message, including topics whose
   Session already exists — and never falls back to the working directory.
+- Working indicator: an admitted turn posts `thinking_message` in its
+  topic before the model call and runs through `Session.stream_message`;
+  the answer (or `empty_response_message` for an empty answer) then
+  replaces the placeholder by edit, chunked past `max_message_length`. If
+  the placeholder post fails, the turn still runs and the answer is sent
+  as new messages; if the final edit fails (for example the realm's edit
+  time limit expired on a long turn), the answer is sent as new messages.
+  A model error edits the placeholder to `error_message`. No send or edit
+  failure stops the event loop. The unsupported-history refusal and
+  reminder deliveries stay plain messages with no placeholder.
 - Model turns are serialized globally; concurrent messages in the same
   topic share one Session and keep ordered history, and distinct topics
   stay isolated.
@@ -556,7 +577,7 @@ queue — it fetches no history and makes no model request.
 
 The Zulip interface re-reads the **whole** resolved config on every inbound
 event batch — not just this section — so `channels`, `channel_areas`,
-`users`, `mention_only` and everything outside `zulip` apply to the next message, with the same
+`users`, `mention_only`, the working-indicator fields and everything outside `zulip` apply to the next message, with the same
 last-good guarantees as the [Live reload](#live-reload) section below: a
 malformed or mid-save file keeps the last known-good config in force and
 never takes the process down. `zuliprc` and `api_url` are the interface's

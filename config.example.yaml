@@ -81,3 +81,8 @@ pipeline:
 #   channels: []            # integer channel IDs; empty = every channel the queue delivers
 #   channel_areas:          # string channel ID -> area; "" = no area; else the channel name
 #     "2": ""
+#   # working indicator (stream mode): placeholder, then the answer by edit
+#   max_message_length: 10000                    # longer answers are chunked
+#   thinking_message: "⏳ Thinking..."            # posted before the model call
+#   empty_response_message: "(No response generated)"
+#   error_message: "Error: {error}"              # {error} = the model error text
