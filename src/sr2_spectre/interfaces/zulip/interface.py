@@ -147,7 +147,7 @@ class _ProgressView:
         self._client = client
         self._placeholder_id = placeholder_id
         self._config = config
-        self._clock = clock
+        self._now = clock
         self._lines: list[str] = []
         self._text = ""
         self._last_text_edit: float | None = None
@@ -183,7 +183,7 @@ class _ProgressView:
         interval = self._config.edit_stream_interval
         if interval <= 0:
             return
-        now = self._clock()
+        now = self._now()
         if self._last_text_edit is None or now - self._last_text_edit >= interval:
             self._last_text_edit = now
             self._render()
@@ -255,7 +255,7 @@ class ZulipInterface:
             clock: Monotonic seconds for the progress-edit throttle
                 (default ``time.monotonic``); a test seam.
         """
-        self._clock = clock or time.monotonic
+        self._progress_clock = clock or time.monotonic
         self._view = (
             ZulipConfigView(config_source)
             if config_source is not None
@@ -816,7 +816,7 @@ class ZulipInterface:
                 channel_id, topic, config.thinking_message
             )
             progress = _ProgressView(
-                self._client, placeholder_id, config, self._clock
+                self._client, placeholder_id, config, self._progress_clock
             )
             parts: list[str] = []
             try:
