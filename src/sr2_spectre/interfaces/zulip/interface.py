@@ -36,8 +36,11 @@ whole-config reload:
   until complete history restoration ships. Fresh messages this process
   already admitted in-process never make a new topic look populated. A probe
   failure or malformed answer blocks the model turn with an explicit error.
-- Only allowed human users in admitted channels trigger turns; bot
-  messages and unadmitted channels are ignored without model work.
+- Humans the ``users`` list admits (empty = any human) in admitted
+  channels trigger turns; bots and the bot's own account (registration
+  ``realm_users``/``user_id``) never do, and unadmitted channels are
+  ignored without model work. With ``mention_only`` a topic with no active
+  Session starts only on a mention of the bot (spc-1013).
 - All model turns are serialized globally (one Miranda turn at a time);
   concurrent messages in the same topic share one Session and keep ordered
   history; distinct topics are isolated.
@@ -60,6 +63,7 @@ from sr2_spectre.interfaces.zulip.config import (
     ZulipConfig,
     bot_ids_from_registration,
     is_configured_no_area_channel,
+    mentions_bot,
     resolve_channel_area,
     validate_no_area_only_routing,
 )
@@ -158,6 +162,10 @@ class ZulipInterface:
         self._admitted_ids: set[int] = set()
         # Bot user IDs from registration realm metadata (see _read_bot_ids).
         self._bot_ids: set[int] = set()
+        # The bot's own account (registration ``user_id``/``full_name``):
+        # never a trigger, and the name a mention_only message must mention.
+        self._bot_user_id: int | None = None
+        self._bot_full_name: str | None = None
         # Global model-turn serialization: one Miranda turn at a time.
         self._turn_lock = asyncio.Lock()
         # Reminders (spc-139, FR6): delivery loop + the per-turn origin.
@@ -193,6 +201,10 @@ class ZulipInterface:
         self._queue_id: str = str(registration["queue_id"])
         self._last_event_id: int = int(registration["last_event_id"])
         self._bot_ids = self._read_bot_ids(registration)
+        own_id = registration.get("user_id")
+        self._bot_user_id = own_id if isinstance(own_id, int) else None
+        full_name = registration.get("full_name")
+        self._bot_full_name = full_name if isinstance(full_name, str) else None
         self._channel_names = self._read_channel_names(registration)
         self._wire_reminder_channel_lookup(agent)
         self._start_reminders(agent)
@@ -482,6 +494,7 @@ class ZulipInterface:
             sender_id=sender_id,
             sender_is_bot=sender_id in self._bot_ids,
             config=config,
+            bot_user_id=self._bot_user_id,
         )
 
     async def _handle_message(
@@ -525,6 +538,15 @@ class ZulipInterface:
             # serializes model turns globally, so queued follow-ups in one
             # topic keep their order and distinct topics stay isolated.
             entry = self._sessions.get(frame_id)
+            if entry is None and config.mention_only and not mentions_bot(
+                str(message.get("content", "")),
+                full_name=self._bot_full_name,
+                user_id=self._bot_user_id,
+            ):
+                # mention_only (Discord parity): a topic with no active
+                # Session starts only on a mention of the bot; a topic
+                # that already has one needs none. No probe, no reply.
+                return
             if entry is None:
                 # Admit-and-remember only on success. The poller holds the
                 # turn lock across probe and turn. Eligible siblings from this

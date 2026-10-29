@@ -80,7 +80,7 @@ def _routing(mapping: dict[int, str]) -> dict[str, Any]:
 def _zulip_block(**over: Any) -> dict[str, Any]:
     block: dict[str, Any] = {
         "zuliprc": ZULIPRC,
-        "allowed_user_ids": [DIEGO_ID],
+        "users": [DIEGO_ID],
         **_routing({
             NO_AREA_CHANNEL: "",
             ALPHA_CHANNEL: AREA_OBSIDIAN,
@@ -131,7 +131,7 @@ class TestAreaRoutingDecision:
         route = resolve_channel_area
         cfg = ZulipConfig(
             zuliprc=ZULIPRC,
-            allowed_user_ids=[DIEGO_ID],
+            users=[DIEGO_ID],
             **_routing({ALPHA_CHANNEL: AREA_OBSIDIAN}),
         )
         assert route(channel_id=ALPHA_CHANNEL, config=cfg) == AREA_OBSIDIAN
@@ -144,7 +144,7 @@ class TestAreaRoutingDecision:
         route = resolve_channel_area
         cfg = ZulipConfig(
             zuliprc=ZULIPRC,
-            allowed_user_ids=[DIEGO_ID],
+            users=[DIEGO_ID],
             **_routing({NO_AREA_CHANNEL: ""}),
         )
         area = route(channel_id=NO_AREA_CHANNEL, config=cfg)
@@ -172,7 +172,7 @@ class TestAreaRoutingDecision:
         route = resolve_channel_area
         cfg = ZulipConfig(
             zuliprc=ZULIPRC,
-            allowed_user_ids=[DIEGO_ID],
+            users=[DIEGO_ID],
             **_routing({NO_AREA_CHANNEL: ""}),
         )
         area = route(channel_id=UNMAPPED_CHANNEL, config=cfg)
@@ -196,7 +196,7 @@ class TestAreaRoutingDecision:
         route = resolve_channel_area
         cfg = ZulipConfig(
             zuliprc=ZULIPRC,
-            allowed_user_ids=[DIEGO_ID],
+            users=[DIEGO_ID],
             **_routing({ALPHA_CHANNEL: AREA_OBSIDIAN}),
         )
         assert route(channel_id=ALPHA_CHANNEL, config=cfg) is not None
@@ -215,7 +215,7 @@ class TestAreaRoutingDecision:
         route = resolve_channel_area
         cfg = ZulipConfig(
             zuliprc=ZULIPRC,
-            allowed_user_ids=[DIEGO_ID],
+            users=[DIEGO_ID],
             **_routing({ALPHA_CHANNEL: "alpha-area", BETA_CHANNEL: "beta-area"}),
         )
         assert route(channel_id=ALPHA_CHANNEL, config=cfg) == "alpha-area"
@@ -230,7 +230,7 @@ class TestAreaRoutingDecision:
 class TestWholeConfigReloadSlice:
     def test_current_starts_at_the_resolved_zulip_block(self):
         initial = _spectre(
-            ZulipConfig(zuliprc=ZULIPRC, allowed_user_ids=[DIEGO_ID],
+            ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                         **_routing({NO_AREA_CHANNEL: ""}))
         )
         from sr2_spectre.interfaces.zulip.config_source import ZulipConfigView
@@ -242,9 +242,9 @@ class TestWholeConfigReloadSlice:
         """One reload per inbound message refreshes the Zulip routing slice —
         a channel added/moved on disk routes differently on the next read."""
         configs = [
-            _spectre(ZulipConfig(zuliprc=ZULIPRC, allowed_user_ids=[DIEGO_ID],
+            _spectre(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                                  **_routing({NO_AREA_CHANNEL: ""}))),
-            _spectre(ZulipConfig(zuliprc=ZULIPRC, allowed_user_ids=[DIEGO_ID],
+            _spectre(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                                  **_routing({ALPHA_CHANNEL: AREA_OBSIDIAN}))),
         ]
         source = SpectreConfigSource(loader=lambda: configs[1], initial=configs[0])
@@ -269,10 +269,10 @@ class TestWholeConfigReloadSlice:
         contract, contradicting item 1's shipped contract. The arm is
         inverted in place; the bot arm stays unadmitted."""
         configs = [
-            _spectre(ZulipConfig(zuliprc=ZULIPRC, allowed_user_ids=[DIEGO_ID],
+            _spectre(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                                  **_routing({NO_AREA_CHANNEL: ""}))),
             _spectre(ZulipConfig(zuliprc=ZULIPRC,
-                                 allowed_user_ids=[DIEGO_ID, 11],
+                                 users=[DIEGO_ID, 11],
                                  **_routing({ALPHA_CHANNEL: AREA_OBSIDIAN,
                                              NO_AREA_CHANNEL: ""}))),
         ]
@@ -282,14 +282,14 @@ class TestWholeConfigReloadSlice:
         view = ZulipConfigView(source)
 
         before = view.current
-        assert 11 not in before.allowed_user_ids
+        assert 11 not in before.users
         assert is_configured_no_area_channel(
             channel_id=NO_AREA_CHANNEL, sender_id=11,
             sender_is_bot=False, config=before,
         ) is False
 
         after = view.reload()
-        assert 11 in after.allowed_user_ids
+        assert 11 in after.users
         assert is_configured_no_area_channel(
             channel_id=NO_AREA_CHANNEL, sender_id=11,
             sender_is_bot=False, config=after,
@@ -316,15 +316,15 @@ class TestWholeConfigReloadSlice:
         assert route(channel_id=ALPHA_CHANNEL, config=after) == AREA_OBSIDIAN
 
     def test_missing_zulip_block_reads_as_explicitly_empty(self):
-        """A whole-config load without a zulip block yields an empty slice
-        (nobody admitted), never an error at read time and never an implicit
+        """A whole-config load without a zulip block yields a slice of
+        schema defaults, never an error at read time and never an implicit
         routing population."""
         from sr2_spectre.interfaces.zulip.config_source import ZulipConfigView
 
         view = ZulipConfigView(
             SpectreConfigSource.static(_spectre(None))
         )
-        assert view.current.allowed_user_ids == []
+        assert view.current.users == []
         assert view.current.channels == []
         assert view.current.channel_areas == {}
 
@@ -334,12 +334,12 @@ class TestWholeConfigReloadSlice:
         (models/endpoint) of the same load is refreshed too, so
         ``Agent.apply_config`` can consume it without a second parse."""
         configs = [
-            _spectre(ZulipConfig(zuliprc=ZULIPRC, allowed_user_ids=[DIEGO_ID],
+            _spectre(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                                  **_routing({NO_AREA_CHANNEL: ""}))),
             # Built through normal SpectreConfig construction (not
             # model_copy): the entry is a validated ModelConfig, exactly as
             # the disk loader would hand it over.
-            _spectre(ZulipConfig(zuliprc=ZULIPRC, allowed_user_ids=[DIEGO_ID],
+            _spectre(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                                  **_routing({ALPHA_CHANNEL: AREA_OBSIDIAN})),
                      model="edited-model"),
         ]
@@ -357,7 +357,7 @@ class TestWholeConfigReloadSlice:
     def test_malformed_reload_keeps_the_last_good_zulip_slice(self):
         """FR6: a broken file never takes the process down — routing stays
         on the last known-good mapping."""
-        good = _spectre(ZulipConfig(zuliprc=ZULIPRC, allowed_user_ids=[DIEGO_ID],
+        good = _spectre(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                                     **_routing({NO_AREA_CHANNEL: "",
                                                 ALPHA_CHANNEL: AREA_OBSIDIAN})))
 
@@ -377,10 +377,10 @@ class TestWholeConfigReloadSlice:
         """After the file parses again, the next reload applies the new
         routing; the last-good state is not sticky past recovery."""
         good_before = _spectre(ZulipConfig(zuliprc=ZULIPRC,
-                                           allowed_user_ids=[DIEGO_ID],
+                                           users=[DIEGO_ID],
                                            **_routing({NO_AREA_CHANNEL: ""})))
         good_after = _spectre(ZulipConfig(zuliprc=ZULIPRC,
-                                          allowed_user_ids=[DIEGO_ID],
+                                          users=[DIEGO_ID],
                                           **_routing({BETA_CHANNEL: AREA_OBSIDIAN})))
         state: list[Any] = [ValueError("mid-save"), good_after]
 
@@ -403,7 +403,7 @@ class TestWholeConfigReloadSlice:
     ):
         """NFR: reload logs field names, never config values."""
         marker = "SECRET-MARKER-spc120-9f3a"
-        good = _spectre(ZulipConfig(zuliprc=marker, allowed_user_ids=[DIEGO_ID],
+        good = _spectre(ZulipConfig(zuliprc=marker, users=[DIEGO_ID],
                                     **_routing({NO_AREA_CHANNEL: ""})))
         source = SpectreConfigSource(
             loader=lambda: (_ for _ in ()).throw(ValueError("bad yaml")),

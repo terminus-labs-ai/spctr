@@ -16,7 +16,7 @@ module supplies the Zulip-shaped way of reaching it, mirroring
   out of that same single load rather than parsing the file a second time;
   ``Agent.apply_config`` consumes the rest of that same read.
 
-Everything in the slice — ``channels``, ``allowed_user_ids``, the
+Everything in the slice — ``channels``, ``users``, ``mention_only``, the
 ``zuliprc`` path and the ``api_url`` override above all — is hot: each
 reload reports the newly loaded slice and applies to the next inbound
 message. The interface separately keeps its *own* startup block for the
@@ -58,7 +58,7 @@ class ZulipConfigView:
         """The Zulip config in force — the slice of the last successful load.
 
         A whole-config load without a ``zulip`` block reads as an
-        explicitly empty slice (nobody admitted, nothing routed) rather
+        slice of schema defaults (no channel areas configured) rather
         than an error — startup already refused that configuration, and a
         mid-run reload must not crash on it.
         """

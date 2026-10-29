@@ -395,7 +395,7 @@ def _accepts_timeout_keyword() -> str | None:
                 config=ZulipConfig(
                     zuliprc="/nonexistent.zuliprc",
                     api_url="http://127.0.0.1:1",
-                    allowed_user_ids=[DIEGO_ID],
+                    users=[DIEGO_ID],
                     channels=[CHANNEL],
                 ),
                 **extra,
@@ -472,7 +472,7 @@ def config_for(origin_url: str, zuliprc: str, **overrides: Any) -> ZulipConfig:
     base: dict[str, Any] = {
         "zuliprc": zuliprc,
         "api_url": origin_url,  # documented loopback/testing override
-        "allowed_user_ids": [DIEGO_ID],
+        "users": [DIEGO_ID],
         "channels": [CHANNEL, OTHER_CHANNEL],
     }
     base.update(overrides)
@@ -602,7 +602,7 @@ class TestConfiguredServerOnly:
         hang — and the failure carries no credential."""
         path = write_zuliprc(tmp_path / "site.zuliprc")
         config = ZulipConfig(
-            zuliprc=path, allowed_user_ids=[DIEGO_ID], channels=[CHANNEL]
+            zuliprc=path, users=[DIEGO_ID], channels=[CHANNEL]
         )
         client = make_client(config)
         with pytest.raises(
@@ -1018,7 +1018,7 @@ class TestExplicitFailures:
         )
         path = write_zuliprc(tmp_path / "site.zuliprc")
         config = ZulipConfig(
-            zuliprc=path, allowed_user_ids=[DIEGO_ID], channels=[CHANNEL]
+            zuliprc=path, users=[DIEGO_ID], channels=[CHANNEL]
         )
         client = make_client(config, **{timeout_kw: 2.0})
         loop = asyncio.get_running_loop()

@@ -6,7 +6,7 @@ and its modules:
 
 - ``ZulipConfig`` (``interfaces.zulip.config``) — the spec's config block:
   ``zuliprc`` credential path (no inline key), optional ``api_url``,
-  explicit integer ``allowed_user_ids``, and ``channels`` mapping channel
+  explicit integer ``users``, and ``channels`` mapping channel
   ID → area identity (``""`` = explicitly no area).
 - ``ZulipCredentials`` — the parsed credential record (email/api_key/site)
   returned by the loader; its fields are the spec's public contract.
@@ -84,7 +84,7 @@ def make_config(**kw: Any) -> ZulipConfig:
     base: dict[str, Any] = {
         "zuliprc": "/tmp/spc-123-unused.zuliprc",
         "api_url": API_URL,
-        "allowed_user_ids": [DIEGO_ID],
+        "users": [DIEGO_ID],
         "channels": [NO_AREA_CHANNEL],
         "channel_areas": {str(NO_AREA_CHANNEL): ""},
     }
@@ -139,10 +139,11 @@ def load_expect_credential_error(path: Path) -> ZulipCredentialError:
 
 class TestZulipConfigSchema:
     def test_defaults_are_explicitly_empty(self):
-        """Missing allowlists mean 'admits nobody' and 'no channels',
-        never an implicit fallback population."""
+        """Missing lists default to empty (``users`` empty = any human,
+        ``channels`` empty = every delivered channel), never a fallback
+        population."""
         cfg = ZulipConfig(zuliprc="/tmp/spc-123-unparsed.zuliprc")
-        assert cfg.allowed_user_ids == []
+        assert cfg.users == []
         assert cfg.channels == []
         assert cfg.channel_areas == {}
         assert cfg.api_url is None
@@ -158,7 +159,7 @@ class TestZulipConfigSchema:
         )
         assert cfg.channel_areas[str(NO_AREA_CHANNEL)] == ""
         assert cfg.channel_areas[str(OTHER_NO_AREA_CHANNEL)] == "obsidian"
-        assert cfg.allowed_user_ids == [DIEGO_ID]
+        assert cfg.users == [DIEGO_ID]
 
     def test_non_integer_channel_key_rejected(self):
         """Channel IDs in ``channels`` are explicit integer Zulip IDs."""
@@ -176,14 +177,14 @@ class TestZulipConfigSchema:
     def test_non_integer_user_id_rejected(self):
         """Spec: explicit integer user IDs only."""
         with pytest.raises(ValidationError):
-            make_config(allowed_user_ids=["not-an-id"])
+            make_config(users=["not-an-id"])
 
     def test_digit_string_user_id_rejected(self):
         """AC17: "explicit integer user ... admission" — the allowlist must
         carry integer literals; a digit string like ``"8"`` (YAML-quoted)
         is not an explicit integer and is not coerced into one."""
         with pytest.raises(ValidationError):
-            make_config(allowed_user_ids=["8"])
+            make_config(users=["8"])
 
     def test_non_string_area_rejected(self):
         """An area identity is a string; ``""`` is the explicit no-area
@@ -510,7 +511,7 @@ class TestSenderAdmission:
         """Reply-loop prevention (spec FR5: "ignore bot messages as
         triggers"): the bot-authored rule outranks an allowlisted bot ID,
         so a bot reply can never trigger itself."""
-        cfg = make_config(allowed_user_ids=[DIEGO_ID, BOT_ID])
+        cfg = make_config(users=[DIEGO_ID, BOT_ID])
         assert not is_configured_no_area_channel(
             channel_id=NO_AREA_CHANNEL,
             sender_id=BOT_ID,
@@ -518,10 +519,10 @@ class TestSenderAdmission:
             config=cfg,
         )
 
-    def test_empty_allowlist_admits_no_human(self):
-        """An empty allowlist is explicit nobody — no implicit admission."""
-        cfg = make_config(allowed_user_ids=[])
-        assert not is_configured_no_area_channel(
+    def test_empty_users_admits_any_human(self):
+        """spc-1013 (FR6): an empty ``users`` admits any human."""
+        cfg = make_config(users=[])
+        assert is_configured_no_area_channel(
             channel_id=NO_AREA_CHANNEL,
             sender_id=DIEGO_ID,
             sender_is_bot=False,

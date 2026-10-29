@@ -185,7 +185,7 @@ def _make_interface(tmp_path: Path) -> Any:
 
     config = ZulipConfig(
         zuliprc=str(tmp_path / "zuliprc"),
-        allowed_user_ids=[8],
+        users=[8],
         channels=[42],
         channel_areas={"42": ""},
     )

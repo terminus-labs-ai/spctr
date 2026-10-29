@@ -27,7 +27,9 @@ never exists in two copies.
 """
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from sr2_spectre.interfaces.common import resolve_area
 
@@ -42,9 +44,16 @@ class ZulipConfig(BaseModel):
         zuliprc: Path to the bot's zuliprc credential file (email, key, site).
         api_url: Optional API origin override. When set (e.g. a loopback test
             endpoint), requests go there instead of the zuliprc site.
-        allowed_user_ids: Human user IDs whose messages may trigger a turn.
-            Empty admits no one; bot-authored messages never trigger even if
-            an ID appears here (reply-loop prevention).
+        users: Human user IDs whose messages may trigger a turn, in both
+            modes (Discord's ``users``, spc-1013). Empty admits any human;
+            nonempty admits only the listed IDs. A bot, or the bot's own
+            account, never triggers even if its ID appears here (reply-loop
+            prevention). Replaces the removed ``allowed_user_ids``, which
+            now fails validation.
+        mention_only: Stream mode: when true, a message in a topic with no
+            active Session triggers only when it mentions the bot
+            (:func:`mentions_bot`); a topic with an active Session needs no
+            mention. Direct mode ignores it.
         channels: Integer channel IDs admitted in stream mode. Empty admits
             every channel the event queue delivers (every public channel,
             plus private channels the bot is subscribed to); nonempty admits
@@ -64,11 +73,22 @@ class ZulipConfig(BaseModel):
 
     zuliprc: str
     api_url: str | None = None
-    allowed_user_ids: list[int] = Field(default_factory=list)
+    users: list[int] = Field(default_factory=list)
+    mention_only: bool = False
     channels: list[int] = Field(default_factory=list)
     channel_areas: dict[str, str] = Field(default_factory=dict)
     mode: str = "stream"
     peer_id: int | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _no_removed_allowlist(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "allowed_user_ids" in data:
+            raise ValueError(
+                "Zulip `allowed_user_ids` was removed; use `users` instead "
+                "(a list of integer user IDs, empty = any human)."
+            )
+        return data
 
     @field_validator("mode")
     @classmethod
@@ -86,26 +106,60 @@ def admits_human_trigger(
     *,
     sender_id: int,
     sender_is_bot: bool,
-    allowed_user_ids,
+    users,
+    bot_user_id: int | None = None,
 ) -> bool:
-    """THE admission rule: an allowlisted human, and nothing else (spc-992).
+    """THE admission rule: a human the ``users`` list admits (spc-992, spc-1013).
 
     One implementation serves every Zulip interface mode — the stream/topic
     :func:`is_configured_no_area_channel` front door and the DM variant
     :func:`admits_direct_message` both delegate their human/bot decision
     here, so the security-relevant rule cannot drift between them.
 
-    Two clauses, in force order:
+    Clauses, in force order:
 
-    1. A bot-authored message never triggers, even when its ID is on the
-       allowlist (reply-loop prevention outranks the allowlist).
-    2. Membership is decided on the configured integer IDs: an event
-       carrying a stringified ID (or no ID) is not a match, and an empty
-       allowlist is an explicit nobody.
+    1. A bot-authored message (``is_bot`` in the registration's
+       ``realm_users``) or a message from the bot's own registration
+       ``user_id`` never triggers, whatever ``users`` holds — reply-loop
+       prevention never depends on the user filter.
+    2. The sender ID must be a real integer: a stringified ID (or no ID) is
+       never a match.
+    3. An empty ``users`` admits any human; a nonempty one admits only the
+       listed integer IDs.
     """
     if sender_is_bot:
         return False
-    return sender_id in allowed_user_ids
+    if not isinstance(sender_id, int):
+        return False
+    if bot_user_id is not None and sender_id == bot_user_id:
+        return False
+    if not users:
+        return True
+    return sender_id in users
+
+
+def mentions_bot(
+    content: str, *, full_name: str | None, user_id: int | None
+) -> bool:
+    """True when raw Markdown *content* mentions the bot by name (spc-1013).
+
+    Event content is raw Markdown, so a mention is literal text. The bot is
+    mentioned by ``@**<full_name>**``, ``@**<full_name>|<user_id>**`` or the
+    silent ``@_**…**`` form of either, matched exactly: a wildcard mention
+    (``@**all**``, ``@**everyone**``, ...) names no user and never matches,
+    and a name that only starts with the bot's name (``@**Mirandas**``) is
+    not a mention.
+    """
+    if not full_name:
+        return False
+    names = [full_name]
+    if user_id is not None:
+        names.append(f"{full_name}|{user_id}")
+    return any(
+        f"{prefix}**{name}**" in content
+        for prefix in ("@", "@_")
+        for name in names
+    )
 
 
 def is_configured_no_area_channel(
@@ -114,13 +168,15 @@ def is_configured_no_area_channel(
     sender_id: int,
     sender_is_bot: bool,
     config: ZulipConfig,
+    bot_user_id: int | None = None,
 ) -> bool:
     """Stream mode: decide whether one message event may trigger a model turn.
 
     A turn is admitted when the channel passes the ``channels`` list (empty
     admits every delivered channel; nonempty admits only the listed integer
     IDs — a stringified ID is not a match) and the human/bot rule below
-    admits the sender. The human/bot decision is the single shared
+    admits the sender (``bot_user_id`` is the bot's own registration
+    ``user_id``). The human/bot decision is the single shared
     :func:`admits_human_trigger` core, never a second copy of it. The name
     is historical (spc-119/123 admitted no-area channels only); the routed
     area itself comes from :func:`resolve_channel_area`.
@@ -130,14 +186,15 @@ def is_configured_no_area_channel(
     return admits_human_trigger(
         sender_id=sender_id,
         sender_is_bot=sender_is_bot,
-        allowed_user_ids=config.allowed_user_ids,
+        users=config.users,
+        bot_user_id=bot_user_id,
     )
 
 
 def admits_direct_message(
     *,
     message: dict,
-    allowed_user_ids,
+    users,
     bot_ids,
     bot_user_id: int | None = None,
     peer_id: int | None = None,
@@ -150,13 +207,13 @@ def admits_direct_message(
     its own, only what a DM has that a stream event check does not:
 
     * the message is a private message (a stream post is never admitted,
-      allowlist or not);
+      ``users`` or not);
     * the sender ID and the message ID are real integers — a stringified ID
       is not a match;
-    * the sender is not a bot, per the realm registration metadata
-      (``bot_ids``) nor the bot's own account (``bot_user_id``), which that
-      metadata does not always list;
     * when a *peer_id* is configured, only that peer's DMs are admitted.
+
+    The bot rule (realm-metadata ``bot_ids`` and the bot's own
+    ``bot_user_id``) is the shared core's.
     """
     if message.get("type") != "private":
         return False
@@ -165,12 +222,11 @@ def admits_direct_message(
         return False
     if not isinstance(message.get(message_id_field), int):
         return False
-    if sender_id == bot_user_id:
-        return False  # her own reply: the realm metadata does not always mark it
     return admits_human_trigger(
         sender_id=sender_id,
         sender_is_bot=sender_id in bot_ids,
-        allowed_user_ids=allowed_user_ids,
+        users=users,
+        bot_user_id=bot_user_id,
     ) and (peer_id is None or sender_id == peer_id)
 
 

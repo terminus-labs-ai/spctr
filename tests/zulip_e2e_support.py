@@ -892,7 +892,7 @@ pipeline:
 zulip:
   zuliprc: {zuliprc}
   api_url: "{api_url}"
-  allowed_user_ids: [{diego_id}, 9]
+  users: [{diego_id}, 9]
   channels:
 {channels_yaml}
   channel_areas:

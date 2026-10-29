@@ -63,7 +63,7 @@ def config_for(origin_url: str, zuliprc: str) -> ZulipConfig:
     return ZulipConfig(
         zuliprc=zuliprc,
         api_url=origin_url,  # documented loopback/testing override
-        allowed_user_ids=[DIEGO_ID],
+        users=[DIEGO_ID],
         channels=[CHANNEL],
     )
 

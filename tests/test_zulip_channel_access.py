@@ -9,7 +9,7 @@ parametrized case) each, named ``test_<row>_...``:
   a fake agent whose Sessions record every turn and the ``RunContext`` the
   turn ran under. No model, no network.
 
-Rows use ``allowed_user_ids: [8]`` and human sender 8 (S2 has not landed).
+Rows use ``users: [8]`` and human sender 8.
 """
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ async def test_AC1_a_stream_mode_registers_all_public_streams_and_realm_user(
 ):
     url, forms = register_endpoint
     interface = ZulipInterface(ZulipConfig(
-        zuliprc=_zuliprc(tmp_path), api_url=url, allowed_user_ids=[DIEGO_ID],
+        zuliprc=_zuliprc(tmp_path), api_url=url, users=[DIEGO_ID],
     ))
     await interface.start(_FakeAgent())
     await interface.stop()
@@ -113,7 +113,7 @@ async def test_AC1_b_direct_mode_registers_without_all_public_streams(
 ):
     url, forms = register_endpoint
     interface = ZulipDMInterface(ZulipConfig(
-        zuliprc=_zuliprc(tmp_path), api_url=url, allowed_user_ids=[DIEGO_ID],
+        zuliprc=_zuliprc(tmp_path), api_url=url, users=[DIEGO_ID],
         mode="direct", peer_id=DIEGO_ID,
     ))
     await interface.start(None)
@@ -212,7 +212,7 @@ def _msg(stream_id: int, name: str, content: str, topic: str = TOPIC) -> dict:
 
 
 def _zulip(**over: Any) -> ZulipConfig:
-    return ZulipConfig(zuliprc="/unused.zuliprc", allowed_user_ids=[DIEGO_ID], **over)
+    return ZulipConfig(zuliprc="/unused.zuliprc", users=[DIEGO_ID], **over)
 
 
 def _spectre(zulip: ZulipConfig) -> SpectreConfig:

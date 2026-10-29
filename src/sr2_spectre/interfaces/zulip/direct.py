@@ -12,10 +12,11 @@ omissions:
   no-area ``""`` (never ``None``, so no consumer falls back to the working
   directory).
 - Admission is the SAME shared core the stream mode calls:
-  ``config.admits_direct_message`` wraps ``admits_human_trigger`` (bot
-  never triggers, allowlist outranked by the bot rule, strict integer IDs)
-  and adds only DM-shape checks (private type, integer fields, optional
-  peer filter). Bot identity comes from registration realm metadata, and
+  ``config.admits_direct_message`` wraps ``admits_human_trigger`` (a bot or
+  the bot's own account never triggers, ``users`` empty = any human, strict
+  integer IDs) and adds only DM-shape checks (private type, integer fields,
+  optional peer filter). ``mention_only`` is a stream-mode field and is
+  ignored here. Bot identity comes from registration realm metadata, and
   the registration response's own ``user_id`` identifies this bot — no
   extra HTTP round trip.
 - Outbound sends go through ``ZulipClient.send_direct`` — the JSON-list
@@ -210,7 +211,7 @@ class ZulipDMInterface:
         """Admission against an explicit config read (the per-batch slice)."""
         return admits_direct_message(
             message=message,
-            allowed_user_ids=config.allowed_user_ids,
+            users=config.users,
             bot_ids=self._bot_ids,
             bot_user_id=self._bot_user_id,
             peer_id=config.peer_id,

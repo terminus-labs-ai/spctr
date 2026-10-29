@@ -287,8 +287,8 @@ def test_live_reload_and_last_good(tmp_path):
         # channel, gets a turn once added on disk, and is inert again once
         # removed.  A filter pinned to the startup block fails the middle
         # step; one that only ever grows fails the last.
-        allow = f"  allowed_user_ids: [{DIEGO_ID}, {BOT_ID}]\n"
-        allow_other = f"  allowed_user_ids: [{DIEGO_ID}, {BOT_ID}, {OTHER_ID}]\n"
+        allow = f"  users: [{DIEGO_ID}, {BOT_ID}]\n"
+        allow_other = f"  users: [{DIEGO_ID}, {BOT_ID}, {OTHER_ID}]\n"
         run.zulip.push_message(ALPHA_CHANNEL, "u1", OTHER_ID, "USER INERT")
         _assert_no_work(run, ALPHA_CHANNEL, "u1")
         harness.edit_config({allow: allow_other})
