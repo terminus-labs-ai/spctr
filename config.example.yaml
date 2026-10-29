@@ -86,3 +86,9 @@ pipeline:
 #   thinking_message: "⏳ Thinking..."            # posted before the model call
 #   empty_response_message: "(No response generated)"
 #   error_message: "Error: {error}"              # {error} = the model error text
+#   edit_stream_interval: 1.0                    # min seconds between text-progress edits; 0 = off
+#   tool_embed_enabled: true                     # show a line per tool start/result
+#   tool_line_max_chars: 80                      # {input}/{content} cut to this + "..."
+#   tool_start_line: "▶ `{name}` - `{input}`"
+#   tool_result_ok_line: "✓ `{name}` - `{content}`"     # newlines in {content} become |
+#   tool_result_error_line: "✖ `{name}` - `{content}`"

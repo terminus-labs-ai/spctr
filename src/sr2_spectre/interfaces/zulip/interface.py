@@ -46,6 +46,11 @@ whole-config reload:
   (or ``error_message``) replaces the placeholder by edit, chunked past
   ``max_message_length``; failed posts or edits fall back to new messages
   (spc-1014).
+- While the turn runs the placeholder shows live progress (spc-1015): a
+  templated line per tool start and result, then the streamed text so far
+  plus ``...``, throttled by ``edit_stream_interval`` and tailed to
+  ``max_message_length``. A pending progress edit is cancelled before the
+  final edit, so progress never overwrites the answer.
 - All model turns are serialized globally (one Miranda turn at a time);
   concurrent messages in the same topic share one Session and keep ordered
   history; distinct topics are isolated.
@@ -55,12 +60,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import time
 import urllib.parse
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.events import AgentTextDelta
-from sr2_spectre.interfaces.common import chunk_message
+from sr2_spectre.events import AgentTextDelta, AgentToolResult, AgentToolStart
+from sr2_spectre.interfaces.common import chunk_message, tail_for_stream
 from sr2_spectre.interfaces.zulip.client import (
     ZulipClient,
     ZulipError,
@@ -100,6 +107,117 @@ _PROBE_FAILURE_TEXT = (
 )
 
 
+_TOOL_PLACEHOLDER = re.compile(r"\{(name|input|content)\}")
+
+
+def render_tool_line(
+    template: str, name: str, value: str, max_chars: int
+) -> str:
+    """Fill one tool-line template (spc-1015).
+
+    *value* (a tool's ``str(input)`` or its result content) is cut to
+    *max_chars* plus ``...`` and fills both ``{input}`` and ``{content}``;
+    ``{name}`` is the tool name. One substitution pass, so a value that
+    itself contains ``{name}`` is never re-filled.
+    """
+    if len(value) > max_chars:
+        value = value[:max_chars] + "..."
+    values = {"name": name, "input": value, "content": value}
+    return _TOOL_PLACEHOLDER.sub(lambda m: values[m.group(1)], template)
+
+
+class _ProgressView:
+    """Live progress of one turn's placeholder (spc-1015, Discord parity).
+
+    Tool lines accumulate and the streamed text is remembered; every render
+    shows the tool lines, a blank line, then the text so far plus ``...``
+    (``thinking_message`` before any text), tailed to
+    ``max_message_length``. Edits run as one tracked background task so the
+    stream never waits on the transport; a newer render supersedes a
+    pending one, and :meth:`cancel` drops it before the final edit.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        placeholder_id: Any,
+        config: ZulipConfig,
+        clock: Callable[[], float],
+    ) -> None:
+        self._client = client
+        self._placeholder_id = placeholder_id
+        self._config = config
+        self._clock = clock
+        self._lines: list[str] = []
+        self._text = ""
+        self._last_text_edit: float | None = None
+        self._pending: asyncio.Task | None = None
+
+    def tool_start(self, event: AgentToolStart) -> None:
+        if not self._config.tool_embed_enabled:
+            return
+        self._lines.append(render_tool_line(
+            self._config.tool_start_line, event.name, str(event.input),
+            self._config.tool_line_max_chars,
+        ))
+        self._render()
+
+    def tool_result(self, event: AgentToolResult) -> None:
+        if not self._config.tool_embed_enabled:
+            return
+        template = (
+            self._config.tool_result_error_line if event.is_error
+            else self._config.tool_result_ok_line
+        )
+        self._lines.append(render_tool_line(
+            template, event.name or "tool",
+            str(event.content).replace("\n", "|"),
+            self._config.tool_line_max_chars,
+        ))
+        self._render()
+
+    def text(self, text_so_far: str) -> None:
+        # Always remember the latest text so a tool render between
+        # throttled edits shows it too.
+        self._text = text_so_far
+        interval = self._config.edit_stream_interval
+        if interval <= 0:
+            return
+        now = self._clock()
+        if self._last_text_edit is None or now - self._last_text_edit >= interval:
+            self._last_text_edit = now
+            self._render()
+
+    async def cancel(self) -> None:
+        """Drop a pending progress edit and wait until it has stopped."""
+        pending, self._pending = self._pending, None
+        if pending is not None and not pending.done():
+            pending.cancel()
+            await asyncio.wait([pending])
+
+    def _render(self) -> None:
+        if self._placeholder_id is None:
+            return
+        parts: list[str] = []
+        if self._lines:
+            parts.append("\n".join(self._lines))
+        parts.append(
+            self._text + "..." if self._text else self._config.thinking_message
+        )
+        content = tail_for_stream(
+            "\n\n".join(parts), self._config.max_message_length
+        )
+        if self._pending is not None and not self._pending.done():
+            self._pending.cancel()
+        self._pending = asyncio.ensure_future(self._edit(content))
+
+    async def _edit(self, content: str) -> None:
+        try:
+            await self._client.update_message(self._placeholder_id, content)
+        except ZulipError as exc:
+            logger.error("Zulip progress edit failed: %s", exc)
+
+
 def topic_frame_id(agent_name: str, origin: str, channel_id: int, topic: str) -> str:
     """Build the Session frame identity for one Zulip topic.
 
@@ -120,6 +238,7 @@ class ZulipInterface:
         self,
         config: ZulipConfig | None = None,
         config_source: "SpectreConfigSource | None" = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         """
         Args:
@@ -133,7 +252,10 @@ class ZulipInterface:
                 models/endpoints — apply on the next message with last-good
                 fallback. When omitted, *config* is frozen for the life of
                 the process.
+            clock: Monotonic seconds for the progress-edit throttle
+                (default ``time.monotonic``); a test seam.
         """
+        self._clock = clock or time.monotonic
         self._view = (
             ZulipConfigView(config_source)
             if config_source is not None
@@ -672,7 +794,9 @@ class ZulipInterface:
         ``Session.stream_message``, and the answer (or ``error_message`` on
         a model failure) replaces the placeholder by edit. A failed post or
         edit falls back to new messages; no send or edit failure escapes.
-        ``config`` is the read this message arrived on (default: the
+        Meanwhile tool events and text deltas update the placeholder
+        through a :class:`_ProgressView` (spc-1015), whose pending edit is
+        cancelled before the answer lands. ``config`` is the read this message arrived on (default: the
         config in force).
         """
         if config is None:
@@ -691,6 +815,9 @@ class ZulipInterface:
             placeholder_id = await self._send_reply(
                 channel_id, topic, config.thinking_message
             )
+            progress = _ProgressView(
+                self._client, placeholder_id, config, self._clock
+            )
             parts: list[str] = []
             try:
                 async for event in session.stream_message(
@@ -698,11 +825,19 @@ class ZulipInterface:
                 ):
                     if isinstance(event, AgentTextDelta):
                         parts.append(event.text)
+                        progress.text("".join(parts))
+                    elif isinstance(event, AgentToolStart):
+                        progress.tool_start(event)
+                    elif isinstance(event, AgentToolResult):
+                        progress.tool_result(event)
             except Exception as exc:
                 logger.error("Zulip model turn failed: %s", exc)
                 text = config.error_message.replace("{error}", str(exc))
             else:
                 text = "".join(parts) or config.empty_response_message
+            finally:
+                # A stale progress edit must never land on the answer.
+                await progress.cancel()
             await self._deliver_answer(
                 channel_id, topic, placeholder_id, text, config
             )

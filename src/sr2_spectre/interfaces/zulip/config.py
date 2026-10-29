@@ -78,6 +78,19 @@ class ZulipConfig(BaseModel):
             when the model answers with no text.
         error_message: Stream mode: what the placeholder shows when the
             model turn fails; ``{error}`` is replaced by the error text.
+        edit_stream_interval: Stream mode: the minimum seconds between
+            text-progress edits of the placeholder; ``0`` disables them
+            (tool-line edits still happen).
+        tool_embed_enabled: Stream mode: when true, each tool start and
+            result appends its templated line to the placeholder.
+        tool_line_max_chars: Stream mode: ``{input}`` and ``{content}`` in a
+            tool line are cut to this many characters plus ``...``.
+        tool_start_line: Stream mode: the line a tool start appends;
+            ``{name}`` and ``{input}`` are filled in.
+        tool_result_ok_line: Stream mode: the line a successful tool result
+            appends; ``{name}`` and ``{content}`` (newlines as ``|``).
+        tool_result_error_line: Stream mode: the line a failed tool result
+            appends; same placeholders as ``tool_result_ok_line``.
     """
     model_config = ConfigDict(strict=True)
 
@@ -94,6 +107,13 @@ class ZulipConfig(BaseModel):
     thinking_message: str = "⏳ Thinking..."
     empty_response_message: str = "(No response generated)"
     error_message: str = "Error: {error}"
+    # Live progress (stream mode, spc-1015).
+    edit_stream_interval: float = 1.0
+    tool_embed_enabled: bool = True
+    tool_line_max_chars: int = 80
+    tool_start_line: str = "▶ `{name}` - `{input}`"
+    tool_result_ok_line: str = "✓ `{name}` - `{content}`"
+    tool_result_error_line: str = "✖ `{name}` - `{content}`"
 
     @model_validator(mode="before")
     @classmethod

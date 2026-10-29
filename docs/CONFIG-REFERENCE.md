@@ -486,6 +486,12 @@ zulip:
   thinking_message: "⏳ Thinking..."
   empty_response_message: "(No response generated)"
   error_message: "Error: {error}"
+  edit_stream_interval: 1.0
+  tool_embed_enabled: true
+  tool_line_max_chars: 80
+  tool_start_line: "▶ `{name}` - `{input}`"
+  tool_result_ok_line: "✓ `{name}` - `{content}`"
+  tool_result_error_line: "✖ `{name}` - `{content}`"
 ```
 
 | Field | Type | Default | Description |
@@ -500,6 +506,12 @@ zulip:
 | `thinking_message` | str | `"⏳ Thinking..."` | Stream mode: the placeholder posted in the triggering topic as soon as a turn is admitted, before the model call; the answer replaces it by edit. Direct mode ignores it |
 | `empty_response_message` | str | `"(No response generated)"` | Stream mode: what the placeholder shows when the model answers with no text. Direct mode ignores it |
 | `error_message` | str | `"Error: {error}"` | Stream mode: what the placeholder shows when the model turn fails; `{error}` is replaced by the error text. Nothing else is sent for that turn. Direct mode ignores it |
+| `edit_stream_interval` | float | `1.0` | Stream mode: while a turn runs, text deltas re-render the placeholder as the tool lines, a blank line, then the text so far plus `...`, at most once per this many seconds. `0` disables text-progress edits (tool-line edits still happen). Progress keeps its tail within `max_message_length`, and a pending progress edit is cancelled before the answer lands. Direct mode ignores it |
+| `tool_embed_enabled` | bool | `true` | Stream mode: when `true`, each tool start and result appends its templated line to the placeholder; when `false`, no tool lines are shown. Direct mode ignores it |
+| `tool_line_max_chars` | int | `80` | Stream mode: `{input}` and `{content}` in a tool line are cut to this many characters plus `...`. Direct mode ignores it |
+| `tool_start_line` | str | ``"▶ `{name}` - `{input}`"`` | Stream mode: the line a tool start appends; `{name}` is the tool name and `{input}` its input. Direct mode ignores it |
+| `tool_result_ok_line` | str | ``"✓ `{name}` - `{content}`"`` | Stream mode: the line a successful tool result appends; `{content}` is the result with newlines shown as `\|`. Direct mode ignores it |
+| `tool_result_error_line` | str | ``"✖ `{name}` - `{content}`"`` | Stream mode: the line a failed tool result appends; same placeholders as `tool_result_ok_line`. Direct mode ignores it |
 
 A missing, unreadable, malformed or incomplete zuliprc fails startup with
 `ZulipCredentialError` naming the path and the reason, never the file's
