@@ -205,6 +205,14 @@ class ContinuityConfig(BaseModel):
     situation_sources: list[SituationSourceConfig] = []
 
 
+class ResumeConfig(BaseModel):
+    """Restore conversation history from the session's turn archive."""
+
+    enabled: bool = True
+    interrupted_marker: str = "[This turn was interrupted by a restart before it finished.]"
+    restore_failed_notice: str = "Earlier context for this conversation could not be restored."
+
+
 class AgentConfig(BaseModel):
     """Agent-level configuration — spectre-owned concerns only.
 
@@ -239,6 +247,7 @@ class AgentConfig(BaseModel):
     tool_limit_notice: str = Field(default="Tool iteration limit reached; stopping.")
     reminders: RemindersConfig = Field(default_factory=RemindersConfig)
     schedules: SchedulesConfig = Field(default_factory=SchedulesConfig)
+    resume: ResumeConfig = Field(default_factory=ResumeConfig)
 
 
 class SpectreConfig(BaseModel):
