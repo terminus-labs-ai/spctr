@@ -4,8 +4,8 @@ config-selectable framework interface mode).
 What this file pins, seam by seam:
 
 - ``admits_human_trigger`` — the ONE admission core (bot-never-triggers
-  outranks the allowlist; strict integer membership; empty allowlist is an
-  explicit nobody). The stream front door ``is_configured_no_area_channel``
+  outranks the allowlist; strict integer membership; empty ``users`` admits
+  any human, spc-1013). The stream front door ``is_configured_no_area_channel``
   and the DM wrapper ``admits_direct_message`` are tested against the SAME
   allowlist/bot case matrix: the parametrized rows below call both entry
   points, so a second drifting copy of the rule cannot pass.
@@ -66,8 +66,9 @@ STREAM_CHANNEL = 42
 def _stream_config(**kw: Any) -> ZulipConfig:
     base: dict[str, Any] = {
         "zuliprc": ZULIPRC,
-        "allowed_user_ids": [DIEGO_ID],
-        "channels": {STREAM_CHANNEL: ""},
+        "users": [DIEGO_ID],
+        "channels": [STREAM_CHANNEL],
+        "channel_areas": {str(STREAM_CHANNEL): ""},
     }
     base.update(kw)
     return ZulipConfig(**base)
@@ -76,7 +77,7 @@ def _stream_config(**kw: Any) -> ZulipConfig:
 def _direct_config(**kw: Any) -> ZulipConfig:
     base: dict[str, Any] = {
         "zuliprc": ZULIPRC,
-        "allowed_user_ids": [DIEGO_ID],
+        "users": [DIEGO_ID],
         "mode": "direct",
         "peer_id": PEER_ID,
     }
@@ -102,7 +103,7 @@ ADMISSION_MATRIX = [
 @pytest.mark.parametrize("sender_id,is_bot,expected", ADMISSION_MATRIX)
 def test_shared_core_admits_only_allowlisted_humans(sender_id, is_bot, expected):
     assert admits_human_trigger(
-        sender_id=sender_id, sender_is_bot=is_bot, allowed_user_ids=[DIEGO_ID, BOT_ID]
+        sender_id=sender_id, sender_is_bot=is_bot, users=[DIEGO_ID, BOT_ID]
     ) is expected
 
 
@@ -113,7 +114,7 @@ def test_stream_entry_point_matches_the_shared_core(sender_id, is_bot, expected)
         channel_id=STREAM_CHANNEL,
         sender_id=sender_id,
         sender_is_bot=is_bot,
-        config=_stream_config(allowed_user_ids=[DIEGO_ID, BOT_ID]),
+        config=_stream_config(users=[DIEGO_ID, BOT_ID]),
     ) is expected
 
 
@@ -128,7 +129,7 @@ def test_direct_entry_point_matches_the_shared_core(sender_id, is_bot, expected)
     bot_ids = {BOT_ID, STRANGER_BOT_ID} if is_bot else set()
     assert admits_direct_message(
         message={"type": "private", "id": 1, "sender_id": sender_id},
-        allowed_user_ids=[DIEGO_ID, BOT_ID],
+        users=[DIEGO_ID, BOT_ID],
         bot_ids=bot_ids,
         peer_id=None,
     ) is expected
@@ -151,17 +152,18 @@ def test_stream_only_rules_stay_in_stream():
     )
 
 
-def test_empty_allowlist_admits_noone_in_both_modes():
-    assert not admits_human_trigger(
-        sender_id=DIEGO_ID, sender_is_bot=False, allowed_user_ids=[]
+def test_empty_users_admits_any_human_in_both_modes():
+    """spc-1013 (FR6): an empty ``users`` admits any human."""
+    assert admits_human_trigger(
+        sender_id=DIEGO_ID, sender_is_bot=False, users=[]
     )
-    assert not is_configured_no_area_channel(
+    assert is_configured_no_area_channel(
         channel_id=STREAM_CHANNEL, sender_id=DIEGO_ID, sender_is_bot=False,
-        config=_stream_config(allowed_user_ids=[]),
+        config=_stream_config(users=[]),
     )
-    assert not admits_direct_message(
+    assert admits_direct_message(
         message={"type": "private", "id": 1, "sender_id": DIEGO_ID},
-        allowed_user_ids=[], bot_ids=set(), peer_id=None,
+        users=[], bot_ids=set(), peer_id=None,
     )
 
 
@@ -171,7 +173,7 @@ def test_empty_allowlist_admits_noone_in_both_modes():
 
 def _admits(message: dict, **kw: Any) -> bool:
     params: dict[str, Any] = dict(
-        allowed_user_ids=[DIEGO_ID], bot_ids={BOT_ID}, peer_id=None
+        users=[DIEGO_ID], bot_ids={BOT_ID}, peer_id=None
     )
     params.update(kw)
     return admits_direct_message(message=message, **params)
@@ -193,13 +195,13 @@ def test_direct_shape_peer_filter():
     """With a peer configured, only that peer's DMs admit — an allowlisted
     stranger still never does; without one, the allowlist alone decides."""
     stranger = {"type": "private", "id": 1, "sender_id": INTRUDER_ID}
-    assert _admits(stranger, allowed_user_ids=[DIEGO_ID, INTRUDER_ID], peer_id=None)
+    assert _admits(stranger, users=[DIEGO_ID, INTRUDER_ID], peer_id=None)
     assert not _admits(
-        stranger, allowed_user_ids=[DIEGO_ID, INTRUDER_ID], peer_id=DIEGO_ID
+        stranger, users=[DIEGO_ID, INTRUDER_ID], peer_id=DIEGO_ID
     )
     assert _admits(
         {"type": "private", "id": 2, "sender_id": DIEGO_ID},
-        allowed_user_ids=[DIEGO_ID, INTRUDER_ID], peer_id=DIEGO_ID,
+        users=[DIEGO_ID, INTRUDER_ID], peer_id=DIEGO_ID,
     )
 
 
@@ -207,7 +209,7 @@ def test_direct_shape_bots_own_account_never_admits():
     """Her own reply never triggers, even absent from the realm bot set."""
     assert not _admits(
         {"type": "private", "id": 1, "sender_id": BOT_ID},
-        allowed_user_ids=[BOT_ID], bot_ids=set(), bot_user_id=BOT_ID, peer_id=None,
+        users=[BOT_ID], bot_ids=set(), bot_user_id=BOT_ID, peer_id=None,
     )
 
 
@@ -229,7 +231,7 @@ def test_bot_ids_from_registration_reads_both_arrays():
 
 def test_mode_defaults_to_stream_existing_configs_parse_unchanged():
     cfg = ZulipConfig(
-        zuliprc=ZULIPRC, allowed_user_ids=[DIEGO_ID], channels={STREAM_CHANNEL: ""}
+        zuliprc=ZULIPRC, users=[DIEGO_ID], channels=[STREAM_CHANNEL]
     )
     assert cfg.mode == "stream"
     assert cfg.peer_id is None
@@ -659,7 +661,7 @@ def test_cli_zulip_via_loaded_config_block_selects_dm():
     from sr2_spectre.cli import _load_interface
 
     block = yaml.safe_load(
-        "zuliprc: /tmp/x\nallowed_user_ids: [8]\nmode: direct\npeer_id: 8\n"
+        "zuliprc: /tmp/x\nusers: [8]\nmode: direct\npeer_id: 8\n"
     )
     cfg = ZulipConfig(**block)
     assert _load_interface("zulip", config=cfg) is ZulipDMInterface

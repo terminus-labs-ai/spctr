@@ -138,8 +138,9 @@ def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
 
     config = ZulipConfig(
         zuliprc=str(store_dir / "zuliprc"),
-        allowed_user_ids=[8],
-        channels={42: ""},
+        users=[8],
+        channels=[42],
+        channel_areas={"42": ""},
     )
 
     class _FakeClient:
@@ -177,6 +178,9 @@ def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
         async def send_message(self, **kwargs):
             self.sends.append(kwargs)
             return 1
+
+        async def update_message(self, message_id, content):
+            pass
 
     iface_mod.load_zulip_credentials = lambda path: ZulipCredentials(
         email="bot@test.local", api_key="k", site="http://127.0.0.1:1"
@@ -267,15 +271,17 @@ async def _drive_zulip_turn(interface: Any, agent: Any, tool: Any) -> str:
     captured: list[str] = []
 
     class _StubSession:
-        async def handle_user_message(self, text: str):
+        async def stream_message(self, text: str):
+            # Stream mode runs turns through the event stream (spc-1014).
             captured.append(
                 await tool(
                     action="create", text="standup", in_minutes=60,
                     channel="general",
                 )
             )
-            # Empty text: the interface sends no reply; the store tells all.
-            return type("Result", (), {"text": ""})()
+            # No text: the reply content is irrelevant; the store tells all.
+            return
+            yield
 
     await interface._run_turn(_StubSession(), 42, "plan", message)
     assert len(captured) == 1

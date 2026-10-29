@@ -71,13 +71,15 @@ class TestConfigRetainsZulipBlock:
         cwd, env, pos = isolated
         _write_yaml(pos, {**VALID_TAIL, "zulip": {
             "zuliprc": ZULIPRC,
-            "allowed_user_ids": [DIEGO_ID],
-            "channels": {NO_AREA_CHANNEL: ""},
+            "users": [DIEGO_ID],
+            "channels": [NO_AREA_CHANNEL],
+            "channel_areas": {str(NO_AREA_CHANNEL): ""},
         }})
         zulip = resolve_config(pos, cwd=cwd, env=env).zulip
         assert isinstance(zulip, ZulipConfig)
-        assert zulip.channels == {NO_AREA_CHANNEL: ""}
-        assert zulip.allowed_user_ids == [DIEGO_ID]
+        assert zulip.channels == [NO_AREA_CHANNEL]
+        assert zulip.channel_areas == {str(NO_AREA_CHANNEL): ""}
+        assert zulip.users == [DIEGO_ID]
 
     def test_absent_block_is_none(self, isolated):
         cwd, env, pos = isolated
@@ -85,10 +87,10 @@ class TestConfigRetainsZulipBlock:
         assert resolve_config(pos, cwd=cwd, env=env).zulip is None
 
     @pytest.mark.parametrize("broken", [
-        {"zuliprc": ZULIPRC, "allowed_user_ids": ["8"], "channels": {}},
-        {"zuliprc": ZULIPRC, "allowed_user_ids": [DIEGO_ID], "channels": {"42": ""}},
-        {"zuliprc": ZULIPRC, "allowed_user_ids": [DIEGO_ID], "channels": {NO_AREA_CHANNEL: None}},
-        {"allowed_user_ids": [DIEGO_ID], "channels": {NO_AREA_CHANNEL: ""}},
+        {"zuliprc": ZULIPRC, "users": ["8"], "channels": []},
+        {"zuliprc": ZULIPRC, "users": [DIEGO_ID], "channels": ["42"]},
+        {"zuliprc": ZULIPRC, "users": [DIEGO_ID], "channel_areas": {str(NO_AREA_CHANNEL): None}},
+        {"users": [DIEGO_ID], "channels": [NO_AREA_CHANNEL]},
     ])
     def test_invalid_block_fails_resolution(self, isolated, broken):
         """AC16: an invalid Zulip block fails startup resolution explicitly;
@@ -121,12 +123,13 @@ class TestStartupAcceptsMappedAreas:
         cwd, env, pos = isolated
         _write_yaml(pos, {**VALID_TAIL, "zulip": {
             "zuliprc": ZULIPRC,
-            "allowed_user_ids": [DIEGO_ID],
-            "channels": {NO_AREA_CHANNEL: "", 44: "obsidian"},
+            "users": [DIEGO_ID],
+            "channels": [NO_AREA_CHANNEL, 44],
+            "channel_areas": {str(NO_AREA_CHANNEL): "", "44": "obsidian"},
         }})
         zulip = resolve_config(pos, cwd=cwd, env=env).zulip
         assert zulip is not None
-        assert zulip.channels == {NO_AREA_CHANNEL: "", 44: "obsidian"}
+        assert zulip.channel_areas == {str(NO_AREA_CHANNEL): "", "44": "obsidian"}
 
     def test_mapped_area_interface_startup_not_rejected(self):
         """The startup validator the Zulip front door calls first (spc-119
@@ -141,8 +144,9 @@ class TestStartupAcceptsMappedAreas:
 
         cfg = ZulipConfig(
             zuliprc=ZULIPRC,
-            allowed_user_ids=[DIEGO_ID],
-            channels={NO_AREA_CHANNEL: "", 44: "obsidian"},
+            users=[DIEGO_ID],
+            channels=[NO_AREA_CHANNEL, 44],
+            channel_areas={str(NO_AREA_CHANNEL): "", "44": "obsidian"},
         )
         assert validate_no_area_only_routing(cfg) is None
 
@@ -159,8 +163,9 @@ class TestStartupAcceptsMappedAreas:
         cwd, env, pos = isolated
         _write_yaml(pos, {**VALID_TAIL, "zulip": {
             "zuliprc": ZULIPRC,
-            "allowed_user_ids": [DIEGO_ID],
-            "channels": {NO_AREA_CHANNEL: "", 44: "obsidian"},
+            "users": [DIEGO_ID],
+            "channels": [NO_AREA_CHANNEL, 44],
+            "channel_areas": {str(NO_AREA_CHANNEL): "", "44": "obsidian"},
         }})
         zulip = resolve_config(pos, cwd=cwd, env={}).zulip
         assert zulip is not None

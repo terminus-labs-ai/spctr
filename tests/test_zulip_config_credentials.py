@@ -6,7 +6,7 @@ and its modules:
 
 - ``ZulipConfig`` (``interfaces.zulip.config``) — the spec's config block:
   ``zuliprc`` credential path (no inline key), optional ``api_url``,
-  explicit integer ``allowed_user_ids``, and ``channels`` mapping channel
+  explicit integer ``users``, and ``channels`` mapping channel
   ID → area identity (``""`` = explicitly no area).
 - ``ZulipCredentials`` — the parsed credential record (email/api_key/site)
   returned by the loader; its fields are the spec's public contract.
@@ -84,8 +84,9 @@ def make_config(**kw: Any) -> ZulipConfig:
     base: dict[str, Any] = {
         "zuliprc": "/tmp/spc-123-unused.zuliprc",
         "api_url": API_URL,
-        "allowed_user_ids": [DIEGO_ID],
-        "channels": {NO_AREA_CHANNEL: ""},
+        "users": [DIEGO_ID],
+        "channels": [NO_AREA_CHANNEL],
+        "channel_areas": {str(NO_AREA_CHANNEL): ""},
     }
     base.update(kw)
     return ZulipConfig(**base)
@@ -138,11 +139,13 @@ def load_expect_credential_error(path: Path) -> ZulipCredentialError:
 
 class TestZulipConfigSchema:
     def test_defaults_are_explicitly_empty(self):
-        """Missing allowlists mean 'admits nobody' and 'no channels',
-        never an implicit fallback population."""
+        """Missing lists default to empty (``users`` empty = any human,
+        ``channels`` empty = every delivered channel), never a fallback
+        population."""
         cfg = ZulipConfig(zuliprc="/tmp/spc-123-unparsed.zuliprc")
-        assert cfg.allowed_user_ids == []
-        assert cfg.channels == {}
+        assert cfg.users == []
+        assert cfg.channels == []
+        assert cfg.channel_areas == {}
         assert cfg.api_url is None
 
     def test_zuliprc_is_a_required_credential_path(self):
@@ -151,43 +154,43 @@ class TestZulipConfigSchema:
 
     def test_channels_map_id_to_area_including_empty(self):
         cfg = make_config(
-            channels={NO_AREA_CHANNEL: "", OTHER_NO_AREA_CHANNEL: "obsidian"}
+            channel_areas={str(NO_AREA_CHANNEL): "",
+                           str(OTHER_NO_AREA_CHANNEL): "obsidian"}
         )
-        assert cfg.channels[NO_AREA_CHANNEL] == ""
-        assert cfg.channels[OTHER_NO_AREA_CHANNEL] == "obsidian"
-        assert cfg.allowed_user_ids == [DIEGO_ID]
+        assert cfg.channel_areas[str(NO_AREA_CHANNEL)] == ""
+        assert cfg.channel_areas[str(OTHER_NO_AREA_CHANNEL)] == "obsidian"
+        assert cfg.users == [DIEGO_ID]
 
     def test_non_integer_channel_key_rejected(self):
-        """Spec: "no implicit channel-name or launch-directory fallback" —
-        channel keys are explicit integer Zulip IDs."""
+        """Channel IDs in ``channels`` are explicit integer Zulip IDs."""
         with pytest.raises(ValidationError):
-            make_config(channels={"not-an-id": ""})
+            make_config(channels=["not-an-id"])
 
     def test_digit_string_channel_key_rejected(self):
         """AC17: "explicit integer user/channel admission" — a digit string
-        is not an explicit integer ID, so ``{"42": ...}`` (as it could
-        arrive from a YAML-quoted ID) must not be admitted; the key is the
+        is not an explicit integer ID, so ``["42"]`` (as it could arrive
+        from a YAML-quoted ID) must not be admitted; the entry is the
         integer literal 42 only."""
         with pytest.raises(ValidationError):
-            make_config(channels={"42": ""})
+            make_config(channels=["42"])
 
     def test_non_integer_user_id_rejected(self):
         """Spec: explicit integer user IDs only."""
         with pytest.raises(ValidationError):
-            make_config(allowed_user_ids=["not-an-id"])
+            make_config(users=["not-an-id"])
 
     def test_digit_string_user_id_rejected(self):
         """AC17: "explicit integer user ... admission" — the allowlist must
         carry integer literals; a digit string like ``"8"`` (YAML-quoted)
         is not an explicit integer and is not coerced into one."""
         with pytest.raises(ValidationError):
-            make_config(allowed_user_ids=["8"])
+            make_config(users=["8"])
 
     def test_non_string_area_rejected(self):
         """An area identity is a string; ``""`` is the explicit no-area
         value, so a list is not a legal mapping value."""
         with pytest.raises(ValidationError):
-            make_config(channels={NO_AREA_CHANNEL: ["not", "a", "string"]})
+            make_config(channel_areas={str(NO_AREA_CHANNEL): ["not", "a", "string"]})
 
     def test_zuliprc_must_be_a_string_path(self):
         """AC17 pins the credential *path* as a string; an integer or list
@@ -399,16 +402,17 @@ class TestNonemptyAreaGateIntermediate:
         """The schema parses nonempty areas — now a permanent routing
         contract, not a schema-only tolerance ahead of a rejection gate."""
         cfg = make_config(
-            channels={NO_AREA_CHANNEL: "", OTHER_NO_AREA_CHANNEL: "obsidian"}
+            channel_areas={str(NO_AREA_CHANNEL): "",
+                           str(OTHER_NO_AREA_CHANNEL): "obsidian"}
         )
-        assert cfg.channels[OTHER_NO_AREA_CHANNEL] == "obsidian"
+        assert cfg.channel_areas[str(OTHER_NO_AREA_CHANNEL)] == "obsidian"
 
     def test_area_mapping_requires_no_live_vault_access(self):
         """Implementation note: "validate mapping shape, not live vault
         access" — a never-created area identity is a valid mapping and its
         mere presence in a config object touches no vault."""
-        cfg = make_config(channels={AREA_CHANNEL: "not-created-yet"})
-        assert cfg.channels[AREA_CHANNEL] == "not-created-yet"
+        cfg = make_config(channel_areas={str(AREA_CHANNEL): "not-created-yet"})
+        assert cfg.channel_areas[str(AREA_CHANNEL)] == "not-created-yet"
 
     def test_mapped_area_startup_restriction_removed(self):
         """Gate-lift signal, paired with the routing-aware companion
@@ -423,8 +427,9 @@ class TestNonemptyAreaGateIntermediate:
         journey tests, not by this row."""
         from sr2_spectre.interfaces.zulip import validate_no_area_only_routing
 
-        cfg = make_config(channels={NO_AREA_CHANNEL: "",
-                                    AREA_CHANNEL: "obsidian"})
+        cfg = make_config(channels=[NO_AREA_CHANNEL, AREA_CHANNEL],
+                          channel_areas={str(NO_AREA_CHANNEL): "",
+                                         str(AREA_CHANNEL): "obsidian"})
         assert validate_no_area_only_routing(cfg) is None
 
 
@@ -463,7 +468,9 @@ class TestChannelAdmission:
         caged alongside: bot and off-allowlist events in the same mapped
         channel, and an allowed human in an unconfigured channel, all stay
         unadmitted."""
-        cfg = make_config(channels={NO_AREA_CHANNEL: "", AREA_CHANNEL: "obsidian"})
+        cfg = make_config(channels=[NO_AREA_CHANNEL, AREA_CHANNEL],
+                          channel_areas={str(NO_AREA_CHANNEL): "",
+                                         str(AREA_CHANNEL): "obsidian"})
         assert is_configured_no_area_channel(
             channel_id=AREA_CHANNEL,
             sender_id=DIEGO_ID,
@@ -504,7 +511,7 @@ class TestSenderAdmission:
         """Reply-loop prevention (spec FR5: "ignore bot messages as
         triggers"): the bot-authored rule outranks an allowlisted bot ID,
         so a bot reply can never trigger itself."""
-        cfg = make_config(allowed_user_ids=[DIEGO_ID, BOT_ID])
+        cfg = make_config(users=[DIEGO_ID, BOT_ID])
         assert not is_configured_no_area_channel(
             channel_id=NO_AREA_CHANNEL,
             sender_id=BOT_ID,
@@ -512,10 +519,10 @@ class TestSenderAdmission:
             config=cfg,
         )
 
-    def test_empty_allowlist_admits_no_human(self):
-        """An empty allowlist is explicit nobody — no implicit admission."""
-        cfg = make_config(allowed_user_ids=[])
-        assert not is_configured_no_area_channel(
+    def test_empty_users_admits_any_human(self):
+        """spc-1013 (FR6): an empty ``users`` admits any human."""
+        cfg = make_config(users=[])
+        assert is_configured_no_area_channel(
             channel_id=NO_AREA_CHANNEL,
             sender_id=DIEGO_ID,
             sender_is_bot=False,

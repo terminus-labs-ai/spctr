@@ -71,3 +71,36 @@ pipeline:
       resolvers:
         - type: session   # prior turns from this session
         - type: input     # current user message
+
+# Zulip interface (--interface zulip) — see docs/CONFIG-REFERENCE.md
+# zulip:
+#   zuliprc: ~/.sr2/secrets/zulip/miranda.zuliprc   # bot credentials; never inline
+#   mode: stream            # default; only stream or direct are accepted
+#   peer_id: null           # direct requires an unquoted integer user ID; missing/null fails startup
+#                           # strings, booleans and floats are rejected; ignored in stream mode
+#   users: []               # integer user IDs that may trigger a turn; empty = any human
+#   mention_only: false     # stream mode: a new topic starts only on @**<bot name>**
+#   channels: []            # integer channel IDs; empty = every channel the queue delivers
+#   channel_areas:          # string channel ID -> area; "" = no area; else the channel name
+#     "2": ""
+#   # working indicator (stream mode): placeholder, then the answer by edit
+#   max_message_length: 10000                    # longer answers are chunked
+#   thinking_message: "⏳ Thinking..."            # posted before the model call
+#   empty_response_message: "(No response generated)"
+#   error_message: "Error: {error}"              # {error} = the model error text
+#   edit_stream_interval: 1.0                    # min seconds between text-progress edits; 0 = off
+#   tool_embed_enabled: true                     # show a line per tool start/result
+#   tool_line_max_chars: 80                      # {input}/{content} cut to this + "..."
+#   tool_start_line: "▶ `{name}` - `{input}`"
+#   tool_result_ok_line: "✓ `{name}` - `{content}`"     # newlines in {content} become |
+#   tool_result_error_line: "✖ `{name}` - `{content}`"
+
+# Direct-mode alternative: replace the Zulip block above; --interface zulip selects it.
+# Example peer 8 is a placeholder: use the intended human's user ID.
+# zulip:
+#   zuliprc: ~/.sr2/secrets/zulip/miranda.zuliprc
+#   mode: direct
+#   peer_id: 8
+#   users: [8]              # nonempty must include peer_id; empty still admits only that peer
+# Direct mode rejects stream posts and bot senders; no topics or area routing.
+# It ignores mention_only, channels, channel_areas and the working-indicator fields.

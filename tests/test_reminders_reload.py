@@ -132,8 +132,9 @@ def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
 
     config = ZulipConfig(
         zuliprc=str(store_dir / "zuliprc"),
-        allowed_user_ids=[8],
-        channels={42: ""},
+        users=[8],
+        channels=[42],
+        channel_areas={"42": ""},
     )
 
     class _FakeClient:
@@ -159,6 +160,9 @@ def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
         async def send_message(self, **kwargs):
             self.sends.append(kwargs)
             return 1
+
+        async def update_message(self, message_id, content):
+            pass
 
     iface_mod.load_zulip_credentials = lambda path: ZulipCredentials(
         email="bot@test.local", api_key="k", site="http://127.0.0.1:1"
@@ -257,10 +261,12 @@ async def _drive_message(interface: Any, agent: Any, message_id: int) -> None:
     assert entry is not None
     session, _seen = entry
 
-    async def handle(text: str):
-        return type("Result", (), {"text": ""})()
+    async def stream(text: str):
+        # An empty turn: the interface runs it through stream_message.
+        return
+        yield
 
-    session.handle_user_message = handle
+    session.stream_message = stream
     try:
         await interface._run_turn(session, 42, "plan", message)
     finally:

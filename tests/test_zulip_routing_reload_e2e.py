@@ -156,7 +156,7 @@ def _assert_no_work(run: ZulipCliRun, channel: int, topic: str) -> None:
 
 
 def _route(channel: int, old: str, new: str) -> dict[str, str]:
-    return {f"    {channel}: {old!r}\n": f"    {channel}: {new!r}\n"}
+    return {f'    "{channel}": {old!r}\n': f'    "{channel}": {new!r}\n'}
 
 
 # ---------------------------------------------------------------------------
@@ -265,7 +265,9 @@ def test_live_reload_and_last_good(tmp_path):
         run.zulip.push_message(LATE_CHANNEL, "late", DIEGO_ID, "LATE INERT")
         _assert_no_work(run, LATE_CHANNEL, "late")
         harness.edit_config({"  channels:\n":
-                             f"  channels:\n    {LATE_CHANNEL}: {ALPHA_AREA!r}\n"})
+                             f"  channels:\n    - {LATE_CHANNEL}\n",
+                             "  channel_areas:\n":
+                             f'  channel_areas:\n    "{LATE_CHANNEL}": {ALPHA_AREA!r}\n'})
         _assert_area(run, _turn(run, LATE_CHANNEL, "late2", "LATE MAPPED"),
                      ALPHA_MARKER)
 
@@ -285,8 +287,8 @@ def test_live_reload_and_last_good(tmp_path):
         # channel, gets a turn once added on disk, and is inert again once
         # removed.  A filter pinned to the startup block fails the middle
         # step; one that only ever grows fails the last.
-        allow = f"  allowed_user_ids: [{DIEGO_ID}, {BOT_ID}]\n"
-        allow_other = f"  allowed_user_ids: [{DIEGO_ID}, {BOT_ID}, {OTHER_ID}]\n"
+        allow = f"  users: [{DIEGO_ID}, {BOT_ID}]\n"
+        allow_other = f"  users: [{DIEGO_ID}, {BOT_ID}, {OTHER_ID}]\n"
         run.zulip.push_message(ALPHA_CHANNEL, "u1", OTHER_ID, "USER INERT")
         _assert_no_work(run, ALPHA_CHANNEL, "u1")
         harness.edit_config({allow: allow_other})
@@ -299,8 +301,10 @@ def test_live_reload_and_last_good(tmp_path):
         # (3c) Channel removal reloads: drop a startup mapping (no-area 45)
         # and the late one (47).  Merging loaded channels over the startup
         # set keeps 45; accumulating every channel ever loaded keeps 47.
-        harness.edit_config({f"    {NOAREA_CHANNEL}: ''\n": "",
-                             f"    {LATE_CHANNEL}: {ALPHA_AREA!r}\n": ""})
+        harness.edit_config({f"    - {NOAREA_CHANNEL}\n": "",
+                             f'    "{NOAREA_CHANNEL}": \'\'\n': "",
+                             f"    - {LATE_CHANNEL}\n": "",
+                             f'    "{LATE_CHANNEL}": {ALPHA_AREA!r}\n': ""})
         run.zulip.push_message(NOAREA_CHANNEL, "gone45", DIEGO_ID, "GONE 45")
         _assert_no_work(run, NOAREA_CHANNEL, "gone45")
         run.zulip.push_message(LATE_CHANNEL, "gone47", DIEGO_ID, "GONE 47")

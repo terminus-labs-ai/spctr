@@ -289,10 +289,10 @@ class ReminderStore:
             )
 
     def mark_failed_attempt(self, reminder_id: str, error: str) -> None:
-        """A send failed: leave the row for the next poll (spc-139 policy).
+        """Record a failed attempt; kept only as a columns round-trip fixture.
 
-        The row returns to ``pending`` (retried on the next poll),
-        ``attempts`` increments and ``last_error`` carries the reason.
+        The row returns to ``pending``, ``attempts`` increments and
+        ``last_error`` carries the reason.
         """
         with self._connect() as conn:
             conn.execute(

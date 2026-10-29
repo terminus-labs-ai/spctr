@@ -56,6 +56,7 @@ from zulip_e2e_support import (  # noqa: E402
     REPLY_MARKER,
     SECOND_CONFIGURED_CHANNEL,
     SHARED_TOPIC,
+    THINKING_MESSAGE,
     UNCONFIGURED_CHANNEL,
     Harness,
     ZulipCliRun,
@@ -160,7 +161,11 @@ class _HeldTurn:
                 self.run, "A's actual model request was not captured")
         request = self.run.model_messages()[self.model_gen - 1]
         assert self.content in _flatten(request), request
-        assert len(self.run.zulip.sends) == self.sends_before, _fail(
+        # Only A's working-indicator placeholder (posted before the model
+        # call, spc-1014) has left the process; its answer has not.
+        sends = self.run.zulip.sends
+        assert (len(sends) == self.sends_before + 1
+                and sends[-1]["content"] == THINKING_MESSAGE), _fail(
             self.run, "A replied before its model response was released")
 
     def trigger_queued(self, content: str) -> None:
@@ -168,7 +173,8 @@ class _HeldTurn:
         # serial receiver may naturally leave B queued until A completes.
         # Both must avoid overlapping same-topic model requests and replies.
         self.run.zulip.push_message(self.channel, self.topic, DIEGO_ID, content)
-        self.run.assert_quiescent(self.model_gen, self.sends_before, window=2.0)
+        self.run.assert_quiescent(self.model_gen, self.sends_before + 1,
+                                  window=2.0)
 
     def release(self) -> None:
         self.run.model.release_responses()
@@ -396,8 +402,9 @@ def test_chat_routing_and_filters(tmp_path):
         held = _HeldTurn(run, CONFIGURED_CHANNEL, "alpha", "concurrent A")
         held.arm_and_trigger()
         # A's model REQUEST has arrived (captured) and its response is
-        # parked; nothing of A's turn may leave the process while held:
-        assert len(run.zulip.sends) == 3, _fail(
+        # parked; nothing of A's turn but its placeholder may leave the
+        # process while held:
+        assert len(run.zulip.sends) == 4 and not run.zulip.settled(), _fail(
             run, "a reply was delivered while its model response was held")
 
         # Enqueue B while A's captured model response remains held.
@@ -407,7 +414,7 @@ def test_chat_routing_and_filters(tmp_path):
         assert len(run.model.requests) == 4, _fail(
             run, "a second model request began while A's response was held "
                  "(overlapping same-topic turn)")
-        assert len(run.zulip.sends) == 3, _fail(
+        assert len(run.zulip.sends) == 4 and not run.zulip.settled(), _fail(
             run, "B was answered before A's held turn completed")
         assert run.assert_topic_identity(
             "miranda", run.zulip._handler.port, CONFIGURED_CHANNEL, "alpha",

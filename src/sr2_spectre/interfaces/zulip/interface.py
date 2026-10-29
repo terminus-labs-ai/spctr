@@ -18,10 +18,12 @@ whole-config reload:
   ``zuliprc`` path and ``api_url`` override are pinned for the process:
   the transport, the registered queue and the Session identities are built
   from the startup values.
-- A configured channel routes to its mapped area through the existing
-  resolvers; a mapped ``""`` stays the explicit no-area
-  (``RunContext(area="")``). An unmapped channel is never admitted, so the
-  routing decision never falls back to the working directory.
+- Admission and areas follow Discord (spc-1012): ``channels`` lists the
+  admitted channel IDs (empty = every channel the queue delivers; the
+  queue registers with ``all_public_streams``), and the area is the
+  ``channel_areas`` override or else the channel name derived by the
+  shared Discord helper. No area is ``RunContext(area="")``; routing never
+  falls back to the working directory.
 - Bot identity comes from real server metadata: the registration response's
   ``realm_users`` (and ``realm_bots``) arrays carry ``user_id``/``is_bot``
   per https://zulip.com/api/register-queue; a message event never carries an
@@ -34,30 +36,52 @@ whole-config reload:
   until complete history restoration ships. Fresh messages this process
   already admitted in-process never make a new topic look populated. A probe
   failure or malformed answer blocks the model turn with an explicit error.
-- Only allowed human users in configured channels trigger turns; bot
-  messages and unconfigured channels are ignored without model work.
-- All model turns are serialized globally (one Miranda turn at a time);
-  concurrent messages in the same topic share one Session and keep ordered
-  history; distinct topics are isolated.
+- Humans the ``users`` list admits (empty = any human) in admitted
+  channels trigger turns; bots and the bot's own account (registration
+  ``realm_users``/``user_id``) never do, and unadmitted channels are
+  ignored without model work. With ``mention_only`` a topic with no active
+  Session starts only on a mention of the bot (spc-1013).
+- An admitted turn posts ``thinking_message`` in its topic before the
+  model call, streams through ``Session.stream_message``, and the answer
+  (or ``error_message``) replaces the placeholder by edit, chunked past
+  ``max_message_length``; failed posts or edits fall back to new messages
+  (spc-1014).
+- While the turn runs the placeholder shows live progress (spc-1015): a
+  templated line per tool start and result, then the streamed text so far
+  plus ``...``, throttled by ``edit_stream_interval`` and tailed to
+  ``max_message_length``. A pending progress edit is cancelled before the
+  final edit, so progress never overwrites the answer.
+- Topics run concurrently (zulip-migration FR3/FR4): the poller never
+  waits on a turn, and each admitted message runs in its own task chained
+  behind the previous message of its topic. Messages in one topic share
+  one Session and run in order; a turn in one topic never waits on
+  another topic. A turn's reminder origin lives in that task's
+  ``turn_scope``, never in shared Runtime state.
 - `stop()` closes every interface-owned Session and the transport.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import time
 import urllib.parse
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from sr2_spectre.core import RunContext, RunMode
+from sr2_spectre.events import AgentTextDelta, AgentToolResult, AgentToolStart
+from sr2_spectre.interfaces.common import chunk_message, tail_for_stream
 from sr2_spectre.interfaces.zulip.client import (
     ZulipClient,
     ZulipError,
+    ZulipQueueExpiredError,
     load_zulip_credentials,
 )
 from sr2_spectre.interfaces.zulip.config import (
     ZulipConfig,
     bot_ids_from_registration,
     is_configured_no_area_channel,
+    mentions_bot,
     resolve_channel_area,
     validate_no_area_only_routing,
 )
@@ -67,6 +91,7 @@ from sr2_spectre.reminders import (
     DeliveryLoop,
     ReminderOrigin,
 )
+from sr2_spectre.reminders import tool as reminders_tool
 
 if TYPE_CHECKING:
     from sr2_spectre.config_source import SpectreConfigSource
@@ -85,6 +110,117 @@ _PROBE_FAILURE_TEXT = (
     "I could not check the earlier messages in this topic, so I will not "
     "answer without its history. Please try again later."
 )
+
+
+_TOOL_PLACEHOLDER = re.compile(r"\{(name|input|content)\}")
+
+
+def render_tool_line(
+    template: str, name: str, value: str, max_chars: int
+) -> str:
+    """Fill one tool-line template (spc-1015).
+
+    *value* (a tool's ``str(input)`` or its result content) is cut to
+    *max_chars* plus ``...`` and fills both ``{input}`` and ``{content}``;
+    ``{name}`` is the tool name. One substitution pass, so a value that
+    itself contains ``{name}`` is never re-filled.
+    """
+    if len(value) > max_chars:
+        value = value[:max_chars] + "..."
+    values = {"name": name, "input": value, "content": value}
+    return _TOOL_PLACEHOLDER.sub(lambda m: values[m.group(1)], template)
+
+
+class _ProgressView:
+    """Live progress of one turn's placeholder (spc-1015, Discord parity).
+
+    Tool lines accumulate and the streamed text is remembered; every render
+    shows the tool lines, a blank line, then the text so far plus ``...``
+    (``thinking_message`` before any text), tailed to
+    ``max_message_length``. Edits run as one tracked background task so the
+    stream never waits on the transport; a newer render supersedes a
+    pending one, and :meth:`cancel` drops it before the final edit.
+    """
+
+    def __init__(
+        self,
+        client: Any,
+        placeholder_id: Any,
+        config: ZulipConfig,
+        clock: Callable[[], float],
+    ) -> None:
+        self._client = client
+        self._placeholder_id = placeholder_id
+        self._config = config
+        self._now = clock
+        self._lines: list[str] = []
+        self._text = ""
+        self._last_text_edit: float | None = None
+        self._pending: asyncio.Task | None = None
+
+    def tool_start(self, event: AgentToolStart) -> None:
+        if not self._config.tool_embed_enabled:
+            return
+        self._lines.append(render_tool_line(
+            self._config.tool_start_line, event.name, str(event.input),
+            self._config.tool_line_max_chars,
+        ))
+        self._render()
+
+    def tool_result(self, event: AgentToolResult) -> None:
+        if not self._config.tool_embed_enabled:
+            return
+        template = (
+            self._config.tool_result_error_line if event.is_error
+            else self._config.tool_result_ok_line
+        )
+        self._lines.append(render_tool_line(
+            template, event.name or "tool",
+            str(event.content).replace("\n", "|"),
+            self._config.tool_line_max_chars,
+        ))
+        self._render()
+
+    def text(self, text_so_far: str) -> None:
+        # Always remember the latest text so a tool render between
+        # throttled edits shows it too.
+        self._text = text_so_far
+        interval = self._config.edit_stream_interval
+        if interval <= 0:
+            return
+        now = self._now()
+        if self._last_text_edit is None or now - self._last_text_edit >= interval:
+            self._last_text_edit = now
+            self._render()
+
+    async def cancel(self) -> None:
+        """Drop a pending progress edit and wait until it has stopped."""
+        pending, self._pending = self._pending, None
+        if pending is not None and not pending.done():
+            pending.cancel()
+            await asyncio.wait([pending])
+
+    def _render(self) -> None:
+        if self._placeholder_id is None:
+            return
+        parts: list[str] = []
+        if self._lines:
+            parts.append("\n".join(self._lines))
+        parts.append(
+            self._text + "..." if self._text else self._config.thinking_message
+        )
+        content = tail_for_stream(
+            "\n\n".join(parts), self._config.max_message_length
+        )
+        if self._pending is not None and not self._pending.done():
+            self._pending.cancel()
+        self._pending = asyncio.ensure_future(self._edit(content))
+
+    async def _edit(self, content: str) -> None:
+        try:
+            await self._client.update_message(self._placeholder_id, content)
+        except ZulipError as exc:
+            logger.error("Zulip progress edit failed: %s", exc)
 
 
 def topic_frame_id(agent_name: str, origin: str, channel_id: int, topic: str) -> str:
@@ -107,6 +243,7 @@ class ZulipInterface:
         self,
         config: ZulipConfig | None = None,
         config_source: "SpectreConfigSource | None" = None,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         """
         Args:
@@ -120,7 +257,10 @@ class ZulipInterface:
                 models/endpoints — apply on the next message with last-good
                 fallback. When omitted, *config* is frozen for the life of
                 the process.
+            clock: Monotonic seconds for the progress-edit throttle
+                (default ``time.monotonic``); a test seam.
         """
+        self._progress_clock = clock or time.monotonic
         self._view = (
             ZulipConfigView(config_source)
             if config_source is not None
@@ -156,8 +296,16 @@ class ZulipInterface:
         self._admitted_ids: set[int] = set()
         # Bot user IDs from registration realm metadata (see _read_bot_ids).
         self._bot_ids: set[int] = set()
-        # Global model-turn serialization: one Miranda turn at a time.
-        self._turn_lock = asyncio.Lock()
+        # The bot's own account (registration ``user_id``/``full_name``):
+        # never a trigger, and the name a mention_only message must mention.
+        self._bot_user_id: int | None = None
+        self._bot_full_name: str | None = None
+        # Frame ID -> the task of that topic's latest message. Each new
+        # message's task waits for this one, so a topic runs in order while
+        # distinct topics run concurrently.
+        self._topic_tails: dict[str, asyncio.Task[None]] = {}
+        # Serializes delivery-loop restarts now that turns overlap.
+        self._reminders_lock = asyncio.Lock()
         # Reminders (spc-139, FR6): delivery loop + the per-turn origin.
         # The origin is recorded per turn (below), never shared globally.
         self._reminders_loop: Any = None
@@ -187,11 +335,7 @@ class ZulipInterface:
         self._client = ZulipClient(
             credentials=self._credentials, config=self._config
         )
-        registration = await self._client.register()
-        self._queue_id: str = str(registration["queue_id"])
-        self._last_event_id: int = int(registration["last_event_id"])
-        self._bot_ids = self._read_bot_ids(registration)
-        self._channel_names = self._read_channel_names(registration)
+        await self._register()
         self._wire_reminder_channel_lookup(agent)
         self._start_reminders(agent)
         self._running = True
@@ -200,6 +344,18 @@ class ZulipInterface:
             self._origin,
             self._credentials.email,
         )
+
+    async def _register(self) -> None:
+        """Register an event queue and take its snapshot (start and expiry)."""
+        registration = await self._client.register()
+        self._queue_id: str = str(registration["queue_id"])
+        self._last_event_id: int = int(registration["last_event_id"])
+        self._bot_ids = self._read_bot_ids(registration)
+        own_id = registration.get("user_id")
+        self._bot_user_id = own_id if isinstance(own_id, int) else None
+        full_name = registration.get("full_name")
+        self._bot_full_name = full_name if isinstance(full_name, str) else None
+        self._channel_names = self._read_channel_names(registration)
 
     def _read_bot_ids(self, registration: dict[str, Any]) -> set[int]:
         """Bot user IDs from registration realm metadata.
@@ -211,8 +367,14 @@ class ZulipInterface:
         return bot_ids_from_registration(registration)
 
     async def stop(self) -> None:
-        """Close every interface-owned Session, then the transport."""
+        """Cancel in-flight turns, close every interface-owned Session, then
+        the transport."""
         self._running = False
+        tails = list(self._topic_tails.values())
+        self._topic_tails.clear()
+        for task in tails:
+            task.cancel()
+        await asyncio.gather(*tails, return_exceptions=True)
         await self._stop_reminders()
         for session, _seen in self._sessions.values():
             session.close()
@@ -355,9 +517,9 @@ class ZulipInterface:
     async def _sync_reminders(self) -> None:
         """Re-seat the delivery loop after a live config reload (spc-143).
 
-        Runs once per message, after the per-message ``apply_config``
-        (inside the turn lock, so restarts serialize with turns). Steady
-        state costs one int compare: no reload since the loop started (or
+        Runs once per turn, after the per-batch ``apply_config``. Turns in
+        different topics overlap, so restarts serialize on their own lock.
+        Steady state costs one int compare: no reload since the loop started (or
         no loop and none since) leaves everything untouched (R3). Once the
         Runtime's stamp moves, re-assert from the current handle — stop
         any running loop and start again only if the handle exists, which
@@ -365,23 +527,37 @@ class ZulipInterface:
         stops (pending rows intact, R2), settings change restarts on the
         fresh settings (R4).
         """
-        runtime = self._runtime_of(self._agent)
-        stamp = getattr(runtime, "reminders_stamped", None) if runtime else None
-        if self._reminders_stamp is not None:
-            if stamp == self._reminders_stamp:
-                return
-            await self._stop_reminders()
-        handle = getattr(self._agent, "reminders", None)
-        if self._reminders_loop is None and handle is not None:
-            self._start_reminders(self._agent)
+        async with self._reminders_lock:
+            runtime = self._runtime_of(self._agent)
+            stamp = getattr(runtime, "reminders_stamped", None) if runtime else None
+            if self._reminders_stamp is not None:
+                if stamp == self._reminders_stamp:
+                    return
+                await self._stop_reminders()
+            handle = getattr(self._agent, "reminders", None)
+            if self._reminders_loop is None and handle is not None:
+                self._start_reminders(self._agent)
 
     async def run(self, agent: Any) -> None:
-        """Poll the Zulip event queue until stopped."""
+        """Poll the Zulip event queue until stopped, never waiting on a turn.
+
+        Returns once polling stops and the turns already running finish.
+        """
         while self._running:
             try:
                 response = await self._client.get_events(
                     self._queue_id, self._last_event_id
                 )
+            except ZulipQueueExpiredError:
+                # The server collected the queue; the old ID never recovers.
+                # Messages sent while it was gone are not redelivered.
+                logger.warning("Zulip event queue expired; registering a new one")
+                try:
+                    await self._register()
+                except ZulipError as exc:
+                    logger.error("Zulip queue re-registration failed: %s", exc)
+                    await asyncio.sleep(2.0)
+                continue
             except ZulipError as exc:
                 # Transport failure: log and back off; never model work.
                 logger.error("Zulip event poll failed: %s", exc)
@@ -419,9 +595,62 @@ class ZulipInterface:
                     continue
                 message = event.get("message")
                 if isinstance(message, dict):
-                    await self._handle_message(message, batch_ids, config)
+                    self._dispatch(message, batch_ids, config)
+        # The loop ended: let turns already running finish (stop() cancels
+        # whatever is still running when it is called).
+        await asyncio.gather(
+            *self._topic_tails.values(), return_exceptions=True
+        )
 
     # ---- message handling ----------------------------------------------------
+
+    def _dispatch(
+        self,
+        message: dict[str, Any],
+        batch_ids: set[int],
+        config: ZulipConfig,
+    ) -> None:
+        """Start one admitted message's task behind its topic's previous one.
+
+        Returns at once, so the poller keeps polling while turns run.
+        """
+        if not self._is_allowed_message(message, config):
+            return
+        frame_id = topic_frame_id(
+            self._agent.config.agent.name,
+            self._origin,
+            message["stream_id"],
+            str(message.get("subject", "")),
+        )
+        previous = self._topic_tails.get(frame_id)
+        task = asyncio.create_task(
+            self._handle_in_topic(previous, message, batch_ids, config)
+        )
+        self._topic_tails[frame_id] = task
+
+        def _forget(done: asyncio.Task[None]) -> None:
+            if self._topic_tails.get(frame_id) is done:
+                del self._topic_tails[frame_id]
+
+        task.add_done_callback(_forget)
+
+    async def _handle_in_topic(
+        self,
+        previous: asyncio.Task[None] | None,
+        message: dict[str, Any],
+        batch_ids: set[int],
+        config: ZulipConfig,
+    ) -> None:
+        """Wait for the topic's previous message, then route this one."""
+        if previous is not None:
+            # A failed predecessor must not block its topic.
+            await asyncio.wait({previous})
+        try:
+            await self._handle_message(message, batch_ids, config)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Zulip turn failed outside the model call")
 
     def _reload_config(self) -> ZulipConfig:
         """One whole-config reload at the single entry point for inbound traffic.
@@ -480,6 +709,7 @@ class ZulipInterface:
             sender_id=sender_id,
             sender_is_bot=sender_id in self._bot_ids,
             config=config,
+            bot_user_id=self._bot_user_id,
         )
 
     async def _handle_message(
@@ -506,48 +736,60 @@ class ZulipInterface:
         channel_id = message["stream_id"]
         message_id = message["id"]
         topic = str(message.get("subject", ""))
-        # The area comes only from the mapping on this message's own read:
-        # "" stays the explicit no-area, a name routes through the existing
-        # resolvers, and an unmapped channel was never admitted above — so
-        # this process can never fall back to the working-directory area.
-        area = resolve_channel_area(channel_id=channel_id, config=config)
+        # The area comes from this message's own read: the channel_areas
+        # override, else the channel name (display_recipient) derived as
+        # Discord derives it, else "" — never the working-directory area.
+        channel_name = message.get("display_recipient")
+        area = resolve_channel_area(
+            channel_id=channel_id,
+            config=config,
+            channel_name=channel_name if isinstance(channel_name, str) else None,
+        )
         frame_id = topic_frame_id(
             self._agent.config.agent.name, self._origin, channel_id, topic
         )
-        async with self._turn_lock:
-            # Same-topic concurrency: one Session per topic; the lock above
-            # serializes model turns globally, so queued follow-ups in one
-            # topic keep their order and distinct topics stay isolated.
-            entry = self._sessions.get(frame_id)
-            if entry is None:
-                # Admit-and-remember only on success. The poller holds the
-                # turn lock across probe and turn. Eligible siblings from this
-                # batch are fresh too, but refused IDs are never remembered
-                # after the batch ends.
-                entry = await self._ensure_session(
-                    frame_id, channel_id, topic, message_id,
-                    self._admitted_ids | {message_id} | (batch_ids or set()),
-                    area=area,
-                )
-                if entry is not None:
-                    self._admitted_ids.add(message_id)
-                    self._sessions[frame_id] = entry
-            if entry is None:
-                return  # refused or probe-failed; reply already sent
-            session = entry[0]
-            # A routing edit applies to EVERY topic in the channel on its
-            # next message, including a topic whose Session already exists
-            # (spec ruling 2026-10-16): re-stamp the run context from this
-            # batch's own read through the public Session seam — the mapped
-            # area, or the explicit no-area "" — never the area the topic
-            # was created with, and never a working-directory fallback.
-            session.set_run_context(RunContext(
-                interface="zulip",
-                mode=RunMode.INTERACTIVE,
-                source=f"zulip:{channel_id}:{topic}",
-                area=area if area is not None else "",
-            ))
-            await self._run_turn(session, channel_id, topic, message)
+        # One Session per topic. The poller chains each topic's messages
+        # (_dispatch), so follow-ups in one topic keep their order and
+        # never race this probe-and-create.
+        entry = self._sessions.get(frame_id)
+        if entry is None and config.mention_only and not mentions_bot(
+            str(message.get("content", "")),
+            full_name=self._bot_full_name,
+            user_id=self._bot_user_id,
+        ):
+            # mention_only (Discord parity): a topic with no active
+            # Session starts only on a mention of the bot; a topic
+            # that already has one needs none. No probe, no reply.
+            return
+        if entry is None:
+            # Admit-and-remember only on success. The topic chain covers
+            # probe and turn. Eligible siblings from this batch are fresh
+            # too, but refused IDs are never remembered after the batch
+            # ends.
+            entry = await self._ensure_session(
+                frame_id, channel_id, topic, message_id,
+                self._admitted_ids | {message_id} | (batch_ids or set()),
+                area=area,
+            )
+            if entry is not None:
+                self._admitted_ids.add(message_id)
+                self._sessions[frame_id] = entry
+        if entry is None:
+            return  # refused or probe-failed; reply already sent
+        session = entry[0]
+        # A routing edit applies to EVERY topic in the channel on its
+        # next message, including a topic whose Session already exists
+        # (spec ruling 2026-10-16): re-stamp the run context from this
+        # batch's own read through the public Session seam — the mapped
+        # area, or the explicit no-area "" — never the area the topic
+        # was created with, and never a working-directory fallback.
+        session.set_run_context(RunContext(
+            interface="zulip",
+            mode=RunMode.INTERACTIVE,
+            source=f"zulip:{channel_id}:{topic}",
+            area=area if area is not None else "",
+        ))
+        await self._run_turn(session, channel_id, topic, message, config)
 
     async def _ensure_session(
         self,
@@ -623,33 +865,96 @@ class ZulipInterface:
         return session, set()
 
     async def _run_turn(
-        self, session: Any, channel_id: int, topic: str, message: dict[str, Any]
+        self,
+        session: Any,
+        channel_id: int,
+        topic: str,
+        message: dict[str, Any],
+        config: ZulipConfig | None = None,
     ) -> None:
-        """Run one admitted message through its topic's Session."""
-        origin = self._reminders_origin_for(channel_id, message)
-        runtime = self._runtime_of(self._agent)
-        if runtime is not None:
-            runtime.set_reminders_origin(origin)
+        """Run one admitted message through its topic's Session.
+
+        Working indicator (spc-1014): ``thinking_message`` is posted in the
+        topic before the model call, the turn runs through
+        ``Session.stream_message``, and the answer (or ``error_message`` on
+        a model failure) replaces the placeholder by edit. A failed post or
+        edit falls back to new messages; no send or edit failure escapes.
+        Meanwhile tool events and text deltas update the placeholder
+        through a :class:`_ProgressView` (spc-1015), whose pending edit is
+        cancelled before the answer lands. ``config`` is the read this message arrived on (default: the
+        config in force).
+        """
+        if config is None:
+            config = self._config
+        # This task's own reminder scope: overlapping turns in other topics
+        # run in other tasks and never see it (reminders.tool.turn_scope).
+        scope_token = reminders_tool.turn_scope.set(
+            reminders_tool.TurnScope(
+                origin=self._reminders_origin_for(channel_id, message)
+            )
+        )
         try:
-            # Live reload happens upstream in the per-message
-            # handle_user_message path; re-seat the delivery loop here so
-            # an enable/settings change lands before this turn's tool
-            # could create a row (spc-143). The turn lock keeps restarts
-            # serialized with turns.
+            # Live reload happens upstream once per batch; re-seat the
+            # delivery loop here so an enable/settings change lands before
+            # this turn's tool could create a row (spc-143).
             await self._sync_reminders()
+            placeholder_id = await self._send_reply(
+                channel_id, topic, config.thinking_message
+            )
+            progress = _ProgressView(
+                self._client, placeholder_id, config, self._progress_clock
+            )
+            parts: list[str] = []
             try:
-                result = await session.handle_user_message(
+                async for event in session.stream_message(
                     str(message.get("content", ""))
-                )
+                ):
+                    if isinstance(event, AgentTextDelta):
+                        parts.append(event.text)
+                        progress.text("".join(parts))
+                    elif isinstance(event, AgentToolStart):
+                        progress.tool_start(event)
+                    elif isinstance(event, AgentToolResult):
+                        progress.tool_result(event)
             except Exception as exc:
                 logger.error("Zulip model turn failed: %s", exc)
-                return
-            if not result.text:
-                return
-            await self._send_reply(channel_id, topic, result.text)
+                text = config.error_message.replace("{error}", str(exc))
+            else:
+                text = "".join(parts) or config.empty_response_message
+            finally:
+                # A stale progress edit must never land on the answer.
+                await progress.cancel()
+            await self._deliver_answer(
+                channel_id, topic, placeholder_id, text, config
+            )
         finally:
-            if runtime is not None:
-                runtime.clear_reminders_origin()
+            reminders_tool.turn_scope.reset(scope_token)
+
+    async def _deliver_answer(
+        self,
+        channel_id: int,
+        topic: str,
+        placeholder_id: Any,
+        text: str,
+        config: ZulipConfig,
+    ) -> None:
+        """Replace the placeholder with *text*, chunked past the limit.
+
+        The first chunk edits the placeholder and the rest follow as new
+        messages in order. With no placeholder, or when the edit fails (for
+        example the realm's edit time limit expired), every chunk is sent
+        as a new message instead.
+        """
+        chunks = chunk_message(text, config.max_message_length)
+        if placeholder_id is not None:
+            try:
+                await self._client.update_message(placeholder_id, chunks[0])
+            except ZulipError as exc:
+                logger.error("Zulip reply edit failed: %s", exc)
+            else:
+                chunks = chunks[1:]
+        for chunk in chunks:
+            await self._send_reply(channel_id, topic, chunk)
 
     def _reminders_origin_for(self, channel_id: int, message: dict[str, Any]) -> ReminderOrigin:
         """The origin of THIS turn, recorded per message.
@@ -657,8 +962,7 @@ class ZulipInterface:
         Two concurrent turns in different channels must never record each
         other's origin (spec, Delivery seam): the origin is captured from
         this message's own event (channel, topic, sender, mention) and held
-        on the Runtime for the duration of exactly this turn — never a
-        global, and the turn lock is deliberately not relied on for it.
+        in this turn's task-local ``turn_scope`` — never a global.
         """
         sender_id = message.get("sender_id")
         topic = str(message.get("subject", ""))
@@ -672,14 +976,18 @@ class ZulipInterface:
             topic=topic,
         )
 
-    async def _send_reply(self, channel_id: int, topic: str, content: str) -> None:
-        """Deliver one bot-authored message back to the original topic."""
+    async def _send_reply(self, channel_id: int, topic: str, content: str) -> Any:
+        """Deliver one bot-authored message back to the original topic.
+
+        Returns the new message ID, or None when the send failed (logged).
+        """
         try:
-            await self._client.send_message(
+            return await self._client.send_message(
                 type="stream", to=channel_id, topic=topic, content=content
             )
         except ZulipError as exc:
             logger.error("Zulip reply send failed: %s", exc)
+            return None
 
     async def _send_reminder_reply(
         self, channel_id: int, topic: str, content: str

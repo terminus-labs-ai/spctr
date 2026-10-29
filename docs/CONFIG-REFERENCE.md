@@ -123,6 +123,10 @@ continue with the remaining registry entries.
 
 Maximum size of a tool result before truncation. Results exceeding this limit are truncated to prevent context explosion.
 
+### `agent.tool_limit_notice` (str, default: `"Tool iteration limit reached; stopping."`)
+
+Text emitted when the tool loop reaches its iteration limit (`ToolLoopLimitError`). The notice is appended to the assistant response and saved in conversation history. [Live-reloadable](#live-reload): existing sessions use the updated text without a restart.
+
 ---
 
 ## Models section
@@ -476,30 +480,72 @@ inline in this config, and never echoed into an error or log line:
 zulip:
   zuliprc: ~/.sr2/secrets/zulip/miranda.zuliprc
   api_url: null
-  allowed_user_ids: [8]
-  channels:
-    42: ""
+  mode: stream
+  peer_id: null            # required integer user ID when mode is direct
+  users: []               # empty = any human
+  mention_only: false     # stream mode only
+  channels: []            # empty = every channel the queue delivers
+  channel_areas:
+    "2": ""
+  # working indicator (stream mode)
+  max_message_length: 10000
+  thinking_message: "⏳ Thinking..."
+  empty_response_message: "(No response generated)"
+  error_message: "Error: {error}"
+  edit_stream_interval: 1.0
+  tool_embed_enabled: true
+  tool_line_max_chars: 80
+  tool_start_line: "▶ `{name}` - `{input}`"
+  tool_result_ok_line: "✓ `{name}` - `{content}`"
+  tool_result_error_line: "✖ `{name}` - `{content}`"
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `zuliprc` | str | required | Path to the bot zuliprc (`[api]`: `email`, `key`, `site` — the standard format Zulip downloads; the historical `[zulip]` section is also accepted, with `[api]` preferred when both are present) |
 | `api_url` | str or null | `null` | Optional API origin override (loopback/testing); the zuliprc `site` stays canonical |
-| `allowed_user_ids` | list[int] | `[]` | Human user IDs that may trigger a turn (empty = nobody; bot messages never trigger) |
-| `channels` | dict[int, str] | `{}` | Channel ID to area identity; `""` means explicitly no area. Keys are **integer** IDs — a quoted `"42"` is rejected |
+| `mode` | str | `"stream"` | Selects the variant used by `--interface zulip`: `stream` for stream/topic chats and area routing, or `direct` for private messages with one peer and no topics or area routing. Other values fail config validation |
+| `peer_id` | int or null | `null` | Direct mode: the human user ID used for inbound admission and outbound DMs. Required at direct-mode startup; missing or `null` raises `ValueError` before connecting. Must be an unquoted integer: strings, booleans and floats fail config validation. Stream mode ignores it |
+| `users` | list[int] | `[]` | Both modes: user IDs that may trigger a turn. Empty admits any human; nonempty admits only the listed **integer** IDs. A bot (marked `is_bot` in the registration's `realm_users`) or the bot's own account never triggers, whatever this list holds. Replaces `allowed_user_ids`: a config that still carries `allowed_user_ids` fails startup with an error naming `users`. Direct mode's `peer_id` restriction still applies |
+| `mention_only` | bool | `false` | Stream mode: when `true`, a message in a topic with no active Session in this process triggers only if it mentions the bot — `@**<full name>**`, `@**<full name>\|<user id>**` or the silent `@_**…**` form of either. Wildcard mentions (`@**all**`, `@**everyone**`, `@**channel**`, `@**topic**`) do not count. A topic that already has an active Session needs no mention. Direct mode ignores it |
+| `channels` | list[int] | `[]` | Stream mode: channel IDs that may trigger a turn. Empty admits every channel the event queue delivers (every public channel, plus private channels the bot is subscribed to); nonempty admits only the listed IDs. Entries are **integer** IDs — a quoted `"42"` is rejected, and the old ID→area mapping form fails validation |
+| `channel_areas` | dict[str, str] | `{}` | Stream mode: channel ID **written as a string** (`"42"`) to area identity; `""` means explicitly no area. An integer key is rejected. A channel with no key takes its area from its name, as Discord does |
+| `max_message_length` | int | `10000` | Stream mode: the longest single message the bot sends (Zulip's limit). A longer answer is split with the same chunking Discord uses: the first chunk replaces the placeholder and the rest follow as new messages in order. Direct mode ignores it |
+| `thinking_message` | str | `"⏳ Thinking..."` | Stream mode: the placeholder posted in the triggering topic as soon as a turn is admitted, before the model call; the answer replaces it by edit. Direct mode ignores it |
+| `empty_response_message` | str | `"(No response generated)"` | Stream mode: what the placeholder shows when the model answers with no text. Direct mode ignores it |
+| `error_message` | str | `"Error: {error}"` | Stream mode: what the placeholder shows when the model turn fails; `{error}` is replaced by the error text. Nothing else is sent for that turn. Direct mode ignores it |
+| `edit_stream_interval` | float | `1.0` | Stream mode: while a turn runs, text deltas re-render the placeholder as the tool lines, a blank line, then the text so far plus `...`, at most once per this many seconds. `0` disables text-progress edits (tool-line edits still happen). Progress keeps its tail within `max_message_length`, and a pending progress edit is cancelled before the answer lands. Direct mode ignores it |
+| `tool_embed_enabled` | bool | `true` | Stream mode: when `true`, each tool start and result appends its templated line to the placeholder; when `false`, no tool lines are shown. Direct mode ignores it |
+| `tool_line_max_chars` | int | `80` | Stream mode: `{input}` and `{content}` in a tool line are cut to this many characters plus `...`. Direct mode ignores it |
+| `tool_start_line` | str | ``"▶ `{name}` - `{input}`"`` | Stream mode: the line a tool start appends; `{name}` is the tool name and `{input}` its input. Direct mode ignores it |
+| `tool_result_ok_line` | str | ``"✓ `{name}` - `{content}`"`` | Stream mode: the line a successful tool result appends; `{content}` is the result with newlines shown as `\|`. Direct mode ignores it |
+| `tool_result_error_line` | str | ``"✖ `{name}` - `{content}`"`` | Stream mode: the line a failed tool result appends; same placeholders as `tool_result_ok_line`. Direct mode ignores it |
 
-A missing, unreadable, malformed or incomplete zuliprc fails startup with
-`ZulipCredentialError` naming the path and the reason, never the file's
-contents. Startup validates the `channels` mapping's shape only — integer
-IDs to string area identities; a named area that does not exist in the
-vault yet is a valid mapping and is resolved when a message routes to it.
+For direct mode, replace the Zulip block with a minimal configuration like this example, substituting the intended human's user ID for `8`:
+
+```yaml
+zulip:
+  zuliprc: ~/.sr2/secrets/zulip/miranda.zuliprc
+  mode: direct
+  peer_id: 8
+  users: [8]
+```
+
+Launch with `--interface zulip`; `mode` selects the variant. Direct mode admits private messages only from `peer_id`, subject to the shared human/bot and `users` rules. If `users` is nonempty, it must include the peer to admit their messages; an empty list still admits only the configured peer. Direct mode ignores `mention_only`, `channels`, `channel_areas` and the stream working-indicator fields.
+
+A missing, unreadable, malformed or incomplete zuliprc fails startup with `ZulipCredentialError` naming the path and the reason, never the file's contents. Stream-mode routing validation checks the shape of `channels` and `channel_areas`; a named area that does not exist in the vault yet is valid and is resolved when a message routes to it.
 
 ### Transport
 
 `ZulipClient(credentials=..., config=..., request_timeout=...)` (from
-`sr2_spectre.interfaces.zulip`) is the public HTTP transport: `register()`,
+`sr2_spectre.interfaces.zulip`) is the public HTTP transport: `register()`
+(subscribes to `message` events and fetches `realm_user` state; in stream
+mode it also sets `all_public_streams`, so public channels deliver
+messages without a bot subscription),
 `get_events(queue_id, last_event_id)`, `get_topic_messages(channel_id,
-topic)` and `send_message(type=, to=, topic=, content=)`. Requests go only
+topic)`, `send_message(type=, to=, topic=, content=)` (returns the new
+message ID) and `update_message(message_id, content)` (edits one message
+with `PATCH /api/v1/messages/{id}`). Requests go only
 to `api_url` when set, otherwise the zuliprc `site` — with HTTP Basic,
 redirects never followed, and queue IDs treated as opaque strings. A
 401/403 or protocol-level error raises `ZulipAuthError`; timeout,
@@ -514,22 +560,37 @@ Selecting `--interface zulip` runs `ZulipInterface` with the validated
 zuliprc, validates the routing mapping's shape, and registers the event
 queue — it fetches no history and makes no model request.
 
-- Only allowed human users in configured channels trigger turns;
-  bots (identified by the registration realm metadata, since message
-  events carry no bot flag) and unconfigured channels are ignored without
-  model work. A channel added to `channels` on disk admits its next
-  message without a restart; removing one stops admission the same way.
-- A configured channel routes to its mapped area through the existing
-  resolvers; `""` stays the explicit no-area. An unmapped channel is never
-  admitted, and routing never consults the channel name or the working
-  directory, so a message can never accidentally inherit the service's
-  area.
+- Only human users the `users` list admits (empty = any human) in
+  admitted channels trigger turns; bots (identified by the registration
+  realm metadata, since message events carry no bot flag), the bot's own
+  account (the registration `user_id`) and channels outside a nonempty
+  `channels` list are ignored without model work. With `mention_only`, a
+  topic with no active Session starts only on a mention of the bot's
+  registration `full_name`. A `channels`, `users` or `mention_only` edit
+  on disk applies to the next event batch without a restart.
+- A turn's area is `channel_areas["<channel id>"]` when that key exists
+  (`""` stays the explicit no-area); otherwise it is the channel name
+  derived exactly as Discord derives it — lowercased, leading and trailing
+  non-alphanumerics stripped (`Fractured-Roots!` → `fractured-roots`). A
+  name with nothing alphanumeric gives no area. No area is always `""`;
+  routing never consults the working directory, so a message can never
+  accidentally inherit the service's area.
 - Each (channel, exact topic) owns one Session; the frame identity carries
   the agent, the resolved server origin, the channel ID and the escaped
-  topic. Every turn runs under the channel's current mapped area from the
+  topic. Every turn runs under the channel's current area from the
   config read that trigger arrived on — a routing edit applies to every
   topic in that channel on its next message, including topics whose
   Session already exists — and never falls back to the working directory.
+- Working indicator: an admitted turn posts `thinking_message` in its
+  topic before the model call and runs through `Session.stream_message`;
+  the answer (or `empty_response_message` for an empty answer) then
+  replaces the placeholder by edit, chunked past `max_message_length`. If
+  the placeholder post fails, the turn still runs and the answer is sent
+  as new messages; if the final edit fails (for example the realm's edit
+  time limit expired on a long turn), the answer is sent as new messages.
+  A model error edits the placeholder to `error_message`. No send or edit
+  failure stops the event loop. The unsupported-history refusal and
+  reminder deliveries stay plain messages with no placeholder.
 - Model turns are serialized globally; concurrent messages in the same
   topic share one Session and keep ordered history, and distinct topics
   stay isolated.
@@ -543,8 +604,8 @@ queue — it fetches no history and makes no model request.
 ### Config reload (Zulip)
 
 The Zulip interface re-reads the **whole** resolved config on every inbound
-event batch — not just this section — so `channels`, `allowed_user_ids`
-and everything outside `zulip` apply to the next message, with the same
+event batch — not just this section — so `channels`, `channel_areas`,
+`users`, `mention_only`, the working-indicator fields and everything outside `zulip` apply to the next message, with the same
 last-good guarantees as the [Live reload](#live-reload) section below: a
 malformed or mid-save file keeps the last known-good config in force and
 never takes the process down. `zuliprc` and `api_url` are the interface's
@@ -700,8 +761,9 @@ not just the agent file.
 | `agent.tools` | Tools added, removed, or reconfigured |
 | `agent.skills`, `agent.skills_dirs` | Skill registry rebuilt. Also rebuilt when the skill *files* inside `agent.skills_dirs` change on disk — adding, editing, or removing a skill needs no config edit at all; it is picked up on the next message (spc-110). |
 | `agent.tool_result_max_bytes` | New truncation limit |
+| `agent.tool_limit_notice` | New notice text when the tool loop reaches its iteration limit |
 | `discord.*` except `token` | Channel filters, threading, streaming, embeds |
-| `zulip.channels`, `zulip.allowed_user_ids` | Which channels are admitted and the area each routes to, from the next message |
+| `zulip.channels`, `zulip.users`, `zulip.mention_only`, `zulip.channel_areas` | Which channels and users are admitted, whether a new topic needs a mention, and the area each channel routes to, from the next message |
 
 The `skills_dirs` file watch is best effort: if a configured directory or skill
 file cannot be read during a rescan (mid-edit save, permissions), the previous

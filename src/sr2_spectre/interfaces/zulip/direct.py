@@ -12,10 +12,11 @@ omissions:
   no-area ``""`` (never ``None``, so no consumer falls back to the working
   directory).
 - Admission is the SAME shared core the stream mode calls:
-  ``config.admits_direct_message`` wraps ``admits_human_trigger`` (bot
-  never triggers, allowlist outranked by the bot rule, strict integer IDs)
-  and adds only DM-shape checks (private type, integer fields, optional
-  peer filter). Bot identity comes from registration realm metadata, and
+  ``config.admits_direct_message`` wraps ``admits_human_trigger`` (a bot or
+  the bot's own account never triggers, ``users`` empty = any human, strict
+  integer IDs) and adds only DM-shape checks (private type, integer fields,
+  optional peer filter). ``mention_only`` is a stream-mode field and is
+  ignored here. Bot identity comes from registration realm metadata, and
   the registration response's own ``user_id`` identifies this bot — no
   extra HTTP round trip.
 - Outbound sends go through ``ZulipClient.send_direct`` — the JSON-list
@@ -47,6 +48,7 @@ from sr2_spectre.core import RunContext, RunMode
 from sr2_spectre.interfaces.zulip.client import (
     ZulipClient,
     ZulipError,
+    ZulipQueueExpiredError,
     load_zulip_credentials,
 )
 from sr2_spectre.interfaces.zulip.config import (
@@ -165,12 +167,7 @@ class ZulipDMInterface:
         self._client = ZulipClient(
             credentials=self._credentials, config=self._config
         )
-        registration = await self._client.register()
-        self._queue_id = str(registration["queue_id"])
-        self._last_event_id = int(registration["last_event_id"])
-        self._bot_ids = bot_ids_from_registration(registration)
-        own = registration.get("user_id")
-        self._bot_user_id = own if isinstance(own, int) else None
+        await self._register()
         self._started = True
         self._running = True
         logger.info(
@@ -178,6 +175,15 @@ class ZulipDMInterface:
             self._origin,
             self._credentials.email,
         )
+
+    async def _register(self) -> None:
+        """Register an event queue and take its snapshot (start and expiry)."""
+        registration = await self._client.register()
+        self._queue_id = str(registration["queue_id"])
+        self._last_event_id = int(registration["last_event_id"])
+        self._bot_ids = bot_ids_from_registration(registration)
+        own = registration.get("user_id")
+        self._bot_user_id = own if isinstance(own, int) else None
 
     async def stop(self) -> None:
         """Close the DM Session, then the transport."""
@@ -210,7 +216,7 @@ class ZulipDMInterface:
         """Admission against an explicit config read (the per-batch slice)."""
         return admits_direct_message(
             message=message,
-            allowed_user_ids=config.allowed_user_ids,
+            users=config.users,
             bot_ids=self._bot_ids,
             bot_user_id=self._bot_user_id,
             peer_id=config.peer_id,
@@ -304,6 +310,15 @@ class ZulipDMInterface:
                 response = await self._client.get_events(
                     self._queue_id, self._last_event_id
                 )
+            except ZulipQueueExpiredError:
+                # The server collected the queue; the old ID never recovers.
+                logger.warning("Zulip DM event queue expired; registering a new one")
+                try:
+                    await self._register()
+                except ZulipError as exc:
+                    logger.error("Zulip DM queue re-registration failed: %s", exc)
+                    await asyncio.sleep(2.0)
+                continue
             except ZulipError as exc:
                 # Transport failure: log and back off; never model work.
                 logger.error("Zulip DM event poll failed: %s", exc)

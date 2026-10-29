@@ -7,12 +7,16 @@ Covers obsidian-y10f acceptance criteria:
 - Skip when systemd-run is unavailable (clear message, no failure).
 - Unit naming from --session-id or PID.
 - Configurable memory/swap limits via environment.
+- The real entry point actually reaches ``maybe_enter_scope`` (obsidian-qhuv).
 """
 from __future__ import annotations
 
 import asyncio
 import os
+import stat
+import subprocess
 import sys
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -270,3 +274,118 @@ class TestSystemdUserRunning:
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 5)):
             from sr2_spectre.scoping import _systemd_user_running
             assert _systemd_user_running() is False
+
+
+# ---------------------------------------------------------------------------
+# Entrypoint integration (obsidian-qhuv)
+# ---------------------------------------------------------------------------
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Bound for the entrypoint subprocess. The success path is a module import plus
+# one exec of a stub (seconds); the bound only exists so a child that boots the
+# real agent instead of re-exec'ing fails as an assertion, not a hung suite.
+ENTRYPOINT_TIMEOUT_SECONDS = 120.0
+
+
+class TestEntrypointIntegration:
+    """The real ``sr2-spectre`` entry point must actually enter the scope.
+
+    Discrimination (obsidian-qhuv): every other test in this file calls
+    ``maybe_enter_scope`` directly, so the whole suite stayed green with the
+    two-line integration deleted from ``cli.main()`` — nothing proved a real
+    launch re-execs. This test runs the real ``python -m sr2_spectre.cli`` in a
+    subprocess with the scope env vars unset, with ``systemd-run`` and
+    ``systemctl`` resolved through a PATH shim that records its argv and exits.
+    Deleting the ``maybe_enter_scope(args)`` call from ``main()`` makes the
+    child boot past the scoping step instead: no ``systemd-run`` capture is
+    written and the exit code is nonzero (the probe config does not exist), so
+    this test goes red on both signals.
+
+    Substituted boundary: ``systemd-run`` itself (a stub that records argv —
+    the real re-exec would replace the process with the agent boot, which this
+    test is not about) and ``systemctl is-system-running`` (a stub reporting
+    ``running``, so the probe does not depend on the developer systemd state).
+    Real: the CLI module entry point, ``main()``'s dispatch order, and
+    ``scoping.maybe_enter_scope``'s argv and environment construction.
+    """
+
+    @staticmethod
+    def _install_path_shim(bin_dir: Path, capture_dir: Path) -> None:
+        """Put recording ``systemd-run`` / ``systemctl`` stubs first on PATH."""
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("systemd-run", "systemctl"):
+            shim = bin_dir / name
+            shim.write_text(
+                "#!/bin/sh\n"
+                f'printf "%s\\n" "$@" > "{capture_dir}/{name}.argv"\n'
+                "exit 0\n",
+                encoding="utf-8",
+            )
+            shim.chmod(shim.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    def test_cli_main_reexecs_under_memory_capped_scope(self, tmp_path):
+        capture_dir = tmp_path / "captures"
+        capture_dir.mkdir()
+        self._install_path_shim(tmp_path / "bin", capture_dir)
+
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k
+            not in (
+                "SR2_SCOPE_UNIT",
+                "INVOCATION_ID",
+                "SR2_NO_SCOPE",
+                "SR2_SCOPE_MEMORY_MAX",
+                "SR2_SCOPE_MEMORY_SWAP_MAX",
+            )
+        }
+        # PYTHONPATH must name this tree: the venv resolves sr2_spectre through
+        # a .pth at the main checkout, which would shadow the branch under test.
+        env["PYTHONPATH"] = str(REPO_ROOT / "src")
+        env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
+        env["SR2_HOME"] = str(tmp_path / "sr2-home")
+        env["SR2_SCOPE_MEMORY_MAX"] = "7G"
+
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "sr2_spectre.cli",
+                str(tmp_path / "does-not-exist.yaml"),
+                "--session-id",
+                "qhuv-probe",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=ENTRYPOINT_TIMEOUT_SECONDS,
+        )
+
+        systemd_run_capture = capture_dir / "systemd-run.argv"
+        assert systemd_run_capture.exists(), (
+            "cli.main() never invoked systemd-run — the entrypoint did not "
+            f"enter the scope (exit={proc.returncode} "
+            f"stderr_tail={proc.stderr[-800:]!r})"
+        )
+        argv = systemd_run_capture.read_text(encoding="utf-8").splitlines()
+
+        # A memory-capped scope unit named after the session id, and the child
+        # command carried across the re-exec.
+        assert argv[:4] == ["--user", "--scope", "--quiet", "--unit=spectre-qhuv-probe"]
+        assert "-p" in argv
+        assert "MemoryMax=7G" in argv
+        assert "MemorySwapMax=0" in argv
+        assert "--" in argv
+        reexeced = argv[argv.index("--") + 1 :]
+        assert reexeced[0].endswith("sr2_spectre/cli.py")
+        assert reexeced[1:] == [
+            str(tmp_path / "does-not-exist.yaml"),
+            "--session-id",
+            "qhuv-probe",
+        ]
+
+        # The process ended by exec'ing systemd-run (the stub exits 0), not by
+        # continuing the unsoped boot.
+        assert proc.returncode == 0, proc.stderr[-800:]

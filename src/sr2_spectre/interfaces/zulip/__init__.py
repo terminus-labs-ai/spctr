@@ -28,6 +28,7 @@ from sr2_spectre.interfaces.zulip.config import (
     admits_human_trigger,
     bot_ids_from_registration,
     is_configured_no_area_channel,
+    mentions_bot,
     validate_direct_mode,
     validate_no_area_only_routing,
 )
@@ -59,6 +60,7 @@ __all__ = [
     "dm_frame_id",
     "is_configured_no_area_channel",
     "load_zulip_credentials",
+    "mentions_bot",
     "topic_frame_id",
     "validate_direct_mode",
     "validate_no_area_only_routing",
