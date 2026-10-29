@@ -41,6 +41,11 @@ whole-config reload:
   ``realm_users``/``user_id``) never do, and unadmitted channels are
   ignored without model work. With ``mention_only`` a topic with no active
   Session starts only on a mention of the bot (spc-1013).
+- An admitted turn posts ``thinking_message`` in its topic before the
+  model call, streams through ``Session.stream_message``, and the answer
+  (or ``error_message``) replaces the placeholder by edit, chunked past
+  ``max_message_length``; failed posts or edits fall back to new messages
+  (spc-1014).
 - All model turns are serialized globally (one Miranda turn at a time);
   concurrent messages in the same topic share one Session and keep ordered
   history; distinct topics are isolated.
@@ -54,6 +59,8 @@ import urllib.parse
 from typing import TYPE_CHECKING, Any
 
 from sr2_spectre.core import RunContext, RunMode
+from sr2_spectre.events import AgentTextDelta
+from sr2_spectre.interfaces.common import chunk_message
 from sr2_spectre.interfaces.zulip.client import (
     ZulipClient,
     ZulipError,
@@ -575,7 +582,7 @@ class ZulipInterface:
                 source=f"zulip:{channel_id}:{topic}",
                 area=area if area is not None else "",
             ))
-            await self._run_turn(session, channel_id, topic, message)
+            await self._run_turn(session, channel_id, topic, message, config)
 
     async def _ensure_session(
         self,
@@ -651,9 +658,25 @@ class ZulipInterface:
         return session, set()
 
     async def _run_turn(
-        self, session: Any, channel_id: int, topic: str, message: dict[str, Any]
+        self,
+        session: Any,
+        channel_id: int,
+        topic: str,
+        message: dict[str, Any],
+        config: ZulipConfig | None = None,
     ) -> None:
-        """Run one admitted message through its topic's Session."""
+        """Run one admitted message through its topic's Session.
+
+        Working indicator (spc-1014): ``thinking_message`` is posted in the
+        topic before the model call, the turn runs through
+        ``Session.stream_message``, and the answer (or ``error_message`` on
+        a model failure) replaces the placeholder by edit. A failed post or
+        edit falls back to new messages; no send or edit failure escapes.
+        ``config`` is the read this message arrived on (default: the
+        config in force).
+        """
+        if config is None:
+            config = self._config
         origin = self._reminders_origin_for(channel_id, message)
         runtime = self._runtime_of(self._agent)
         if runtime is not None:
@@ -665,19 +688,53 @@ class ZulipInterface:
             # could create a row (spc-143). The turn lock keeps restarts
             # serialized with turns.
             await self._sync_reminders()
+            placeholder_id = await self._send_reply(
+                channel_id, topic, config.thinking_message
+            )
+            parts: list[str] = []
             try:
-                result = await session.handle_user_message(
+                async for event in session.stream_message(
                     str(message.get("content", ""))
-                )
+                ):
+                    if isinstance(event, AgentTextDelta):
+                        parts.append(event.text)
             except Exception as exc:
                 logger.error("Zulip model turn failed: %s", exc)
-                return
-            if not result.text:
-                return
-            await self._send_reply(channel_id, topic, result.text)
+                text = config.error_message.replace("{error}", str(exc))
+            else:
+                text = "".join(parts) or config.empty_response_message
+            await self._deliver_answer(
+                channel_id, topic, placeholder_id, text, config
+            )
         finally:
             if runtime is not None:
                 runtime.clear_reminders_origin()
+
+    async def _deliver_answer(
+        self,
+        channel_id: int,
+        topic: str,
+        placeholder_id: Any,
+        text: str,
+        config: ZulipConfig,
+    ) -> None:
+        """Replace the placeholder with *text*, chunked past the limit.
+
+        The first chunk edits the placeholder and the rest follow as new
+        messages in order. With no placeholder, or when the edit fails (for
+        example the realm's edit time limit expired), every chunk is sent
+        as a new message instead.
+        """
+        chunks = chunk_message(text, config.max_message_length)
+        if placeholder_id is not None:
+            try:
+                await self._client.update_message(placeholder_id, chunks[0])
+            except ZulipError as exc:
+                logger.error("Zulip reply edit failed: %s", exc)
+            else:
+                chunks = chunks[1:]
+        for chunk in chunks:
+            await self._send_reply(channel_id, topic, chunk)
 
     def _reminders_origin_for(self, channel_id: int, message: dict[str, Any]) -> ReminderOrigin:
         """The origin of THIS turn, recorded per message.
@@ -700,14 +757,18 @@ class ZulipInterface:
             topic=topic,
         )
 
-    async def _send_reply(self, channel_id: int, topic: str, content: str) -> None:
-        """Deliver one bot-authored message back to the original topic."""
+    async def _send_reply(self, channel_id: int, topic: str, content: str) -> Any:
+        """Deliver one bot-authored message back to the original topic.
+
+        Returns the new message ID, or None when the send failed (logged).
+        """
         try:
-            await self._client.send_message(
+            return await self._client.send_message(
                 type="stream", to=channel_id, topic=topic, content=content
             )
         except ZulipError as exc:
             logger.error("Zulip reply send failed: %s", exc)
+            return None
 
     async def _send_reminder_reply(
         self, channel_id: int, topic: str, content: str

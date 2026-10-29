@@ -2,7 +2,7 @@
 
 No platform SDK is imported here. Each helper has exactly one
 implementation, which every interface imports, so a channel's area is
-derived the same way on Discord and on Zulip.
+derived, and a long answer chunked, the same way on Discord and on Zulip.
 """
 from __future__ import annotations
 
@@ -55,3 +55,84 @@ def resolve_area(
 
     derived = derive_area_name(channel_name)
     return (derived, "derived") if derived is not None else (None, None)
+
+
+def chunk_message(text: str, max_length: int = 2000) -> list[str]:
+    """Split a long message into chunks that fit a chat length limit.
+
+    Tries to split at paragraph boundaries first, then word boundaries.
+    Never splits mid-word unless the word itself exceeds the limit.
+
+    Args:
+        text: The full response text.
+        max_length: Maximum length per chunk (default: 2000, Discord's).
+
+    Returns:
+        List of string chunks, each <= max_length characters.
+    """
+    if len(text) <= max_length:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+
+    while remaining:
+        if len(remaining) <= max_length:
+            chunks.append(remaining)
+            break
+
+        # Split marker appended when we split mid-content
+        split_marker = "..."
+        # Content budget: max_length minus the split_marker
+        content_budget = max_length - len(split_marker)
+
+        # Try paragraph split first (double newline)
+        para_break = remaining.rfind("\n\n", 0, content_budget)
+        if para_break > content_budget // 2:
+            chunks.append(remaining[:para_break] + "\n" + split_marker)
+            remaining = remaining[para_break + 2:].lstrip("\n")
+            continue
+
+        # Try single newline
+        line_break = remaining.rfind("\n", 0, content_budget)
+        if line_break > content_budget // 2:
+            chunks.append(remaining[:line_break] + "\n" + split_marker)
+            remaining = remaining[line_break + 1:]
+            continue
+
+        # Try word boundary
+        space = remaining.rfind(" ", 0, content_budget)
+        if space > content_budget // 2:
+            chunks.append(remaining[:space] + split_marker)
+            remaining = remaining[space + 1:]
+            continue
+
+        # Hard split — word itself is too long
+        chunks.append(remaining[:content_budget] + split_marker)
+        remaining = remaining[content_budget:]
+
+    return chunks
+
+
+def tail_for_stream(text: str, max_length: int = 2000) -> str:
+    """Trim in-progress streaming text to the LAST ``max_length`` chars.
+
+    The live progress message is a single chat message edited in place, so
+    it cannot grow past the length limit. Unlike the final response (which is
+    split across several messages by :func:`chunk_message`), the in-progress
+    view only needs the LATEST activity, so we keep the tail rather than the
+    head. Keeping the head froze the message on stale tool lines once a long
+    run first overflowed the limit.
+
+    Args:
+        text: The accumulated progress text.
+        max_length: Maximum length of the rendered message (default: 2000).
+
+    Returns:
+        ``text`` unchanged when it fits, otherwise a leading ellipsis marker
+        followed by the trailing content, total length <= ``max_length``.
+    """
+    if len(text) <= max_length:
+        return text
+    marker = "[…]\n"
+    return marker + text[-(max_length - len(marker)):]

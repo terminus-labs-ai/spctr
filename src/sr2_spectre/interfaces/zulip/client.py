@@ -2,7 +2,7 @@
 
 Credentials and errors ship here alongside the ``ZulipClient`` transport
 (spc-124): authenticated calls to the configured server only — queue
-registration, event polling, exact-topic history and send. No CLI, retry
+registration, event polling, exact-topic history, send and edit. No CLI, retry
 policy or history restoration lives here; later slices build on these
 methods.
 
@@ -304,6 +304,17 @@ class ZulipClient:
             data={"type": type, "to": to, "topic": topic, "content": content},
         )
         return payload["id"]
+
+    async def update_message(self, message_id: int, content: str) -> None:
+        """Edit one message's content (PATCH /api/v1/messages/{message_id}).
+
+        Fails like every other call: :class:`ZulipAuthError` on 401/403 or
+        a protocol-level error (for example the realm's edit time limit),
+        :class:`ZulipTransportError` on transport failure.
+        """
+        await self._request(
+            "PATCH", f"/messages/{int(message_id)}", data={"content": content}
+        )
 
     async def send_direct(self, to: int, content: str) -> Any:
         """Send one private message (POST /api/v1/messages, type=private).

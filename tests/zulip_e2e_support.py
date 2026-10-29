@@ -7,7 +7,7 @@ against substituted loopback boundaries only:
 - a Zulip endpoint speaking the actual protocol (register with string
   ``queue_id`` and ``realm_users``/``realm_bots`` bot metadata, ``events``
   array polling, JSON-encoded exact-topic history narrow, stream send to
-  channel/topic), with recorded requests;
+  channel/topic, message edit by ID), with recorded requests;
 - an OpenAI-compatible model endpoint streaming a deterministic answer;
 - isolated SR2_HOME, cwd, model pointer, synthetic zuliprc and area-marker
   topic documents;
@@ -61,6 +61,9 @@ AREA_MARKER = "SPC125_AREA_MARKER"      # real area's topic document
 DECOY_MARKER = "SPC125_DECOY_MARKER"    # other topics' documents
 CWD_MARKER = "SPC125_CWD_MARKER"        # document a cwd fallback would inject
 REPLY_MARKER = "SPC125_REPLY_MARKER"    # the model's deterministic answer
+# The default working-indicator placeholder a turn posts before the model
+# call; the answer then replaces it by edit (spc-1014).
+THINKING_MESSAGE = "⏳ Thinking..."
 
 # Bounded run (spec: bounded wait, kill and reap after it).
 CLI_START_TIMEOUT = 45.0
@@ -259,6 +262,7 @@ class ZulipServer:
         self.events_calls = 0
         self.history_calls: list[tuple[int, str]] = []
         self.sends: list[dict] = []
+        self.edits: list[dict] = []
         self.send_headers: list[dict[str, str]] = []
         self.fail_history = False
         self.fail_send = False
@@ -362,6 +366,8 @@ class ZulipServer:
             return self._history_call(parsed)
         if resource == "messages" and method == "POST":
             return self._send_call(body, headers)
+        if resource == "messages" and method == "PATCH" and len(parts) > 4:
+            return self._edit_call(int(parts[4]), body)
         return 404, json.dumps({"result": "error", "msg": "not found"})
 
     def _register(self):
@@ -440,6 +446,25 @@ class ZulipServer:
                    "sender_id": self._bot_id}
         self.last_send_response = payload
         return 200, json.dumps(payload)
+
+    def _edit_call(self, message_id, body):
+        """PATCH /api/v1/messages/{id}: replace a sent message's content.
+
+        Like a real server, the edit changes the stored message, so
+        ``sends`` holds each bot message as the topic finally shows it (the
+        working-indicator placeholder becomes the answer, spc-1014).
+        """
+        form = dict(urllib.parse.parse_qsl(body.decode("utf-8")))
+        index = message_id - 5001
+        if not 0 <= index < len(self.sends):
+            return 400, json.dumps({"result": "error", "msg": "no such message"})
+        self.edits.append({"id": message_id, **form})
+        self.sends[index] = {**self.sends[index], "content": form["content"]}
+        return 200, json.dumps({"result": "success"})
+
+    def settled(self) -> bool:
+        """True when no sent message still shows the thinking placeholder."""
+        return all(s.get("content") != THINKING_MESSAGE for s in self.sends)
 
 
 class ModelServer:
@@ -713,15 +738,16 @@ class ZulipCliRun:
         return False
 
     def wait_idle(self, expected_replies: int, timeout: float = CLI_SETTLE_TIMEOUT) -> bool:
-        """Wait until *expected_replies* bot sends have landed (bounded)."""
+        """Wait until *expected_replies* bot sends have landed and no
+        placeholder is still waiting for its answer edit (bounded)."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if len(self.zulip.sends) >= expected_replies:
+            if len(self.zulip.sends) >= expected_replies and self.zulip.settled():
                 return True
             if self.proc is not None and self.proc.poll() is not None:
                 return False
             time.sleep(0.1)
-        return len(self.zulip.sends) >= expected_replies
+        return len(self.zulip.sends) >= expected_replies and self.zulip.settled()
 
     def wait_ignorable_delivered(self, timeout: float = CLI_SETTLE_TIMEOUT) -> None:
         """Block until the CLI's poll cycle is idle, so any queued message
@@ -766,7 +792,7 @@ class ZulipCliRun:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             probed = set(self.zulip.history_calls)
-            if (len(self.zulip.sends) >= replies
+            if (len(self.zulip.sends) >= replies and self.zulip.settled()
                     and all(t in probed for t in topics)):
                 return True
             if self.proc is not None and self.proc.poll() is not None:

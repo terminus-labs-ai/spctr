@@ -68,6 +68,16 @@ class ZulipConfig(BaseModel):
         peer_id: Direct mode: the human user ID this bot exchanges DMs with,
             in both directions. Strict integer, like every other ID here.
             Stream mode ignores it.
+        max_message_length: Stream mode: the longest single message the
+            bot sends (Zulip's limit). A longer answer is split with the
+            shared :func:`sr2_spectre.interfaces.common.chunk_message`.
+        thinking_message: Stream mode: the placeholder posted in the topic
+            when a turn is admitted, before the model call; the answer
+            replaces it by edit.
+        empty_response_message: Stream mode: what the placeholder shows
+            when the model answers with no text.
+        error_message: Stream mode: what the placeholder shows when the
+            model turn fails; ``{error}`` is replaced by the error text.
     """
     model_config = ConfigDict(strict=True)
 
@@ -79,6 +89,11 @@ class ZulipConfig(BaseModel):
     channel_areas: dict[str, str] = Field(default_factory=dict)
     mode: str = "stream"
     peer_id: int | None = None
+    # Working indicator (stream mode; direct mode ignores these).
+    max_message_length: int = 10000
+    thinking_message: str = "⏳ Thinking..."
+    empty_response_message: str = "(No response generated)"
+    error_message: str = "Error: {error}"
 
     @model_validator(mode="before")
     @classmethod

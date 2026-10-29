@@ -24,6 +24,7 @@ from pydantic import ValidationError
 
 from sr2_spectre.config import SpectreConfig
 from sr2_spectre.config_source import SpectreConfigSource
+from sr2_spectre.events import AgentTextDelta
 from sr2_spectre.interfaces.zulip import ZulipConfig, ZulipDMInterface, ZulipInterface
 from sr2_spectre.interfaces.zulip.client import ZulipCredentials
 
@@ -138,9 +139,9 @@ class _FakeSession:
     def set_run_context(self, context: Any) -> None:
         self.context = context
 
-    async def handle_user_message(self, text: str) -> Any:
+    async def stream_message(self, text: str) -> Any:
         self.turns.append((text, self.context.area))
-        return SimpleNamespace(text=f"reply to {text}")
+        yield AgentTextDelta(text=f"reply to {text}")
 
     def close(self) -> None:
         pass
@@ -195,7 +196,13 @@ class _FakeClient:
 
     async def send_message(self, **kwargs: Any) -> int:
         self.sends.append(kwargs)
-        return 1
+        return len(self.sends)   # message ID = position in the ledger
+
+    async def update_message(self, message_id: int, content: str) -> None:
+        # Like a real server: the edit replaces the stored message's content,
+        # so ``sends`` holds each message as the topic finally shows it.
+        self.sends[message_id - 1] = {**self.sends[message_id - 1],
+                                      "content": content}
 
     async def aclose(self) -> None:
         pass
