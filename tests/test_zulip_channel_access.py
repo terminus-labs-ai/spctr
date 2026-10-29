@@ -38,8 +38,20 @@ TOPIC = "save system"
 
 
 @pytest.fixture
-async def register_endpoint():
-    """Loopback Zulip endpoint answering POST /api/v1/register; records forms."""
+async def register_endpoint(monkeypatch):
+    """Loopback Zulip endpoint answering POST /api/v1/register; records forms.
+
+    Pins the REAL transport and credential loader on both interface modules:
+    other test files replace those module attributes without restoring them.
+    """
+    import sr2_spectre.interfaces.zulip.client as client_mod
+    import sr2_spectre.interfaces.zulip.direct as direct_mod
+    import sr2_spectre.interfaces.zulip.interface as iface_mod
+
+    for module in (iface_mod, direct_mod):
+        monkeypatch.setattr(module, "ZulipClient", client_mod.ZulipClient)
+        monkeypatch.setattr(module, "load_zulip_credentials",
+                            client_mod.load_zulip_credentials)
     forms: list[dict[str, str]] = []
 
     async def register(request: web.Request) -> web.Response:
