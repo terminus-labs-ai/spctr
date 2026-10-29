@@ -342,6 +342,8 @@ UTC prefix).
 | `model.progress` | One streamed text or reasoning chunk (`kind`, `preview`) with `output_tokens_estimate` so far |
 | `model.end` / `model.error` / `model.cancel` | Terminal record of that call: provider `usage`, `finish_reason`, `duration_ms`, or the error |
 | `sr2.retry` | SR2 retried an empty response (`reason`, `attempt`); sits between the two model calls |
+| `tool.repeat_guard` | SR2 repeat guard emitted a `note` or `stop` action (`call`, `first_call`, `identical_calls`, `same_result_repeats`, `action`) |
+| `sr2.final_answer` | SR2 completed a forced final answer (`reason`: `limit` or `repeat`; `fallback_used`: whether the configured fallback supplied the final text) |
 | `pipeline.firing`, `pipeline.error` | A resolver, transformer, or tool provider fired (layer, trigger events, token delta, duration). Compaction appears here as the `compaction` transformer. `pipeline.error` also records SR2 in-band bus/post-process errors as an `errors` list (plus `iteration`). No content is logged |
 | `pipeline.compile` | Counts for the compiled request |
 
