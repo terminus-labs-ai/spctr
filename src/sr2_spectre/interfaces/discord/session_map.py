@@ -33,6 +33,9 @@ class ChannelSession:
     session_id: str
     history: list[dict[str, Any]] = field(default_factory=list)
     pending_message_id: int | None = None
+    restored: bool = False
+    turn_seq: int = -1
+    restore_failed_notice: str | None = None
 
     @staticmethod
     def session_id_for(channel_id: int) -> str:

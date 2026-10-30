@@ -867,16 +867,14 @@ class DiscordInterface:
     # /retry — re-run the last user message, dropping the turn it replaces.
     if command == "retry":
       if self._adapter is not None:
-        session = self._session_map.get_or_create(channel_id)
-        recalled = split_for_retry(session.history)
+        recalled = await self._rewind_channel(channel_id, retry=True)
         if recalled is None:
           await self._adapter.send_message(
             channel_id,
             "Nothing to retry — no earlier message in this channel.",
           )
         else:
-          text, trimmed = recalled
-          session.history[:] = trimmed
+          text, _ = recalled
           await self._run_agent(text, channel_id)
       return
 
@@ -884,7 +882,7 @@ class DiscordInterface:
     response = handle_command(command, rest, ctx)
 
     if command == "reset":
-      self._session_map.reset(channel_id)
+      await self._rewind_channel(channel_id)
 
     if response is not None:
       if self._adapter is not None:
@@ -998,16 +996,14 @@ class DiscordInterface:
     # /retry — re-run the last user message. Ack with the recalled prompt as
     # a visible anchor, then stream into the channel like a normal message.
     if name == "retry":
-      session = self._session_map.get_or_create(channel_id)
-      recalled = split_for_retry(session.history)
+      recalled = await self._rewind_channel(channel_id, retry=True)
       if recalled is None:
         await self._adapter.interaction_send(
           interaction,
           "Nothing to retry — no earlier message in this channel.",
         )
         return
-      text, trimmed = recalled
-      session.history[:] = trimmed
+      text, _ = recalled
       await self._adapter.interaction_send(interaction, f"🔁 {text}")
       await self._run_agent(text, channel_id)
       return
@@ -1031,7 +1027,7 @@ class DiscordInterface:
     response = handle_command(name, text, ctx)
 
     if name == "reset":
-      self._session_map.reset(channel_id)
+      await self._rewind_channel(channel_id)
 
     if response is not None:
       for chunk in chunk_message(response, self.config.max_message_length):
@@ -1058,11 +1054,6 @@ class DiscordInterface:
 
     session = self._session_map.get_or_create(channel_id)
 
-    # Append user message to channel history
-    session.history.append(
-      {"role": "user", "content": [{"type": "text", "text": content}]}
-    )
-
     # Send initial placeholder message for streaming
     thinking_msg = await self._adapter.send_message(channel_id, "⏳ Thinking...")
     thinking_id = getattr(thinking_msg, "id", None) if thinking_msg else None
@@ -1074,16 +1065,24 @@ class DiscordInterface:
     self._stream_text[channel_id] = ""
 
     async with self._agent_turn_lock:
+      await self._resume_channel(session)
       # Restore channel history into the agent
       self._restore_history(session)
+      session.history.append(
+        {"role": "user", "content": [{"type": "text", "text": content}]}
+      )
 
       # Show typing indicator while calling the agent (per-message, visible to Discord users).
       # The typing context manager auto-clears when the first message edit/send happens.
       async with self._adapter.channel_typing(channel_id):
         # Drive the agent and render stream events to Discord
-        response_parts, stream_error = await self._drive_agent_stream(
-          content, channel_id, thinking_id
-        )
+        try:
+          response_parts, stream_error = await self._drive_agent_stream(
+            content, channel_id, thinking_id
+          )
+        finally:
+          # The facade can switch to another channel as soon as the lock exits.
+          session.turn_seq = self._agent.sr2._engine.turn_seq
 
     if stream_error is not None:
       session.pending_message_id = None
@@ -1098,6 +1097,9 @@ class DiscordInterface:
     session.history.append(
       {"role": "assistant", "content": [{"type": "text", "text": final_text}]}
     )
+    if session.restore_failed_notice is not None:
+      final_text = session.restore_failed_notice + "\n\n" + final_text
+      session.restore_failed_notice = None
 
     # Cancel any pending streaming edit — it would overwrite our
     # finalized message with the "..." version (race condition).
@@ -1398,6 +1400,42 @@ class DiscordInterface:
       # Render combined progress (tool lines + this text) through the
       # single tracked future.
       self._render_progress(channel_id, message_id)
+
+  async def _resume_channel(self, session: "ChannelSession") -> None:
+    """Initialize channel history and archive bounds once under the turn lock."""
+    if session.restored:
+      return
+    restored = self._agent.create_session(session.session_id)
+    try:
+      result = await restored.restore_history()
+      session.history[:] = [message.model_dump() for message in result.history]
+      if result.restore_failed:
+        session.restore_failed_notice = self._agent.config.agent.resume.restore_failed_notice
+      await restored.sr2.continue_archive()
+      session.turn_seq = restored.sr2._engine.turn_seq
+      session.restored = True
+    finally:
+      restored.close()
+
+  async def _rewind_channel(self, channel_id: int, *, retry: bool = False):
+    """Persist the dropped range before changing the channel's live history."""
+    from sr2_spectre.resume import write_rewind
+
+    async with self._agent_turn_lock:
+      session = self._session_map.get_or_create(channel_id)
+      await self._resume_channel(session)
+      recalled = split_for_retry(session.history) if retry else None
+      if retry and recalled is None:
+        return None
+      await write_rewind(
+        self._agent.sr2.provenance_store, session.session_id,
+        session.turn_seq - 1 if retry else -1, session.turn_seq,
+      )
+      if retry:
+        session.history[:] = recalled[1]
+      else:
+        self._session_map.reset(channel_id)
+      return recalled
 
   def _restore_history(self, session: "ChannelSession") -> None:
     """Restore channel history into the agent's history list.
