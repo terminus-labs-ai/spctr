@@ -16,7 +16,7 @@ import asyncio
 import ast
 import inspect
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -67,6 +67,7 @@ def _make_sr2_mock(on_call) -> MagicMock:
     """
 
     sr2 = MagicMock()
+    sr2.continue_archive = AsyncMock()
     sr2.seed_session = MagicMock()
 
     async def _turn(user_input):
@@ -263,6 +264,7 @@ async def test_terminal_during_logged_turn_sees_log_stem(tmp_path, monkeypatch):
         yield StreamEvent(type="end")
 
     session.sr2 = MagicMock()
+    session.sr2.continue_archive = AsyncMock()
     session.sr2.seed_session = MagicMock()
     session.sr2.turn = _run_tool
 

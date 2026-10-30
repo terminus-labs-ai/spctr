@@ -76,6 +76,7 @@ async def test_completed_history_matches_session(shuffled):
         else:
             yield StreamEvent(type="text", text="C")
     engine = MagicMock()
+    engine.continue_archive = AsyncMock()
     engine.turn = turn
     config = SpectreConfig(agent={}, models={"default": {"model": "test"}}, pipeline={"layers": []})
     with patch("sr2_spectre.session.SR2", return_value=engine):

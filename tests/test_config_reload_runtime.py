@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 import textwrap
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -443,6 +443,7 @@ class TestSessionConfigAdoption:
         runtime.apply_config(_make_config(system_text="new"))
 
         rebuilt = MagicMock()
+        rebuilt.continue_archive = AsyncMock()
         rebuilt.seed_session = MagicMock()
 
         async def _turn(user_input):
@@ -466,6 +467,7 @@ class TestSessionConfigAdoption:
 
         def _fake_sr2():
             sr2 = MagicMock()
+            sr2.continue_archive = AsyncMock()
             sr2.seed_session = MagicMock()
 
             async def _turn(user_input):

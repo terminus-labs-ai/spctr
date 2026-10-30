@@ -59,6 +59,7 @@ def _mock_sr2(turn_events: list[StreamEvent] | None = None) -> MagicMock:
     """Return a mock SR2 instance whose turn() yields given events."""
     events = turn_events or [StreamEvent(type="text", text="Hello!"), StreamEvent(type="end")]
     sr2 = MagicMock()
+    sr2.continue_archive = AsyncMock()
     sr2.seed_session = MagicMock()
 
     async def _stream_gen(user_input):
@@ -194,6 +195,7 @@ class TestHandleUserMessageHappyPath:
     async def test_seed_session_called_each_round(self):
         from sr2_spectre.agent import Agent
         mock_sr2 = MagicMock()
+        mock_sr2.continue_archive = AsyncMock()
         mock_sr2.seed_session = MagicMock()
         events = [StreamEvent(type="text", text="Hi"), StreamEvent(type="end")]
 
@@ -251,6 +253,7 @@ class TestHandleUserMessageToolRoundTrip:
         ]
 
         mock_sr2 = MagicMock()
+        mock_sr2.continue_archive = AsyncMock()
         mock_sr2.seed_session = MagicMock()
 
         async def _turn(user_input):
@@ -285,6 +288,7 @@ class TestHandleUserMessageToolRoundTrip:
         ]
 
         mock_sr2 = MagicMock()
+        mock_sr2.continue_archive = AsyncMock()
         mock_sr2.seed_session = MagicMock()
 
         async def _turn(user_input):
@@ -328,6 +332,7 @@ class TestToolErrorRecovery:
         ]
 
         mock_sr2 = MagicMock()
+        mock_sr2.continue_archive = AsyncMock()
         mock_sr2.seed_session = MagicMock()
 
         async def _turn(user_input):
@@ -361,6 +366,7 @@ class TestToolErrorRecovery:
         ]
 
         mock_sr2 = MagicMock()
+        mock_sr2.continue_archive = AsyncMock()
         mock_sr2.seed_session = MagicMock()
 
         async def _turn(user_input):
@@ -410,6 +416,7 @@ class TestMaxToolRounds:
         ]
 
         mock_sr2 = MagicMock()
+        mock_sr2.continue_archive = AsyncMock()
         mock_sr2.seed_session = MagicMock()
 
         async def _turn(user_input):
@@ -454,6 +461,7 @@ class TestMaxToolRounds:
         ]
 
         mock_sr2 = MagicMock()
+        mock_sr2.continue_archive = AsyncMock()
         mock_sr2.seed_session = MagicMock()
 
         async def _turn(user_input):

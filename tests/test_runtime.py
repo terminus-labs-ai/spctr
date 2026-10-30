@@ -50,6 +50,7 @@ def _mock_sr2(turn_events: list[StreamEvent] | None = None) -> MagicMock:
     """Return a mock SR2 instance whose turn() yields given events."""
     events = turn_events or [StreamEvent(type="text", text="Hello!"), StreamEvent(type="end")]
     sr2 = MagicMock()
+    sr2.continue_archive = AsyncMock()
     sr2.seed_session = MagicMock()
 
     async def _stream_gen(user_input):
@@ -342,6 +343,7 @@ class TestSessionLock:
                 yield ev
 
         mock_sr2 = MagicMock()
+        mock_sr2.continue_archive = AsyncMock()
         mock_sr2.seed_session = MagicMock()
         mock_sr2.turn = _slow_turn
 
@@ -640,10 +642,12 @@ class TestSessionIsolation:
                 yield ev
 
         mock_sr2_a = MagicMock()
+        mock_sr2_a.continue_archive = AsyncMock()
         mock_sr2_a.seed_session = MagicMock()
         mock_sr2_a.turn = _turn
 
         mock_sr2_b = MagicMock()
+        mock_sr2_b.continue_archive = AsyncMock()
         mock_sr2_b.seed_session = MagicMock()
         mock_sr2_b.turn = _turn
 

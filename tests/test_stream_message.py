@@ -18,7 +18,7 @@ This is intentional — these are TDD tests written before the implementation ex
 from __future__ import annotations
 
 from typing import Any, AsyncIterator
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -79,6 +79,7 @@ def _mock_sr2_with_rounds(*round_event_lists: list[StreamEvent]) -> MagicMock:
     rounds = list(round_event_lists)
 
     mock_sr2 = MagicMock()
+    mock_sr2.continue_archive = AsyncMock()
     mock_sr2.seed_session = MagicMock()
 
     async def _turn(user_input):
@@ -607,6 +608,7 @@ class TestStreamMessageMaxToolRounds:
 def _mock_sr2_raising_loop_limit() -> MagicMock:
     """Mock SR2 whose turn() yields a tool round, then raises ToolLoopLimitError."""
     mock_sr2 = MagicMock()
+    mock_sr2.continue_archive = AsyncMock()
     mock_sr2.seed_session = MagicMock()
 
     async def _turn(user_input):
