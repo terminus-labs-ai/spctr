@@ -34,6 +34,7 @@ from sr2_spectre.events import AgentDone, AgentTextDelta
 from sr2_spectre.interfaces.discord.config import DiscordConfig
 from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
 from sr2_spectre.interfaces.discord.interface import DiscordInterface
+from sr2_spectre.resume import ResumeResult
 
 PARENT_ID = 555
 THREAD_ID = 999
@@ -195,6 +196,12 @@ def _make_recording_agent() -> MagicMock:
     agent = MagicMock()
     agent.history = []
     agent.session_id = "discord-test"
+    restored = agent.create_session.return_value
+    restored.restore_history = AsyncMock(return_value=ResumeResult([], False, False))
+    restored.sr2.continue_archive = AsyncMock()
+    restored.sr2._engine.turn_seq = -1
+    restored.close = MagicMock()
+    agent.sr2._engine.turn_seq = 0
     agent.run_context = None
     state: dict[str, Any] = {"ctx": None}
     seen: list[Any] = []

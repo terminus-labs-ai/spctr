@@ -23,6 +23,7 @@ from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
 from sr2_spectre.interfaces.discord.config import DiscordConfig
 from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
 from sr2_spectre.interfaces.discord.interface import DiscordInterface
+from sr2_spectre.resume import ResumeResult
 
 
 # ---------------------------------------------------------------------------
@@ -34,6 +35,13 @@ def _make_mock_agent(events: list | None = None) -> MagicMock:
     agent = MagicMock()
     agent.history = []
     agent.session_id = "discord-test"
+    restored = agent.create_session.return_value
+    restored.restore_history = AsyncMock(return_value=ResumeResult([], False, False))
+    restored.sr2.continue_archive = AsyncMock()
+    restored.sr2._engine.turn_seq = -1
+    restored.close = MagicMock()
+    agent.sr2._engine.turn_seq = 0
+    agent.sr2.provenance_store.write = AsyncMock()
 
     if events is None:
         events = [AgentTextDelta(text="Hello!"), AgentDone(tool_calls_executed=0)]
@@ -251,6 +259,8 @@ async def test_slash_resets_channel_session() -> None:
 
         # First populate history
         session = interface._session_map.get_or_create(12345)
+        session.restored = True
+        session.turn_seq = 0
         session.history.append({"role": "user", "content": []})
         assert len(session.history) == 1
 
@@ -398,8 +408,7 @@ async def test_agent_error_handled_gracefully() -> None:
         yield AgentTextDelta(text="partial")
         raise RuntimeError("LLM is down")
 
-    agent = MagicMock()
-    agent.history = []
+    agent = _make_mock_agent()
     agent.session_id = "test"
     agent.stream_message = _failing_stream
 
@@ -890,6 +899,8 @@ async def test_slash_reset_clears_session_via_interaction() -> None:
     """/reset slash command clears channel history and confirms via interaction."""
     interface, mock_adapter = await _started_interface(DiscordConfig(), _make_mock_agent())
     session = interface._session_map.get_or_create(12345)
+    session.restored = True
+    session.turn_seq = 0
     session.history.append({"role": "user", "content": []})
 
     await interface._handle_slash("reset", "", _make_mock_interaction(12345))
@@ -1245,6 +1256,8 @@ async def test_retry_reruns_last_user_message() -> None:
         await interface.start(agent)
 
         session = interface._session_map.get_or_create(channel_id)
+        session.restored = True
+        session.turn_seq = 0
         session.history.append({"role": "user", "content": [{"type": "text", "text": "hello"}]})
         session.history.append({"role": "assistant", "content": [{"type": "text", "text": "hi"}]})
 
@@ -1287,6 +1300,8 @@ async def test_slash_retry_reruns_last_user_message() -> None:
     interface, mock_adapter = await _started_interface(DiscordConfig(), agent)
 
     session = interface._session_map.get_or_create(channel_id)
+    session.restored = True
+    session.turn_seq = 0
     session.history.append({"role": "user", "content": [{"type": "text", "text": "again?"}]})
     session.history.append({"role": "assistant", "content": [{"type": "text", "text": "sure"}]})
 
