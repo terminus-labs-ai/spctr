@@ -21,6 +21,7 @@ from sr2_spectre.events import AgentDone, AgentTextDelta
 from sr2_spectre.interfaces.zulip import ZulipConfig, ZulipInterface
 from sr2_spectre.interfaces.zulip.client import ZulipCredentials
 from sr2_spectre.reminders import tool as reminders_tool
+from sr2_spectre.resume import ResumeResult
 
 DIEGO_ID = 8
 BOT_ID = 9
@@ -46,6 +47,9 @@ class _Harness:
 
 
 class _FakeSession:
+    async def restore_history(self) -> ResumeResult:
+        return ResumeResult([], interrupted=False, restore_failed=False)
+
     def __init__(self, harness: _Harness) -> None:
         self._h = harness
 

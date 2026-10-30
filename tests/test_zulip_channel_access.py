@@ -27,6 +27,7 @@ from sr2_spectre.config_source import SpectreConfigSource
 from sr2_spectre.events import AgentTextDelta
 from sr2_spectre.interfaces.zulip import ZulipConfig, ZulipDMInterface, ZulipInterface
 from sr2_spectre.interfaces.zulip.client import ZulipCredentials
+from sr2_spectre.resume import ResumeResult
 
 DIEGO_ID = 8
 BOT_ID = 9
@@ -132,6 +133,9 @@ async def test_AC1_b_direct_mode_registers_without_all_public_streams(
 
 
 class _FakeSession:
+    async def restore_history(self) -> ResumeResult:
+        return ResumeResult([], interrupted=False, restore_failed=False)
+
     def __init__(self) -> None:
         self.context: Any = None
         self.turns: list[tuple[str, str]] = []   # (content, area at turn time)

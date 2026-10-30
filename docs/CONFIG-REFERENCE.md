@@ -36,7 +36,7 @@ under a running process would orphan every open conversation.
 
 ### `agent.resume`
 
-Zulip topic and DM Sessions restore their text history from the provenance database at creation. Keep `provenance_store_path` on persistent storage to retain conversations across restarts. History is read once per Session, without replaying tools. A populated topic without an archive remains refused.
+Zulip topic and DM Sessions restore their text history from the provenance database at creation. Keep `provenance_store_path` on persistent storage to retain conversations across restarts. History is read once per Session, without replaying tools.
 
 | Field | Default | Behavior |
 |-------|---------|----------|

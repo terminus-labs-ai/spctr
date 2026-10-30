@@ -803,9 +803,7 @@ class ZulipInterface:
 
         Called only for topics this process does not yet own. The trigger
         message and eligible siblings in the current batch are already inside
-        fetched history, so their IDs are excluded. Any other message,
-        including bot-only alerts — means the topic is populated and is refused with an
-        explicit reply and no model work when no archive exists.
+        fetched history, so their IDs are excluded.
         Messages this process admitted to a Session earlier
         (``candidate_ids``) are likewise fresh in-process messages, not
         prior content; a refused trigger never joins them and stays prior

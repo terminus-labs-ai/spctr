@@ -31,6 +31,7 @@ from sr2_spectre.interfaces.zulip import (
     ZulipTransportError,
 )
 from sr2_spectre.interfaces.zulip.client import ZulipCredentials
+from sr2_spectre.resume import ResumeResult
 
 DIEGO_ID = 8
 BOT_ID = 9
@@ -53,6 +54,9 @@ class _FakeSession:
     ``script[content]`` is a list of answer fragments (one AgentTextDelta
     each) or an exception the stream raises after it starts.
     """
+
+    async def restore_history(self) -> ResumeResult:
+        return ResumeResult([], interrupted=False, restore_failed=False)
 
     def __init__(self, log: list, script: dict[str, Any]) -> None:
         self._log = log

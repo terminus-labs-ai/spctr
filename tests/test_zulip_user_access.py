@@ -22,6 +22,7 @@ from sr2_spectre.config import SpectreConfig
 from sr2_spectre.events import AgentTextDelta
 from sr2_spectre.interfaces.zulip import ZulipConfig, ZulipDMInterface, ZulipInterface
 from sr2_spectre.interfaces.zulip.client import ZulipCredentials
+from sr2_spectre.resume import ResumeResult
 
 OWN_ID = 14
 HUMAN_A = 8
@@ -50,6 +51,9 @@ REGISTRATION = {
 
 
 class _FakeSession:
+    async def restore_history(self) -> ResumeResult:
+        return ResumeResult([], interrupted=False, restore_failed=False)
+
     def __init__(self) -> None:
         self.context: Any = None
         self.turns: list[str] = []

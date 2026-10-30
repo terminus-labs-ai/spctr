@@ -28,6 +28,7 @@ from sr2_spectre.events import (
 from sr2_spectre.interfaces.common import tail_for_stream
 from sr2_spectre.interfaces.zulip import ZulipConfig, ZulipInterface
 from sr2_spectre.interfaces.zulip.client import ZulipCredentials
+from sr2_spectre.resume import ResumeResult
 
 DIEGO_ID = 8
 BOT_ID = 9
@@ -62,6 +63,9 @@ async def _yield_to_loop(times: int = 3) -> None:
 
 
 class _FakeSession:
+    async def restore_history(self) -> ResumeResult:
+        return ResumeResult([], interrupted=False, restore_failed=False)
+
     def __init__(self, clock: list[float], script: list[tuple[float, Any]]):
         self._clock = clock
         self._script = script

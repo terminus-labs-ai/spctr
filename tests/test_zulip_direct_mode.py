@@ -51,6 +51,7 @@ from sr2_spectre.interfaces.zulip.config import (
     bot_ids_from_registration,
     validate_direct_mode,
 )
+from sr2_spectre.resume import ResumeResult
 
 # Identities mirror the spec's Dependencies (Miranda bot 9, Diego 8).
 BOT_ID = 9
@@ -396,6 +397,9 @@ def _dm_interface(patched_credentials, client: FakeDMClient, config=None):
 
 
 class StubSession:
+    async def restore_history(self) -> ResumeResult:
+        return ResumeResult([], interrupted=False, restore_failed=False)
+
     def __init__(self, reply: str = "reply-text") -> None:
         self.reply = reply
         self.run_context: Any = None
