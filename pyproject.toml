@@ -13,10 +13,11 @@ dependencies = [
     "pydantic>=2.13.3",
     "pyyaml>=6.0.3",
     "sr2",
+    "textual>=8.2.8",
 ]
 
 [tool.uv.sources]
-sr2 = { path = "../sr2", editable = true }
+sr2 = { git = "https://github.com/terminus-labs-ai/sr2", branch = "main" }
 
 [project.scripts]
 sr2-spectre = "sr2_spectre.cli:main"

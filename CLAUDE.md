@@ -98,29 +98,21 @@ prefix is needed.
 ### Running tests in a build worktree
 
 Build sessions work in Git worktrees under `/data/worktrees/sr2-spectre/`
-(one per bead), which carry no `.venv`. Run tests there with the main
-checkout's venv interpreter and `PYTHONPATH=src`, so the worktree source
-shadows the editable install of `sr2_spectre` while sr2 core still resolves
-to the editable `../sr2` install:
+(one per bead), which carry no `.venv`. Worktrees are self-contained: `sr2`
+is a git source (`branch = "main"`), so no sibling `../sr2` checkout is
+needed. Create the venv and run the full suite with:
 
 ```bash
-cd /data/worktrees/sr2-spectre/<bead> && PYTHONPATH=src /home/shepard/git/sr2-spectre/.venv/bin/python -m pytest
+cd /data/worktrees/sr2-spectre/<bead> && uv sync --frozen && uv run --frozen python -m pytest
 ```
 
-When the change also edits sr2 core, prepend its source so core imports come
-from there instead of the editable install:
-`PYTHONPATH=src:/home/shepard/git/sr2/src`.
+`uv sync` installs from the committed `uv.lock` (from GitHub for `sr2`);
+never edit `uv.lock` by hand — regenerate it with `uv lock`.
 
-Never run `uv sync` or `uv pip install -e .` inside a worktree. The
-`sr2 = { path = "../sr2", editable = true }` dependency resolves against the
-worktree parent (`/data/worktrees/sr2-spectre/sr2`), which does not exist, so
-sync fails partway and leaves a half-provisioned `.venv` behind — delete that
-directory if one appears. The recorded full-suite baseline assumes the
-main-checkout venv: a fresh standalone worktree venv diverges from it (for
-example the 7 zulip e2e FileNotFound failures). The dispatcher runs roles
-against the stable main-checkout install and injects no `PYTHONPATH`; the
-worktree code reaches tests only through the `PYTHONPATH` in the command
-above.
+To co-develop `sr2` locally (worktree still pulls `sr2` from GitHub), run
+`uv pip install -e ../sr2` inside the worktree's venv after syncing. This
+deviation is local only — do not commit a path source for `sr2` back into
+`pyproject.toml` (repo-conventions rule 1).
 
 ## Architecture Overview
 
