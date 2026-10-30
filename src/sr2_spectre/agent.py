@@ -120,6 +120,27 @@ class Agent:
         return self._session._execute_tool
 
     @property
+    def provenance_store(self) -> Any:
+        """The Runtime's shared provenance store, or None when unconfigured (spc-132).
+
+        Read-only passthrough — the store belongs to the Runtime. Interfaces
+        read it to list archived sessions (``list_sessions``) for a resume
+        picker; ``None`` before ``initialize()`` or with provenance disabled.
+        """
+        return self._runtime.provenance_store
+
+    async def restore_history(self) -> Any:
+        """Restore the facade's Session from its archive (delegated to Session).
+
+        Passthrough to ``Session.restore_history``: rebuilds this frame's
+        resumable history from the provenance archive before the first turn,
+        returning the ``ResumeResult`` (history, interrupted, restore_failed).
+        Used by an interface adopting a key mid-process — the identity switch
+        comes first, so this restores the *adopted* key's archive (spc-132).
+        """
+        return await self._session.restore_history()
+
+    @property
     def reminders(self) -> Any:
         """The Runtime's reminders handle (None when disabled, FR6).
 

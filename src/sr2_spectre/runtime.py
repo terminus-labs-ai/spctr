@@ -953,6 +953,18 @@ class Runtime:
         self._sessions.add(session)
         return session
 
+    @property
+    def provenance_store(self) -> "ProvenanceStore | None":
+        """The shared persistent provenance store (spc-132, read-only).
+
+        ``None`` until ``initialize()`` connects it, and always ``None`` when
+        no store path is configured (``provenance_store_path: ""``). Sessions
+        pick up the store through ``attach_provenance_store`` during
+        ``initialize()``; interfaces read this to list archived sessions
+        without reaching into the Runtime's internals.
+        """
+        return self._provenance_store
+
     async def aclose(self) -> None:
         """Close all MCP client transports and the provenance store.
 

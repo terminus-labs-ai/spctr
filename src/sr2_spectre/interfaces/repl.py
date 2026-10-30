@@ -14,6 +14,7 @@ work exactly like a normal shell session:
 
 Slash commands (identical semantics to the TUI):
   /quit /exit /reset /help /tools /history /context /save [path] /load <path>
+  /resume [| <idx> | <session-id>]
 
 Terminal counterpart of Discord's /model (spc-956):
   /change-model [name]
@@ -26,8 +27,10 @@ Usage: sr2-spectre config.yaml --interface repl
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
 
@@ -43,6 +46,7 @@ from rich.markdown import Markdown
 from rich.text import Text
 
 from sr2_spectre.core import RunContext, RunMode
+from sr2_spectre.resume import load_resumable_history
 from sr2_spectre.events import (
     AgentDone,
     AgentThinkingDelta,
@@ -61,6 +65,11 @@ from sr2_spectre.interfaces.session_io import (
 if TYPE_CHECKING:
     from sr2_spectre.agent import Agent
 
+logger = logging.getLogger(__name__)
+
+# Rows a bare /resume shows (FR 12).
+_RESUME_LIST_LIMIT = 15
+
 _HELP = """\
 Commands:
   /quit     — exit the REPL
@@ -72,6 +81,7 @@ Commands:
   /context  — show session id, message count and estimated context tokens
   /save [path]  — save session to JSON (default: ~/.sr2-spectre/session.json)
   /load <path>  — load session from JSON
+  /resume [| <idx> | <session-id>]  — list archived sessions, or take one over
   /change-model [name]  — list models, or switch the active one
 
 Multiline input: Enter sends the message, Shift+Enter (or Alt+Enter) adds a
@@ -92,6 +102,7 @@ _COMMANDS = [
     "/context",
     "/save",
     "/load",
+    "/resume",
     "/change-model",
 ]
 
@@ -239,6 +250,110 @@ def _make_prompt_session(completer):
     )
 
 
+def _mint_repl_key(name: str, now: datetime | None = None) -> str:
+    """Fresh unique REPL session key: ``<name>-repl-<YYYYmmdd-HHMMSS>`` (FR 9).
+
+    Local time, as the listing shows local time.  Uniqueness comes from the
+    clock: one mint per REPL start (and one per ``/reset``) can only collide
+    with another inside the same second.
+    """
+    moment = now if now is not None else datetime.now()
+    return f"{name}-repl-{moment.strftime('%Y%m%d-%H%M%S')}"
+
+
+def _needs_repl_key(session_id: str, name: str) -> bool:
+    """True when ``session_id`` is still the constructed default identity.
+
+    Only ``<name>-default`` — the identity ``Agent`` gives a session with no
+    explicit ``--session-id`` — is replaced by a unique key.  An explicit
+    ``--session-id`` survives start unchanged (FR 9).
+    """
+    return session_id == f"{name}-default"
+
+
+def render_session_listing(
+    summaries: list, current_session_id: str, limit: int = 15
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """Pure listing logic for bare ``/resume`` — no I/O (FR 12).
+
+    Args:
+        summaries: ``SessionSummary`` rows from ``list_sessions``, newest
+            activity first (the store's own order).
+        current_session_id: The agent's current key, marked on its row.
+        limit: Row cap, applied here so the listing and the index the
+            ``/resume <idx>`` form resolves share one row set.
+
+    Returns:
+        ``(lines, rows)`` — *lines* is a list of ``(markup, style)`` pairs
+        (a header, one row per session as
+        ``<idx>  <YYYY-MM-DD HH:MM>  <turns>  <session-id>``, and a footer
+        naming the selection syntax); *rows* holds each session row as
+        plain text for assertions.
+    """
+    lines: list[tuple[str, str]] = [("[bold]Sessions (newest first):[/bold]", "")]
+    rows: list[str] = []
+    for idx, summary in enumerate(summaries[:limit], 1):
+        # A naive-local last_activity (the SQLite round-trip) is already this
+        # machine's local time; a UTC-aware one (the InMemory store) converts.
+        # Either way the row shows local time.
+        last = summary.last_activity
+        local = last if last.tzinfo is None else last.astimezone(tz=None)
+        current = summary.session_id == current_session_id
+        mark = "  → current" if current else ""
+        style = "" if current else "dim"
+        row = (
+            f"{idx}  {local.strftime('%Y-%m-%d %H:%M')}  {summary.turn_count}"
+            f"  {summary.session_id}{mark}"
+        )
+        rows.append(row)
+        lines.append((f"  {row}", style))
+    lines.append(("[dim]/resume <idx> or /resume <session-id> to take over[/dim]", ""))
+    return lines, rows
+
+
+def resolve_resume_target(summaries: list, arg: str, limit: int = 15) -> tuple[str | None, str | None]:
+    """Pure selection logic for ``/resume <idx|session-id>`` — no I/O (FR 11).
+
+    An all-digits argument is a 1-based index into *summaries* (the rows the
+    last listing fetched); anything else is an exact session id, which needs
+    no listing.
+
+    Returns:
+        ``(session_id, error)`` — exactly one is non-None.
+    """
+    if arg.isdigit():
+        idx = int(arg)
+        if not 1 <= idx <= min(len(summaries), limit):
+            return None, (
+                f"No session at index {arg} — {len(summaries)} listed. Run /resume."
+            )
+        return summaries[idx - 1].session_id, None
+    if any(summary.session_id == arg for summary in summaries):
+        return arg, None
+    return None, f"No archived session matches: {arg}"
+
+
+def _max_archived_turn(history: list) -> int:
+    """Highest turn number a reconstructed history covers (pair-count - 1).
+
+    The reconstruction emits exactly two messages per archived turn, so the
+    pair count IS the turn count; an empty history means no archived turn
+    (turn_seq -1, the engine's pre-first-turn state).
+    """
+    return max(0, len(history) // 2) - 1
+
+
+def render_takeover_line(
+    session_id: str, message_count: int, interrupted: bool, restore_failed: bool
+) -> tuple[str, str]:
+    """One console line for a completed takeover: key, count, state (FR 11)."""
+    state = "restore failed" if restore_failed else ("interrupted turn" if interrupted else "ok")
+    return (
+        f"[green]Resumed {session_id}[/green] — {message_count} messages restored ({state}).",
+        "",
+    )
+
+
 def _active_model_pointer() -> Path | None:
     """Path to the writable active-model pointer file, or None if unset.
 
@@ -313,14 +428,23 @@ class REPLInterface:
         self.console: Console = console or Console()
         self._session: PromptSession | None = None
         self._stop_event: asyncio.Event | None = None
+        # Rows fetched by the last bare /resume, so /resume <idx> refers to
+        # the listing the operator just looked at; /reset clears it.
+        self._listing: list = []
 
     # ------------------------------------------------------------------
     # Interface protocol
     # ------------------------------------------------------------------
 
     async def start(self, agent: "Agent") -> None:
-        """Initialize REPL state and set interactive run context."""
+        """Initialize REPL state, mint a unique session key, set run context."""
         self._running = True
+        # A REPL run owns its archive key: on the constructed default identity
+        # (<name>-default) the run switches to a fresh <name>-repl-<stamp>
+        # before its first turn, so this run archives under a key written by
+        # exactly one writer and past runs' archives stay untouched (FR 9).
+        # An explicit --session-id is kept as-is.
+        self._ensure_unique_key(agent)
         # The REPL's area is the basename of the exact directory the process
         # was launched from — no CLAUDE.md or .git discovery, no ancestor
         # walk. A REPL started in /data/obsidian/topics/harbinger is the
@@ -596,6 +720,7 @@ class REPLInterface:
             "/context": lambda a: self._cmd_context(agent),
             "/save": lambda a: self._cmd_save(agent, arg),
             "/load": lambda a: self._cmd_load(agent, arg),
+            "/resume": lambda a: self._cmd_resume(agent, arg),
             "/change-model": lambda a: self._cmd_change_model(agent, arg),
         }
         handler = handlers.get(cmd)
@@ -611,7 +736,12 @@ class REPLInterface:
         self._running = False
 
     async def _cmd_reset(self, agent: "Agent") -> None:
-        agent.new_session()
+        # Mint first: from the reset default identity there is no way back to
+        # the key in force before the reset, so the unique key is chosen while
+        # the old one is still known (FR 9).
+        key = self._next_key(agent)
+        agent.new_session(key if key is not None else None)
+        self._listing = []
         self.console.print("[green]New session started[/green]")
 
     async def _cmd_help(self, _arg: str | None) -> None:
@@ -647,6 +777,150 @@ class REPLInterface:
                 )
             )
             self.console.print(f"By role: {by_role}")
+
+    # ------------------------------------------------------------------
+    # Session identity and /resume
+    # ------------------------------------------------------------------
+
+    def _next_key(self, agent: "Agent") -> str | None:
+        """Unique key this agent should move to, or None to keep its own.
+
+        Only the constructed default identity (<name>-default) is replaced:
+        an explicit --session-id is the operator's own choice and survives
+        untouched (FR 9).
+        """
+        config = getattr(agent, "config", None)
+        name = getattr(getattr(config, "agent", None), "name", None)
+        if not name:
+            return None
+        session_id = getattr(agent, "session_id", "")
+        if not _needs_repl_key(session_id, name):
+            return None
+        candidate = _mint_repl_key(name)
+        # Sub-second restarts collide on the stamp; keep the archive key
+        # unique-by-construction rather than silently sharing one.
+        store = getattr(agent, "provenance_store", None)
+        if store is not None:
+            archived = {
+                s.session_id
+                for s in self._list_sessions(store, _RESUME_LIST_LIMIT)
+            }
+            while candidate in archived:
+                candidate = _mint_repl_key(name)
+        return candidate
+
+    def _ensure_unique_key(self, agent: "Agent") -> None:
+        """Switch an agent still on its constructed identity to a unique key."""
+        key = self._next_key(agent)
+        if key is not None:
+            # The setter swaps in a fresh Session under the new identity.
+            # Its archive (none: the key was just minted) stays untouched.
+            agent.session_id = key
+
+    def _list_sessions(self, store, limit: int) -> list:
+        """Fetch archived-session summaries through the store contract (FR 10)."""
+        from sr2.pipeline.provenance import TURN_ARCHIVE_LAYER
+
+        return asyncio.run(store.list_sessions(TURN_ARCHIVE_LAYER, limit))
+
+    async def _cmd_resume(self, agent: "Agent", arg: str | None) -> None:
+        """Handle /resume — list archived sessions, or take one over.
+
+        Bare: list up to 15 archived sessions, newest first, current key
+        marked.  ``<idx>``: select from that listing.  ``<session-id>``:
+        select by exact key without a prior listing.  A takeover restores the
+        target's resumable history (interrupted marker and rewinds included —
+        the increment-1 reconstruction), adopts the key as this agent's
+        identity, and reads archive continuation for the adopted Session off
+        the archive, so the next turn continues the target's turn numbering
+        and this run's previous key receives no further entries (FR 11).
+        """
+        store = getattr(agent, "provenance_store", None)
+        if store is None:
+            self.console.print(
+                "[red]No provenance store configured — cannot list or resume sessions.[/red]"
+            )
+            return
+
+        if arg:
+            # The indexed form resolves against the last listing; a raw
+            # session id needs none.
+            try:
+                summaries = self._listing or self._list_sessions(
+                    store, _RESUME_LIST_LIMIT
+                )
+            except Exception as exc:
+                self.console.print(f"[red]Could not list archived sessions: {exc}[/red]")
+                return
+            session_id, error = resolve_resume_target(summaries, arg, _RESUME_LIST_LIMIT)
+            if error is not None:
+                self.console.print(f"[red]{error}[/red]")
+                return
+            await self._takeover(agent, store, session_id)
+            return
+
+        try:
+            summaries = self._list_sessions(store, _RESUME_LIST_LIMIT)
+        except Exception as exc:
+            self.console.print(f"[red]Could not list archived sessions: {exc}[/red]")
+            return
+        if not summaries:
+            self.console.print("[dim]No archived sessions found.[/dim]")
+            return
+        self._listing = list(summaries[:_RESUME_LIST_LIMIT])
+        lines, _rows = render_session_listing(
+            summaries, getattr(agent, "session_id", ""), _RESUME_LIST_LIMIT
+        )
+        for markup, style in lines:
+            self.console.print(markup, style=style or None)
+
+    async def _takeover(self, agent: "Agent", store, session_id: str) -> None:
+        """Restore one archived session's history, then adopt its key.
+
+        The restore reads the target's archive *before* the identity switch
+        through the increment-1 reconstruction, so an unknown or empty key
+        fails without touching the running conversation (FR 11).  Archive
+        continuation deliberately stays deferred: the adopted Session runs
+        its existing first-turn ``continue_archive``, which then reads the
+        adopted key and numbers the next turn above the archived maximum.
+        """
+        from sr2_spectre.config import ResumeConfig
+
+        resume_config = getattr(
+            getattr(agent, "config", None), "agent", None
+        )
+        resume_config = getattr(resume_config, "resume", None) or ResumeConfig()
+        try:
+            result = await load_resumable_history(store, session_id, resume_config)
+        except Exception:  # defensive: the loader already traps its reads
+            self.console.print(f"[red]Could not restore {session_id}.[/red]")
+            return
+        if result.restore_failed:
+            self.console.print(f"[red]Could not restore {session_id}.[/red]")
+            return
+        if not result.history:
+            self.console.print(f"[red]No archived conversation for {session_id}.[/red]")
+            return
+
+        agent.session_id = session_id
+        agent.history[:] = result.history
+        # Continuation state belongs to the identity that is about to be
+        # replaced: re-seat the adopted key's turn number (the archived max —
+        # turns 0..N, so the next turn is N+1, exactly what this Session's
+        # deferred first-turn ``continue_archive`` would have seeded) instead
+        # of letting it inherit the previous key's numbering.
+        try:
+            agent.sr2._engine.seed_turn_seq(_max_archived_turn(result.history))
+        except AttributeError:
+            logger.debug("Adopted Session exposes no turn-seed re-seat")
+        self._listing = []
+        markup, style = render_takeover_line(
+            session_id,
+            len(result.history),
+            interrupted=result.interrupted,
+            restore_failed=result.restore_failed,
+        )
+        self.console.print(markup, style=style or None)
 
     async def _cmd_save(self, agent: "Agent", arg: str | None) -> None:
         path = Path(arg) if arg else default_save_path()
