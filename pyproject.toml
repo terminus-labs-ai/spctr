@@ -1,0 +1,47 @@
+[project]
+name = "sr2-monorepo"
+version = "0.1.0"
+description = "SR2 monorepo workspace: sr2 core and sr2-spectre"
+requires-python = ">=3.12"
+# The workspace root installs both members so a single venv at the root can
+# run every package's tests.
+dependencies = ["sr2", "sr2-spectre"]
+
+[tool.uv.workspace]
+members = ["packages/sr2", "packages/spctr"]
+
+[tool.uv.sources]
+sr2 = { workspace = true }
+sr2-spectre = { workspace = true }
+
+# Deliberately no [build-system]: the root is a virtual workspace root that
+# owns no Python code. It pins no modules and builds nothing; the members
+# under packages/ are the installable distributions.
+
+[dependency-groups]
+# uv 0.7.6 syncs only the root project's dependency groups by default; the
+# members' dev groups (pytest, ruff, ...) arrive only with --all-packages.
+# Mirroring them here makes the documented `uv sync --frozen` at the root
+# provision one venv that can run both suites. Keep in sync with
+# packages/*/pyproject.toml [dependency-groups].
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=0.24.0",
+    "pyte>=0.8.2",
+    "ruff>=0.15.11",
+]
+
+[tool.pytest.ini_options]
+# The packages keep their own pytest configuration
+# (`packages/<member>/pyproject.toml`); pytest does not merge configs
+# across directories, so the settings the old root configs carried are
+# declared here for runs rooted at the workspace (`pytest tests`,
+# scripts/run_tests.sh). `testpaths` keeps a bare `pytest` from
+# collecting `packages/sr2/tests`, whose layout only resolves correctly
+# under that member's own config (its `pythonpath = ["tests"]` is read
+# only when the rootdir is the member).
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "live: test hits the live local relay (localhost:11434); deselected by default, run with -m live",
+]
