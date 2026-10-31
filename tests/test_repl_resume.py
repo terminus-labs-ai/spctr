@@ -42,6 +42,7 @@ from sr2_spectre.interfaces.repl import (
     REPLInterface,
     _needs_repl_key,
     _mint_repl_key,
+    render_replay_items,
     render_session_listing,
     resolve_resume_target,
 )
@@ -711,3 +712,185 @@ def test_resume_in_command_list_and_help():
 
     assert "/resume" in _COMMANDS
     assert "/resume" in _HELP
+
+
+# ---------------------------------------------------------------------------
+# AC15 — replay of the restored conversation at takeover (increment 3)
+# ---------------------------------------------------------------------------
+
+
+def _replay_block(lines: list[str], report_index: int) -> list[str]:
+    """The printed lines after the takeover line, trailing padding stripped."""
+    return [ln.rstrip() for ln in lines[report_index + 1:]]
+
+
+def test_ac15_c1_takeover_replays_history_in_order_after_the_takeover_line(
+    tmp_path, monkeypatch
+):
+    """AC15-c1: history [u0, a0, u1, a1] replays as You:/u0, a0, You:/u1, a1,
+    in order, strictly after the takeover line; nothing replays before it."""
+    P = "miranda-repl-20261030-110000"
+    store = asyncio.run(_seeded_store([(P, 2, BASE)]))  # turns 0,1 → u0/a0, u1/a1
+    agent = _TakeoverAgent("miranda-default", store)
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await iface._cmd_resume(agent, P)
+
+    asyncio.run(scenario())
+
+    reports = [i for i, ln in enumerate(lines) if "Resumed" in ln]
+    assert len(reports) == 1  # one takeover line; no replay above it
+    report = reports[0]
+    assert P in lines[report]
+    assert _replay_block(lines, report) == ["You: u0", "a0", "You: u1", "a1"]
+
+
+def test_ac15_c2_user_markup_escaped_verbatim_assistant_renders_markdown(
+    tmp_path, monkeypatch
+):
+    """AC15-c2: user text ``[dim]literal[/dim] bold **text**`` prints with the
+    literal bracket characters (markup escaped, never styled, no exception);
+    the assistant message goes through the Markdown path."""
+    P = "miranda-repl-20261030-110000"
+    store = asyncio.run(_seeded_store([]))
+    agent = _TakeoverAgent("miranda-default", store)
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await store.write_batch([
+            _entry(P, 0, 0, _msg("user", "[dim]literal[/dim] bold **text**"), BASE),
+            _entry(P, 0, 1, _msg("assistant", "**hello** world"), BASE),
+        ])
+        await iface._cmd_resume(agent, P)
+
+    asyncio.run(scenario())  # a markup error here would escape as MarkupError
+
+    report = next(ln for ln in lines if "Resumed" in ln)
+    # Verbatim, brackets and all, in order — never styled on.
+    assert "You: [dim]literal[/dim] bold **text**" in lines
+    # Markdown rendering strips the emphasis markers: the source spelling is
+    # gone, the rendered text is present.
+    assert "**hello** world" not in _plain(lines)
+    assert any(ln.startswith("hello world") for ln in _replay_block(lines, lines.index(report)))
+
+
+def test_ac15_c3_interrupted_target_replays_marker_as_final_assistant_message(
+    tmp_path, monkeypatch
+):
+    """AC15-c3: an interrupted target's replay ends with the marker line,
+    after the last user message (no special-casing — it rides in history)."""
+    P = "miranda-repl-20261030-110000"
+    store = asyncio.run(_seeded_store([(P, 1, BASE)]))  # turn 0 complete
+    agent = _TakeoverAgent("miranda-default", store)
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        # Turn 1 ends at a user message → the reconstruction appends the marker.
+        await store.write_batch([
+            _entry(P, 1, 0, _msg("user", "cut off here"), BASE + timedelta(minutes=120)),
+        ])
+        await iface._cmd_resume(agent, P)
+
+    asyncio.run(scenario())
+
+    report = next(ln for ln in lines if "Resumed" in ln)
+    block = _replay_block(lines, lines.index(report))
+    assert block == [
+        "You: u0",
+        "a0",
+        "You: cut off here",
+        MARKER,
+    ]
+
+
+def test_ac15_c4_failed_and_empty_takeovers_print_no_replay(tmp_path, monkeypatch):
+    """AC15-c4: an unknown index, a restore-failed target and an empty
+    archive each print only their existing line — no ``You:`` label, no
+    history text."""
+    P = "miranda-repl-20261030-110000"
+
+    async def run_case(body):
+        store = MagicMock(spec=InMemoryProvenanceStore)
+        agent = _TakeoverAgent("miranda-default", store)
+        agent.history = [_msg("user", "live")]
+        iface, lines = _capturing_iface(tmp_path, monkeypatch)
+        await body(store, agent, iface)
+        return agent, lines
+
+    # Unknown index: nothing listed, error line only, no archive read.
+    async def unknown(store, agent, iface):
+        store.list_sessions = AsyncMock(return_value=[])
+        store.get_session = AsyncMock(return_value=[])
+        await iface._cmd_resume(agent, "99")
+
+    agent, lines = asyncio.run(run_case(unknown))
+    assert any("index 99" in ln for ln in lines)
+    assert not any("You:" in ln for ln in lines)
+    assert agent.session_id == "miranda-default"
+
+    # Restore failure: the archive read raises; only the error line appears,
+    # and none of the target's content could leak into a replay.
+    async def failed(store, agent, iface):
+        store.list_sessions = AsyncMock(return_value=[SessionSummary(P, 1, BASE)])
+        store.get_session = AsyncMock(side_effect=OSError("unreadable"))
+        await iface._cmd_resume(agent, "1")
+
+    agent, lines = asyncio.run(run_case(failed))
+    assert any("restore failed" in ln and P in ln for ln in lines)
+    assert not any("You:" in ln for ln in lines)
+    assert agent.session_id == "miranda-default"
+    assert list(agent.history) == [_msg("user", "live")]
+
+    # Empty archive under an exact key: the "no archived conversation" line
+    # only — and definitively no replay, since an empty history is the very
+    # case a per-item loop vacuously satisfies.
+    async def empty(store, agent, iface):
+        store.list_sessions = AsyncMock(return_value=[])
+        store.get_session = AsyncMock(return_value=[])
+        await iface._cmd_resume(agent, P)
+
+    agent, lines = asyncio.run(run_case(empty))
+    assert any("No archived conversation" in ln and P in ln for ln in lines)
+    assert lines == [ln for ln in lines if "No archived conversation" in ln]
+    assert agent.session_id == "miranda-default"
+
+
+def test_ac15_reset_does_not_replay(tmp_path, monkeypatch):
+    """/reset starts fresh: the notice prints, no ``You:`` label or replay."""
+    agent = Agent(_config())
+    agent.history[:] = [_msg("user", "old"), _msg("assistant", "prior")]
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await iface._cmd_reset(agent)
+
+    asyncio.run(scenario())
+    assert any("New session started" in ln for ln in lines)
+    assert not any("You:" in ln for ln in lines)
+    assert not any("old" in ln or "prior" in ln for ln in lines)
+
+
+def test_render_replay_items_pure_shape():
+    """The helper is pure and item-per-message: a user message yields one
+    Text whose plain text is the ``You:`` label plus the verbatim body (its
+    bracket markup survives as characters, no span styled it on), an
+    assistant message yields a Markdown renderable of its text."""
+    from rich.markdown import Markdown
+    from rich.text import Text as RichText
+
+    items = render_replay_items([
+        _msg("user", "[dim]literal[/dim] bold **text**"),
+        _msg("assistant", "# Head"),
+    ])
+    assert len(items) == 2
+    user_item, assistant_item = items
+    assert isinstance(user_item, RichText)
+    # Pinned in full: the exact bracket characters, in order, unescaped.
+    assert user_item.plain == "You: [dim]literal[/dim] bold **text**"
+    assert "[dim]" in user_item.plain and "[/dim]" in user_item.plain
+    # No span applied a dim style to the bracketed fragment — it is literal.
+    assert all("dim" not in str(span.style) for span in user_item._spans)
+    assert isinstance(assistant_item, Markdown)
+    assert render_replay_items([]) == []
+

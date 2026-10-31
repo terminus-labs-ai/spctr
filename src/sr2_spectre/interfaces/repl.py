@@ -46,6 +46,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.text import Text
 
+from sr2.models import TextBlock
 from sr2_spectre.core import RunContext, RunMode
 from sr2_spectre.resume import load_resumable_history
 from sr2_spectre.events import (
@@ -354,6 +355,35 @@ def _max_archived_turn(history: list) -> int:
     (turn_seq -1, the engine's pre-first-turn state).
     """
     return max(0, len(history) // 2) - 1
+
+
+def render_replay_items(history: list) -> list[object]:
+    """Pure replay logic for the post-takeover transcript — no I/O (FR 13).
+
+    Args:
+        history: The restored ``ResumeResult.history`` (``Message`` rows: a
+            user message and an assistant message per archived turn, the
+            interrupted-turn marker already appended as the final assistant
+            message when the target was cut off).
+
+    Returns:
+        Console-ready items, one per message in order: a user message
+        becomes one Rich ``Text`` — a bold ``You:`` label followed by the
+        message body with markup disabled, so square-bracket tags in what
+        the user typed appear verbatim and can never be styled on or raise
+        a markup error; an assistant message becomes the ``render_markdown``
+        renderable for its text.
+    """
+    items: list[object] = []
+    for message in history:
+        text = "".join(
+            block.text for block in message.content if isinstance(block, TextBlock)
+        )
+        if message.role == "user":
+            items.append(Text.assemble(("You: ", "bold"), (text, "")))
+        else:
+            items.append(render_markdown(text))
+    return items
 
 
 def render_takeover_line(
@@ -976,6 +1006,12 @@ class REPLInterface:
             restore_failed=result.restore_failed,
         )
         self.console.print(markup, style=style or None)
+        # FR 13: the transcript the terminal lost on restart, replayed below
+        # the takeover line.  Presentation only — every item comes from the
+        # history already adopted above; the interrupted-turn marker needs no
+        # special case because it is that history's final assistant message.
+        for item in render_replay_items(result.history):
+            self.console.print(item)
 
     async def _cmd_save(self, agent: "Agent", arg: str | None) -> None:
         path = Path(arg) if arg else default_save_path()
