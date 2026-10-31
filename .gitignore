@@ -21,7 +21,7 @@ handoff.md
 .beads-credential-key
 
 # uv workspace: one lock at the root; members keep no own lock.
-# (packages/sr2/uv.lock is historical and stays tracked so its
-# `git log --follow` survives; it is never used for installs.)
+# packages/sr2/uv.lock was deleted at the assembly commit but stays in
+# history, so `git log --follow packages/sr2/uv.lock` still works.
 packages/*/uv.lock
 

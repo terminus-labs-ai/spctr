@@ -1,21 +1,20 @@
 """Monorepo layout checks for spc-1038 (spec spctr-public-v0, AC1/AC2).
 
 C-owned acceptance checks for the uv-workspace assembly. One test per
-case-table row; run them against the workspace root with:
+case-table row; run them from the workspace root with::
 
     uv run --frozen python -m pytest tests/test_monorepo_layout.py
 
 AC1 (FR1): ``uv sync --frozen`` at the root installs both packages from
-the workspace — no git-URL source for sr2 anywhere in the metadata.
-AC2 (FR2): both package trees carry their pre-merge history: file
-history under ``packages/sr2`` follows into commits merged in from the
-old sr2 repository, and history under ``packages/spctr`` follows
-through the ``git mv`` into the pre-move sr2-spectre history.
+the workspace — no git-URL source for sr2 anywhere in the metadata, one
+root lock. AC2 (FR2): file history under ``packages/sr2`` follows into
+commits merged in from the old sr2 repository, and history under
+``packages/spctr`` follows through the ``git mv`` into the pre-move
+sr2-spectre history.
 
-AC1-r1 clones the checked revision into a temp dir and syncs it in a
-throwaway location (``UV_PROJECT_ENVIRONMENT``); it needs network
-access, like the initial root sync does, and is skipped when the
-clone cannot reach the remote.
+AC1-r1 clones the revision under test into a temp dir and syncs it with
+a throwaway venv (``UV_PROJECT_ENVIRONMENT``); it needs network access,
+like the initial root sync does, and is skipped when cloning fails.
 """
 
 from __future__ import annotations
@@ -23,10 +22,7 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import subprocess
-import sys
-from importlib.metadata import distribution
 from pathlib import Path
 
 import pytest
@@ -90,17 +86,22 @@ def test_ac1_r1_root_uv_sync_frozen_installs_both_packages_from_workspace(
     """AC1-r1: fresh clone of this revision; root uv sync --frozen exits 0
     and installs both packages editable from paths under packages/."""
     clone = tmp_path / "clone"
-    remote = _git("remote", "get-url", "origin")
-    try:
-        subprocess.run(
-            ["git", "clone", "--quiet", remote, str(clone)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        pytest.skip(f"cannot clone origin (no network?): {exc.stderr.strip()[:200]}")
-    _git("checkout", "--quiet", "--detach", _git("rev-parse", "HEAD"), cwd=clone)
+    head = _git("rev-parse", "HEAD")
+    # Prefer a real clone of origin (the criterion says "fresh clone");
+    # fall back to a local clone when the remote lacks this build ref or
+    # the network is down. Either way uv runs on a pristine checkout.
+    attempts = [
+        ["git", "clone", "--quiet", "--branch", head, _git("remote", "get-url", "origin"), str(clone)],
+        ["git", "clone", "--quiet", str(REPO_ROOT), str(clone)],
+    ]
+    for argv in attempts:
+        result = subprocess.run(argv, capture_output=True, text=True)
+        if result.returncode == 0:
+            break
+    else:
+        pytest.skip(f"cannot clone for AC1-r1: {result.stderr.strip()[:200]}")
+    if _git("rev-parse", "HEAD", cwd=clone) != head:
+        _git("checkout", "--quiet", "--detach", head, cwd=clone)
 
     env = {
         **os.environ,
@@ -144,7 +145,8 @@ def test_ac1_r1_root_uv_sync_frozen_installs_both_packages_from_workspace(
         want = Path(template.format(clone=clone)).resolve()
         info = installed[name]
         assert info is not None, f"{name} has no direct_url.json (not a local install)"
-        assert info.get("editable") is True, (
+        dir_info = info.get("dir_info") or {}
+        assert dir_info.get("editable") is True, (
             f"{name} is not an editable install: {info}"
         )
         got = Path(info["url"].removeprefix("file://")).resolve()
@@ -176,23 +178,27 @@ def test_ac1_r2_no_git_source_for_sr2_in_any_pyproject() -> None:
 
 
 def test_ac1_r3_single_root_uv_lock_declares_both_members() -> None:
-    """AC1-r3: exactly one uv.lock exists and it is a workspace lock
-    pinning every member, so both suites run from the root resolution.
-    The behavioural half of the row (both suites run from the root with
+    """AC1-r3: uv reads a member's own uv.lock only while that member is
+    visible in the working tree (uv errors on a stale member lock), so
+    "one root lock" means: no lock exists for any current member, and
+    the root lock declares every member. The historical
+    `packages/sr2/uv.lock` survives only as a deleted-in-HEAD history
+    record for `git log --follow`; it must stay deleted on disk.
+    The behavioural half of the row (both suites run from the root at
     the known baseline) is scripts/run_tests.sh."""
-    locks = sorted(
-        p for p in REPO_ROOT.rglob("uv.lock") if ".venv" not in p.parts
-    )
-    assert [p.relative_to(REPO_ROOT) for p in locks] == [Path("uv.lock")], (
-        "expected exactly one root uv.lock"
-    )
-    text = locks[0].read_text()
+    for member in ("sr2", "spctr"):
+        member_lock = REPO_ROOT / "packages" / member / "uv.lock"
+        assert not member_lock.exists(), f"stale member lock on disk: {member_lock}"
+        listed = _git("ls-files", "--", str(member_lock.relative_to(REPO_ROOT)))
+        assert listed == "", f"member lock still tracked in the index: {member_lock}"
+
+    text = (REPO_ROOT / "uv.lock").read_text()
     for member in ("sr2", "sr2-spectre"):
         assert f'name = "{member}"' in text, f"uv.lock does not pin {member}"
     workspace_section = re.search(
-        r"\[manifest\.members\]\n(.*?)(?=\n\[|\Z)", text, re.DOTALL
+        r"\[manifest\]\nmembers = \[\n(.*?)\]", text, re.DOTALL
     )
-    assert workspace_section is not None, "uv.lock has no [manifest.members]"
+    assert workspace_section is not None, "uv.lock has no [manifest] members list"
     members = workspace_section.group(1)
     assert '"sr2"' in members and '"sr2-spectre"' in members, (
         f"uv.lock manifest members incomplete:\n{members}"
