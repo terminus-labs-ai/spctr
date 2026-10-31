@@ -4,6 +4,8 @@ version = "0.1.0"
 description = "SR2 Spectre — full agent runtime powered by SR2"
 readme = "README.md"
 authors = [{ name = "Diego Camizotti", email = "diego@terminuslabs.co" }]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.9.0",
