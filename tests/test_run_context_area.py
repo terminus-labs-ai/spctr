@@ -173,11 +173,17 @@ class TestNonDiscordInterfaces:
         monkeypatch.delenv("SR2_AREA", raising=False)
         monkeypatch.chdir(launch_dir)
 
-        agent, provider = _agent_and_provider()
+        agent, _ = _agent_and_provider()
         await REPLInterface().start(agent)
 
         assert agent.run_context.area == "harbinger"
-        assert provider()["area"] == "harbinger"
+        # The REPL's AC10 identity switch (spc-132) replaces the build-time
+        # Session, so the run-context provider captured at construction time
+        # belongs to the replaced Session. Read the provider off the live
+        # session the run actually started under; the area-from-cwd-basename
+        # behavior asserted here is unchanged.
+        live_provider = agent._session._run_context_provider()
+        assert live_provider["area"] == "harbinger"
         assert agent.run_context.source == os.getcwd()
 
     async def test_single_shot_sets_no_area(self) -> None:

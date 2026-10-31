@@ -232,7 +232,13 @@ class TestSessionStart:
         starts = _named(_events(path), "session.start")
         assert starts, "session.start not recorded"
         assert starts[0]["interface"] == interface
-        assert starts[0]["session_id"] == "edi-default"
+        # The run-log must record the identity the run actually started under.
+        # The REPL is the only interface that may move off the constructed
+        # "edi-default" identity (spc-132 AC10: unique per-launch key), so for
+        # it assert against the live agent identity rather than the
+        # constructed one; the other interfaces keep the constructed identity.
+        expected_id = agent.session_id if interface == "repl" else "edi-default"
+        assert starts[0]["session_id"] == expected_id
         out = capsys.readouterr()
         assert str(path) in out.err
         assert str(path) not in out.out
