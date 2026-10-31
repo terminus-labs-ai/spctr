@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-sr2 = { git = "https://github.com/terminus-labs-ai/sr2", branch = "main" }
+sr2 = { workspace = true }
 
 [project.scripts]
 sr2-spectre = "sr2_spectre.cli:main"

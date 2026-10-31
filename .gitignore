@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local config and session files
+*.local.yaml
+smoke.yaml
+handoff.md
+.env
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+
+# uv workspace: one lock at the root; members keep no own lock.
+# (packages/sr2/uv.lock is historical and stays tracked so its
+# `git log --follow` survives; it is never used for installs.)
+packages/*/uv.lock
+
