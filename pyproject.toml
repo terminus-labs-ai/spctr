@@ -1,7 +1,7 @@
 [project]
-name = "sr2-spectre"
-version = "0.1.0"
-description = "SR2 Spectre — full agent runtime powered by SR2"
+name = "spctr"
+version = "0.0.1"
+description = "spctr (pronounced specter) — a local-first agent harness powered by the SR2 context runtime"
 readme = "README.md"
 authors = [{ name = "Diego Camizotti", email = "diego@terminuslabs.co" }]
 license = "Apache-2.0"
@@ -22,6 +22,7 @@ dependencies = [
 sr2 = { git = "https://github.com/terminus-labs-ai/sr2", branch = "main" }
 
 [project.scripts]
+spctr = "sr2_spectre.cli:main"
 sr2-spectre = "sr2_spectre.cli:main"
 
 [project.entry-points."sr2.tool_providers"]
@@ -48,3 +49,6 @@ markers = [
 
 [dependency-groups]
 dev = ["pytest>=9.0.3", "pytest-asyncio>=0.24.0", "pyte>=0.8.2", "ruff>=0.15.11"]
+
+[tool.uv.build-backend]
+module-name = "sr2_spectre"
