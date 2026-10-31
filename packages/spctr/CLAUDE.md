@@ -78,41 +78,60 @@ changes the accepted range requires a new acceptance run.
 
 ## Build & Test
 
-Full test suite (from the main checkout):
+This repository is a uv workspace: members `packages/sr2` (core) and
+`packages/spctr` (this package, import name `sr2_spectre`). One lock at
+the root; `sr2` resolves through `{ workspace = true }`.
+
+Provision the root venv (installs both members editable):
 
 ```bash
-.venv/bin/python -m pytest
+uv sync --frozen
+```
+
+Full suite, both packages, from the workspace root:
+
+```bash
+./scripts/run_tests.sh
+```
+
+(`scripts/run_tests.sh` is exactly `uv run --frozen python -m pytest`
+per member — `.venv/bin/python -m pytest` once the root venv is synced.)
+Each member runs in its own pytest invocation with its own
+`[tool.pytest.ini_options]`, because both suites ship a root test
+package named `tests`. The monorepo layout check (AC1/AC2 of spc-1038)
+runs at the workspace root:
+
+```bash
+uv run --frozen python -m pytest tests/test_monorepo_layout.py
 ```
 
 Targeted run for a single file or test node, as usual with pytest:
 
 ```bash
-.venv/bin/python -m pytest tests/test_some_module.py -v
+uv run --frozen python -m pytest packages/spctr/tests/test_some_module.py -v
 ```
 
-The suite is self-isolating: `tests/conftest.py` points `SR2_HOME` at a
-per-test temp dir and drops an inherited `SR2_SESSION_LOG_DIR`, so it passes
-with or without the dispatch launch's session-log environment. No `env -u`
-prefix is needed.
+The suite is self-isolating: `packages/spctr/tests/conftest.py` points
+`SR2_HOME` at a per-test temp dir and drops an inherited
+`SR2_SESSION_LOG_DIR`, so it passes with or without the dispatch
+launch's session-log environment. No `env -u` prefix is needed.
 
 ### Running tests in a build worktree
 
 Build sessions work in Git worktrees under `/data/worktrees/sr2-spectre/`
-(one per bead), which carry no `.venv`. Worktrees are self-contained: `sr2`
-is a git source (`branch = "main"`), so no sibling `../sr2` checkout is
-needed. Create the venv and run the full suite with:
+(one per bead). Worktrees are self-contained: create the venv and run
+both suites with:
 
 ```bash
-cd /data/worktrees/sr2-spectre/<bead> && uv sync --frozen && uv run --frozen python -m pytest
+cd /data/worktrees/sr2-spectre/<bead> && uv sync --frozen && ./scripts/run_tests.sh
 ```
 
-`uv sync` installs from the committed `uv.lock` (from GitHub for `sr2`);
-never edit `uv.lock` by hand — regenerate it with `uv lock`.
+`uv sync` installs both workspace members from the committed root
+`uv.lock`; never edit `uv.lock` by hand — regenerate it with `uv lock`.
 
-To co-develop `sr2` locally (worktree still pulls `sr2` from GitHub), run
-`uv pip install -e ../sr2` inside the worktree's venv after syncing. This
-deviation is local only — do not commit a path source for `sr2` back into
-`pyproject.toml` (repo-conventions rule 1).
+To co-develop `sr2`, edit `packages/sr2` directly in the workspace — it
+is a member now, installed editable, and its suite runs through
+`MEMBER=packages/sr2 ./scripts/run_tests.sh`.
 
 ## Architecture Overview
 
