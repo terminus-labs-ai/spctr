@@ -237,6 +237,7 @@ def _assert_fresh_no_work(run: ZulipCliRun, channel: int, topic: str,
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.baseline_debt("spc-965")
 def test_chat_routing_and_filters(tmp_path):
     """AC1/16: allowed message answered in exact topic; filters; isolation; no-area."""
     harness = Harness(workdir=tmp_path / "j1b-route")
@@ -479,6 +480,7 @@ def test_chat_routing_and_filters(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.baseline_debt("spc-965")
 def test_same_topic_two_configured_channels(tmp_path):
     """AC16: one exact topic title in two admitted channels stays isolated.
 
@@ -630,6 +632,7 @@ def test_same_topic_two_configured_channels(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.baseline_debt("spc-965")
 def test_existing_topic_refusal(tmp_path):
     """AC14: populated cold topics get explicit refusal, no model work."""
     harness = Harness(workdir=tmp_path / "j1b-refusal")
@@ -772,6 +775,7 @@ def test_existing_topic_refusal(tmp_path):
         harness.close(run)
 
 
+@pytest.mark.baseline_debt("spc-965")
 def test_existing_topic_probe_failure_blocks_turn(tmp_path):
     """AC14: a failed history probe blocks the model turn with an explicit reply."""
     harness = Harness(workdir=tmp_path / "j1b-probe")
@@ -828,6 +832,7 @@ def test_existing_topic_probe_failure_blocks_turn(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.baseline_debt("spc-965")
 def test_supported_area_starts_and_routes(tmp_path):
     """AC2/16: a mapped nonempty area is valid configuration.  The CLI that
     the pre-routing cut refused to start now starts, answers in the topic,

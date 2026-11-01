@@ -1,0 +1,56 @@
+name: CI
+
+# FR6 (spc-1040): CI runs on both push and pull_request. sr2's old
+# `on: [pull_request]` is extended to push so the main branch is checked
+# on every push, not just on PRs.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+      # scripts/ci.sh runs: uv sync --frozen, pytest for both packages
+      # with -m "not baseline_debt", and ruff check (scoped subset) for
+      # both packages' src/ trees. The same command runs locally.
+      - run: bash scripts/ci.sh
+
+  integration:
+    # Ported from packages/sr2/.github/workflows/ci.yml (the file removed
+    # in the monorepo assembly). sr2's Postgres-backed integration tests
+    # keep their dedicated job with a pgvector service; the test job
+    # above does not run them.
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: sr2
+          POSTGRES_PASSWORD: sr2
+          POSTGRES_DB: sr2_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sr2"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen
+      # The integration tests live at packages/sr2/tests/integrations/
+      # (monorepo layout, spc-1038); the old workflow pointed at
+      # tests/integration/ before the move.
+      - run: uv run pytest packages/sr2/tests/integrations/ -v
+        env:
+          RUN_INTEGRATION: "1"
+          TEST_POSTGRES_URL: postgresql://sr2:sr2@localhost:5432/sr2_test
