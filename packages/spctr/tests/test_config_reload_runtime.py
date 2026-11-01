@@ -521,6 +521,9 @@ def config_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "sr2home"
     home.mkdir()
     monkeypatch.setenv("SR2_HOME", str(home))
+    # resolve_config(env={}) ignores SR2_HOME and falls back to ~/.sr2;
+    # point HOME at the sandbox so the host's live config never leaks in.
+    monkeypatch.setenv("HOME", str(tmp_path))
 
     path = tmp_path / "miranda.yaml"
     path.write_text(

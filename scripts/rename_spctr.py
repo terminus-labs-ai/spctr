@@ -52,8 +52,15 @@ SRC_NEW = "packages/spctr/src/spctr"
 # Skipped by the content rewrite (paths relative to the repo root):
 # - uv.lock: regenerated with `uv lock` after the manifests rename; a
 #   token rewrite could not keep its lockfile hashes valid anyway.
-# - this script: it names the old tokens by design (its own docstring).
-SKIP_PATHS = ("uv.lock", "scripts/rename_spctr.py")
+# - this script and the tests that guard the rename: they name the old
+#   tokens by design (docstrings, residue probes, rewrite samples).
+SKIP_PATHS = (
+    "uv.lock",
+    "scripts/rename_spctr.py",
+    "packages/spctr/tests/test_entry_points.py",
+    "packages/spctr/tests/test_rename_residue.py",
+    "packages/spctr/tests/test_rename_script.py",
+)
 
 # External environment names, kept verbatim wherever they appear: they
 # name things outside this repository (a Postgres database on the test
