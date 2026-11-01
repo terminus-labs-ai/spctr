@@ -14,12 +14,17 @@ AC13 — listing: bare ``/resume`` lists up to 15 archived sessions
 newest-first as ``<idx>  <YYYY-MM-DD HH:MM>  <turns>  <session-id>`` with the
 current key marked; out-of-range indexes error without switching; exact keys
 need no prior listing.
+AC16/AC17 (spc-1034, FR 14) — pagination: the listing is a window over one
+200-row snapshot (``1–15 of 23`` header, ``200+`` at the cap), ``/resume
+more``/``back`` page the cached snapshot with global indices and no re-fetch,
+and ``/resume <idx>`` resolves against the whole snapshot.
 """
 
 from __future__ import annotations
 
 import asyncio
 import re
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -39,9 +44,13 @@ from sr2_spectre.agent import Agent
 from sr2_spectre.config import SpectreConfig
 from sr2_spectre.interfaces import repl as repl_mod
 from sr2_spectre.interfaces.repl import (
+    _RESUME_LIST_LIMIT,
+    _RESUME_NAV,
+    _RESUME_SNAPSHOT_LIMIT,
     REPLInterface,
     _needs_repl_key,
     _mint_repl_key,
+    render_page_result,
     render_replay_items,
     render_session_listing,
     resolve_resume_target,
@@ -285,13 +294,21 @@ def test_listing_rows_shape_and_marker():
         "1  2026-10-30 12:00  2  new",
         "2  2026-10-30 11:30  1  cur  → current",
     ]
-    # The 15-row cap is applied by the helper itself.
+    # The window indicator names the visible slice and the total (FR 14).
+    assert "Sessions 1–2 of 3" in lines[0][0]
+    # The row cap is applied by the helper itself.
     _lines, capped = render_session_listing(
         [SessionSummary(f"s{i}", 1, datetime(2026, 10, 30, 12, i)) for i in range(20)],
         "none",
         15,
     )
     assert len(capped) == 15
+    # A snapshot fetched exactly to the cap reads "200+" (FR 14).
+    at_cap = [SessionSummary(f"s{i}", 1, BASE) for i in range(_RESUME_SNAPSHOT_LIMIT)]
+    cap_lines, _cap_rows = render_session_listing(
+        at_cap, "none", _RESUME_LIST_LIMIT, snapshot_limit=_RESUME_SNAPSHOT_LIMIT
+    )
+    assert f"1–{_RESUME_LIST_LIMIT} of {_RESUME_SNAPSHOT_LIMIT}+" in cap_lines[0][0]
 
 
 def test_listing_converts_utc_last_activity_to_local():
@@ -312,10 +329,13 @@ def test_resolve_resume_target_index_and_exact():
     ]
     assert resolve_resume_target(summaries, "1") == ("a", None)
     assert resolve_resume_target(summaries, "3") == ("c", None)
+    # FR 14: the index resolves against the whole snapshot, not a page —
+    # the shipped default bound is the snapshot fetch cap.
+    assert resolve_resume_target(summaries, "3") == ("c", None)
     # Out of range: error, no session id.
     sid, err = resolve_resume_target(summaries, "99")
     assert sid is None and "index 99" in err and "Run /resume" in err
-    # The listing cap bounds the indexable rows.
+    # A caller-supplied bound caps the indexable rows.
     sid, err = resolve_resume_target(summaries, "4", limit=2)
     assert sid is None and "index 4" in err
     # Exact key: resolves directly, listed or not (the archive read decides).
@@ -562,9 +582,13 @@ def test_ac12_c3_unknown_key_and_missing_store_switch_nothing(tmp_path, monkeypa
     assert list(agent.history) == [_msg("user", "live")]
     assert any("index 99" in ln for ln in lines)
     assert any("No provenance store" in ln for ln in lines)
-    # One listing fetch (the index call, nothing listed yet); with an empty
-    # store the index resolves to nothing and no archive read ever runs.
-    store.list_sessions.assert_awaited_once()
+    # One listing fetch at the snapshot limit through the store contract
+    # (FR 14 widened the fetch, not the one-fetch-per-listing behavior); an
+    # empty store caches nothing, so the bare call re-fetches — the index
+    # resolves to nothing either way and no archive read ever runs.
+    assert store.list_sessions.await_count >= 1
+    for call in store.list_sessions.await_args_list:
+        assert call.args == (TURN_ARCHIVE_LAYER, _RESUME_SNAPSHOT_LIMIT)
     store.get_session.assert_not_awaited()
 
 
@@ -617,7 +641,8 @@ def test_takeover_unknown_key_switches_nothing(tmp_path, monkeypatch):
 
 
 def test_ac13_c1_bare_resume_lists_15_newest_first_with_marker(tmp_path, monkeypatch):
-    """AC13-c1: 16 archived sessions → 15 rows, newest first, in the
+    """AC13-c1/AC16-c1: 16 archived sessions → 15 rows on page 1 under
+    ``1–15 of 16``, newest first, in the
     <idx>  <YYYY-MM-DD HH:MM>  <turns>  <session-id> shape, current marked."""
     # One shared activity instant for all 16: list_sessions then orders
     # session id descending (its documented tie-break), independent of
@@ -633,32 +658,48 @@ def test_ac13_c1_bare_resume_lists_15_newest_first_with_marker(tmp_path, monkeyp
 
     asyncio.run(scenario())
 
+    assert "Sessions 1–15 of 16" in _plain(lines)
     rows = _rows(lines)
     assert len(rows) == 15
     assert rows[0] == "1  " + _local(BASE) + "  1  sess-15  → current"
     assert rows[1] == "2  " + _local(BASE) + "  1  sess-14"
     assert rows[14] == "15  " + _local(BASE) + "  1  sess-01"
-    # The 16th (oldest) session is not listed.
+    # The 16th (oldest) session is not on page 1.
     assert all("sess-00" not in row for row in rows)
-    # The listing cache is what the index form resolves against.
-    assert [s.session_id for s in iface._listing] == [f"sess-{i:02d}" for i in range(15, 0, -1)]
+    # The snapshot cache is what paging walks and the index form resolves
+    # against — the whole fetch, not the visible page (FR 14).
+    assert [s.session_id for s in iface._listing] == [f"sess-{i:02d}" for i in range(15, -1, -1)]
+    assert iface._listing_page == 0
 
 
-def test_ac13_current_key_outside_top15_is_not_marked(tmp_path, monkeypatch):
-    """The marker lands only on a row that is actually listed."""
-    # One shared activity instant for all 16: list_sessions then orders
+def test_ac13_current_key_outside_visible_page_is_not_marked(tmp_path, monkeypatch):
+    """The marker lands only on a row that is actually shown. FR 14: the
+    snapshot reaches row 16, so the store must be seeded past it — sess-17
+    (older than every row of page 1) stays unmarked."""
+    # One shared activity instant for all 20: list_sessions then orders
     # session id descending (its documented tie-break), independent of
     # the wall clock — expected rows are exact.
-    fixtures = [(f"sess-{i:02d}", 1, BASE) for i in range(16)]
+    fixtures = [(f"sess-{i:02d}", 1, BASE) for i in range(20)]
     store = asyncio.run(_seeded_store(fixtures))
-    agent = _TakeoverAgent("sess-00", store)  # oldest: not in the top 15
+    agent = _TakeoverAgent("sess-16", store)  # global row 4: on page 1 only
     iface, lines = _capturing_iface(tmp_path, monkeypatch)
 
     async def scenario():
         await iface._cmd_resume(agent, None)
+        await iface._cmd_resume(agent, "more")  # page 2: rows 16–20
 
     asyncio.run(scenario())
-    assert "→ current" not in _plain(lines)
+
+    first_listing, second_listing = lines[:17], lines[17:]
+    # Page 1 carries the marker, on sess-16's row and nowhere else.
+    assert any("4  " + _local(BASE) + "  1  sess-16  → current" in ln for ln in first_listing)
+    assert sum("→ current" in ln for ln in first_listing) == 1
+    # Page 2 shows the same key unmarked: its row is not visible, so
+    # nothing marks it.
+    assert all("→ current" not in ln for ln in second_listing)
+    # (The key itself still appears in the takeover surface's window text
+    # only via rows; page 2 holds rows 16–20 — sess-04 … sess-00.)
+    assert all("sess-16" not in ln for ln in second_listing)
 
 
 def test_ac13_c2_exact_session_id_works_without_prior_listing(tmp_path, monkeypatch):
@@ -712,6 +753,9 @@ def test_resume_in_command_list_and_help():
 
     assert "/resume" in _COMMANDS
     assert "/resume" in _HELP
+    # FR 14: the navigation forms are named by help and completion alike.
+    assert "/resume more" in _COMMANDS and "/resume back" in _COMMANDS
+    assert "/resume more" in _HELP and "/resume back" in _HELP
 
 
 # ---------------------------------------------------------------------------
@@ -893,4 +937,414 @@ def test_render_replay_items_pure_shape():
     assert all("dim" not in str(span.style) for span in user_item._spans)
     assert isinstance(assistant_item, Markdown)
     assert render_replay_items([]) == []
+
+
+# ---------------------------------------------------------------------------
+# AC16/AC17 — paginated listing (increment 4, FR 14)
+# ---------------------------------------------------------------------------
+
+
+def _watched_store(fixtures):
+    """A seeded store wrapped so every ``list_sessions`` call is counted."""
+    store = asyncio.run(_seeded_store(fixtures))
+    reads: list[tuple] = []
+    original = store.list_sessions
+
+    async def _counting(layer, limit):
+        reads.append((layer, limit))
+        return await original(layer, limit)
+
+    store.list_sessions = _counting
+    return store, reads
+
+
+def _fixture_lines(n):
+    """n archived sessions: sess-00 is the (repl) agent's own key, and
+    sess-NN with a higher N is newer — every row lands in page order."""
+    return [(f"sess-{i:02d}", 1, BASE) for i in range(n)]
+
+
+def _snapshot(n):
+    """n synthetic summaries for the pure helpers."""
+    return [SessionSummary(f"n-{i:03d}", 1, BASE) for i in range(n)]
+
+
+def _window_of(lines_out):
+    """The window indicator, exactly once, stripped of Rich markup."""
+    headers = [re.sub(r"\x1b\[[0-9;]*m", "", ln) for ln in lines_out if "Sessions " in ln]
+    assert len(headers) == 1
+    return headers[0]
+
+
+@contextmanager
+def _no_store_reads():
+    """Blow up loudly if the block touches the store's listing contract."""
+    original = repl_mod.REPLInterface._list_sessions
+
+    async def _forbidden(self, store, limit):
+        raise AssertionError("store read during a no-read navigation")
+
+    repl_mod.REPLInterface._list_sessions = _forbidden
+    try:
+        yield
+    finally:
+        repl_mod.REPLInterface._list_sessions = original
+
+
+def test_render_page_result_pure():
+    """Pure paging decision: windowed render, one-line end notices, back guard."""
+    summaries = _snapshot(37)
+    result = render_page_result(summaries, "nobody", 1, limit=15)
+    lines, rows = result
+    # Page 2 shows 15 rows: global indices 16–30 (31 opens page 3).
+    assert "Sessions 16–30 of 37" in lines[0][0]
+    assert rows[0].startswith("16  ") and rows[14].startswith("30  ")
+    # Page 3 is the last one: seven rows through 37.
+    third, third_rows = render_page_result(summaries, "nobody", 2, limit=15)
+    assert "Sessions 31–37 of 37" in third[0][0] and len(third_rows) == 7
+    # A `more` past the snapshot's end is one line, not a listing.
+    notice = render_page_result(summaries, "nobody", 3, limit=15)
+    assert len(notice) == 2 and isinstance(notice[0], str) and isinstance(notice[1], str)
+    assert "end" in notice[0]
+    # A `back` before the first page is one line too — never a wrap-around
+    # to the snapshot's end (the negative-slice trap).
+    guard = render_page_result(summaries, "nobody", -1, limit=15)
+    assert len(guard) == 2 and isinstance(guard[0], str)
+    assert "Start" in guard[0]
+    # An empty snapshot is "nothing cached" — a decision error, not a render.
+    with pytest.raises(ValueError):
+        render_page_result([], "nobody", 1, limit=15)
+
+
+def test_ac16_c1_bare_resume_window_marker_and_more_footer(tmp_path, monkeypatch):
+    """AC16-c1: 37 sessions → page 1 under ``1–15 of 37``, shipped row
+    shape, the current key's row marked, footer names /resume more."""
+    store, reads = _watched_store(_fixture_lines(37))
+    agent = _TakeoverAgent("sess-36", store)  # newest row, and the current key
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await iface._cmd_resume(agent, None)
+
+    asyncio.run(scenario())
+
+    out = _plain(lines)
+    assert _window_of(lines) == "Sessions 1–15 of 37 (newest first):"
+    assert "/resume more" in out
+    assert "/resume back" not in out  # page 1: no earlier page to name
+    rows = _rows(lines)
+    assert len(rows) == 15
+    assert rows[0] == "1  " + _local(BASE) + "  1  sess-36  → current"
+    assert rows[1] == "2  " + _local(BASE) + "  1  sess-35"
+    assert rows[14] == "15  " + _local(BASE) + "  1  sess-22"
+    # The marker appears exactly once, on the current key's row.
+    assert sum("→ current" in row for row in rows) == 1
+    assert reads == [(TURN_ARCHIVE_LAYER, _RESUME_SNAPSHOT_LIMIT)]
+
+
+def test_ac16_c1_current_row_marked_on_its_page(tmp_path, monkeypatch):
+    """AC16-c1 (marker clause): the current key is marked on the row shown."""
+    store, _reads = _watched_store(_fixture_lines(37))
+    agent = _TakeoverAgent("sess-19", store)  # global row 18: page 2
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await iface._cmd_resume(agent, None)
+        await iface._cmd_resume(agent, "more")
+
+    asyncio.run(scenario())
+
+    # Page 1 shows no marker (the current row is not on it); page 2 marks it.
+    first_listing, second_listing = lines[:17], lines[17:]
+    assert all("→ current" not in ln for ln in first_listing)
+    page2 = _rows(second_listing)
+    assert len(page2) == 15
+    # Store order is sess-36 … sess-00, so global row 18 is sess-19.
+    assert page2[2] == "18  " + _local(BASE) + "  1  sess-19  → current"
+
+
+def test_ac16_c2_c3_more_back_sequence_no_rerefresh(tmp_path, monkeypatch):
+    """AC16-c2/c3: 37 sessions → pages 16–30 and 31–37; back returns to
+    16–30; zero store reads across the whole more/back sequence."""
+    store, reads = _watched_store(_fixture_lines(37))
+    agent = _TakeoverAgent("sess-00", store)
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await iface._cmd_resume(agent, None)
+        await iface._cmd_resume(agent, "more")
+        await iface._cmd_resume(agent, "more")
+        await iface._cmd_resume(agent, "more")  # past page 3: end notice
+        await iface._cmd_resume(agent, "back")
+
+    asyncio.run(scenario())
+
+    # The window sequence: pages 1, 2, 3 — the third `more` answers the
+    # one-line end notice (no listing), and `back` re-renders page 2.
+    windows = [re.sub(r"\x1b\[[0-9;]*m", "", ln) for ln in lines if "Sessions " in ln]
+    assert windows == [
+        "Sessions 1–15 of 37 (newest first):",
+        "Sessions 16–30 of 37 (newest first):",
+        "Sessions 31–37 of 37 (newest first):",
+        "Sessions 16–30 of 37 (newest first):",
+    ]
+    # Row 16 keeps its global number on page 2 (rendered on the second page).
+    halves = _rows(lines)
+    assert halves[15] == "16  " + _local(BASE) + "  1  sess-21"
+    # Somewhere in the rendered pages the snapshot's last row appears as 37,
+    # the oldest session (rendered on page 3): global indices run to 37.
+    # (sess-00 is the agent's current key, so its row carries the marker.)
+    assert "37  " + _local(BASE) + "  1  sess-00  → current" in halves
+    # Page 3 rendered exactly seven rows (31–37): count rows numbered ≥31.
+    assert sum(1 for r in halves if re.match(r"3[1-7]  ", r)) == 7
+    notices = [ln for ln in _plain(lines).split("\n") if "end of list" in ln]
+    assert len(notices) == 1
+    assert reads == [(TURN_ARCHIVE_LAYER, _RESUME_SNAPSHOT_LIMIT)]  # one fetch
+
+
+def test_ac17_c1_row20_is_page2_fifth_visible_row(tmp_path, monkeypatch):
+    """AC17-c1 (row-identity clause): in the cached snapshot, index 20 is
+    exactly the fifth row page 2 renders — paging and resolution agree."""
+    fixtures = [("s-new", 1, BASE + timedelta(hours=5))]
+    fixtures += [(f"sess-{i:02d}", 1, BASE) for i in range(36)]
+    store, _reads = _watched_store(fixtures)
+    agent = _TakeoverAgent("miranda-repl-20261030-120000", store)
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await iface._cmd_resume(agent, None)
+        await iface._cmd_resume(agent, "more")  # now page 2 becomes visible
+
+    asyncio.run(scenario())
+
+    rows = _rows(lines)
+    assert len(rows) == 30  # page 1 (1–15) + page 2 (16–30)
+    # The fifth row of page 2 (entries[15+4]) is the row numbered 20 and
+    # keyed sess-17 — the same row /resume 20 resolves.
+    assert rows[19] == "20  " + _local(BASE) + "  1  sess-17"
+
+
+def test_ac16_c2_footer_drops_more_on_final_partial_page(tmp_path, monkeypatch):
+    """AC16-c2: on the final partial page (31–37 of 37) the footer names
+    back, and no longer more."""
+    store, _reads = _watched_store(_fixture_lines(37))
+    agent = _TakeoverAgent("sess-00", store)
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await iface._cmd_resume(agent, "more")  # nothing cached → fresh, page 1
+        await iface._cmd_resume(agent, "more")  # page 2: rows 16–30
+        await iface._cmd_resume(agent, "more")  # page 3: rows 31–37
+        await iface._cmd_resume(agent, "more")  # past the end: notice only
+
+    asyncio.run(scenario())
+
+    footers = [ln for ln in _plain(lines).split("\n") if "to take over" in ln]
+    assert len(footers) == 3  # pages 1, 2, 3; the end notice prints no footer
+    # Page 1: rows remain below → more is named, back is not.
+    assert footers[0] == "/resume <idx> or /resume <session-id> to take over — /resume more"
+    # Page 2: both directions.
+    assert footers[1] == (
+        "/resume <idx> or /resume <session-id> to take over — /resume more, /resume back"
+    )
+    # Page 3 (last): no rows remain — more drops, back stays.
+    assert footers[2] == "/resume <idx> or /resume <session-id> to take over — /resume back"
+    # Page 3 is the last page: more answered with the end notice, no footer.
+    assert sum("end of list" in ln for ln in _plain(lines).split("\n")) == 1
+
+
+def test_ac16_c4_snapshot_cap_reads_200_plus(tmp_path, monkeypatch):
+    """AC16-c4: a fetch returning exactly the 200-row cap reads ``200+``."""
+    assert _RESUME_SNAPSHOT_LIMIT == 200
+    summaries = _snapshot(200)
+    lines, rows = render_session_listing(
+        summaries, "nobody", _RESUME_LIST_LIMIT, 0, _RESUME_SNAPSHOT_LIMIT
+    )
+    assert f"1–{_RESUME_LIST_LIMIT} of {_RESUME_SNAPSHOT_LIMIT}+" in lines[0][0]
+    assert len(rows) == 15
+    # One row below the cap keeps the exact total.
+    below, _ = render_session_listing(
+        _snapshot(199), "nobody", _RESUME_LIST_LIMIT, 0, _RESUME_SNAPSHOT_LIMIT
+    )
+    assert "of 199" in below[0][0] and "+" not in below[0][0]
+
+    # Command level: a store whose every fetch comes back exactly capped.
+    store = MagicMock(spec=InMemoryProvenanceStore)
+    store.list_sessions = AsyncMock(return_value=summaries)
+    agent = _TakeoverAgent("nobody", store)
+    iface, cmd_lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await iface._cmd_resume(agent, None)
+        await iface._cmd_resume(agent, "more")
+
+    asyncio.run(scenario())
+
+    out = _plain(cmd_lines)
+    assert "Sessions 16–30 of 200+" in out  # later pages carry the capped total
+    store.list_sessions.assert_awaited_once_with(TURN_ARCHIVE_LAYER, 200)
+
+
+def test_ac16_c5_small_store_end_notice_without_store_read(tmp_path, monkeypatch):
+    """AC16-c5: 10 sessions → ``1–10 of 10``, no more hint; more answers the
+    one-line end notice and performs no store read."""
+    store, reads = _watched_store(_fixture_lines(10))
+    agent = _TakeoverAgent("sess-00", store)
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await iface._cmd_resume(agent, None)
+        with _no_store_reads():
+            await iface._cmd_resume(agent, "more")
+
+    asyncio.run(scenario())
+
+    out = _plain(lines)
+    assert "Sessions 1–10 of 10 (newest first):" in out
+    assert "/resume more" not in out  # footer stays at the shipped line
+    ends = [ln for ln in out.split("\n") if "end of list" in ln]
+    assert len(ends) == 1 and ends[0].startswith("No more sessions")
+    assert reads == [(TURN_ARCHIVE_LAYER, _RESUME_SNAPSHOT_LIMIT)]  # just the bare fetch
+
+
+def test_ac16_c6_bare_resume_after_paging_refetches(tmp_path, monkeypatch):
+    """AC16-c6: paged to page 2, a session archived meanwhile shows up only
+    after a bare /resume — fresh snapshot, page 1, new row visible."""
+    store, reads = _watched_store(_fixture_lines(37))
+    agent = _TakeoverAgent("sess-00", store)
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await iface._cmd_resume(agent, None)
+        await iface._cmd_resume(agent, "more")
+        # Another process archives a new session while we page.
+        await store.write_batch(_completed_turn_entries("s-new", 1, BASE + timedelta(hours=5)))
+        await iface._cmd_resume(agent, None)
+
+    asyncio.run(scenario())
+
+    assert _window_of(lines[-17:]) == "Sessions 1–15 of 38 (newest first):"
+    # The fresh snapshot's row 1 is the newly archived session (its own
+    # helper computes the expected timestamp, independent of the renderer).
+    fresh_rows = _rows(lines[-17:])
+    assert len(fresh_rows) == 15
+    assert fresh_rows[0] == "1  " + _local(BASE + timedelta(hours=5)) + "  1  s-new"
+    assert iface._listing_page == 0
+    assert len(reads) == 2  # the paging in between fetched nothing
+
+
+def test_ac17_c1_index_resolves_across_pages_without_display(tmp_path, monkeypatch):
+    """AC17-c1: with a 37-row snapshot cached from page 1, /resume 20 takes
+    global row 20 (the fifth row of page 2) over — page 2 is never shown."""
+    # Pinned order (the store's newest-first contract, ties on session id
+    # descending): s-new holds the unique newest activity (row 1), every
+    # sess-NN shares BASE. Global row 20 is then exactly sess-17, and it is
+    # page 2's fifth rendered row — 16=sess-36 … 20=sess-17.
+    fixtures = [("s-new", 1, BASE + timedelta(hours=5))]
+    fixtures += [(f"sess-{i:02d}", 1, BASE) for i in range(36)]
+    store, reads = _watched_store(fixtures)
+    agent = _TakeoverAgent("miranda-repl-20261030-120000", store)
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await iface._cmd_resume(agent, None)  # cache the snapshot, show page 1
+        await iface._cmd_resume(agent, "20")  # resolve against the whole snapshot
+
+    asyncio.run(scenario())
+
+    assert agent.session_id == "sess-17"
+    report = [ln for ln in lines if "Resumed" in ln]
+    assert len(report) == 1 and "sess-17" in report[0]
+    # No page-2 window was ever printed: page 1, then the takeover line.
+    assert _window_of(lines) == "Sessions 1–15 of 37 (newest first):"
+    assert len(reads) == 1  # the listing fetch; the takeover read is get_session
+
+
+def test_ac17_c2_out_of_range_against_snapshot_no_store_read(tmp_path, monkeypatch):
+    """AC17-c2: with a 37-row snapshot cached, /resume 99 errors against the
+    snapshot size, switches nothing, reads nothing further."""
+    store, reads = _watched_store(_fixture_lines(37))
+    agent = _TakeoverAgent("miranda-repl-20261030-120000", store)
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await iface._cmd_resume(agent, None)
+        await iface._cmd_resume(agent, "99")
+
+    asyncio.run(scenario())
+
+    assert agent.session_id == "miranda-repl-20261030-120000"
+    assert agent.history == [] and agent.sr2.seeded_seq == []
+    assert any("index 99" in ln and "37 listed" in ln for ln in lines)
+    assert not any("Resumed" in ln for ln in lines)
+    assert reads == [(TURN_ARCHIVE_LAYER, _RESUME_SNAPSHOT_LIMIT)]  # only the bare fetch
+
+
+def test_ac17_c3_more_back_with_no_listing_fetch_page_one(tmp_path, monkeypatch):
+    """AC17-c3: on a fresh repl, /resume more and /resume back each behave
+    as a bare /resume — one fresh fetch, page 1 shown."""
+    for word in ("more", "back"):
+        store, reads = _watched_store(_fixture_lines(37))
+        agent = _TakeoverAgent("sess-00", store)
+        iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+        async def scenario():
+            await iface._cmd_resume(agent, word)
+
+        asyncio.run(scenario())
+
+        assert _window_of(lines) == "Sessions 1–15 of 37 (newest first):"
+        assert iface._listing_page == 0 and len(iface._listing) == 37
+        assert reads == [(TURN_ARCHIVE_LAYER, _RESUME_SNAPSHOT_LIMIT)]
+
+
+def test_ac17_c4_navigation_never_a_session_lookup(tmp_path, monkeypatch):
+    """AC17-c4: with no session keyed `more`, /resume more navigates (a
+    fetch with nothing cached, page 1 shown) and /resume back then pages the
+    cache — no unknown-session error, no takeover, no archive lookup."""
+    store, reads = _watched_store(_fixture_lines(3))
+    store.get_session = AsyncMock(wraps=store.get_session)
+    agent = _TakeoverAgent("sess-00", store)
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    # The pure contract first: resolved as an id, the words WOULD name a
+    # nonexistent session — yet the command never reaches that path.
+    assert resolve_resume_target([], "more") == ("more", None)
+    assert "more" in _RESUME_NAV and "back" in _RESUME_NAV
+
+    async def scenario():
+        await iface._cmd_resume(agent, "more")  # nothing cached → fresh, page 1
+        await iface._cmd_resume(agent, "back")  # cached → page 0 again
+
+    asyncio.run(scenario())
+
+    out = _plain(lines)
+    assert "No session" not in out and "Resumed" not in out
+    assert "Sessions 1–3 of 3 (newest first):" in out
+    assert iface._listing_page == 0
+    # Exactly one listing fetch (the first navigation; the second pages the
+    # cache), zero archive lookups — the words were never session ids.
+    assert reads == [(TURN_ARCHIVE_LAYER, _RESUME_SNAPSHOT_LIMIT)]
+    store.get_session.assert_not_awaited()
+
+
+def test_reset_clears_snapshot_and_page(tmp_path, monkeypatch):
+    """FR 14: /reset clears the page state along with the snapshot it clears
+    today."""
+    store, _reads = _watched_store(_fixture_lines(37))
+    agent = Agent(_config(), session_id="sess-00")
+    agent._runtime._provenance_store = store
+    iface, lines = _capturing_iface(tmp_path, monkeypatch)
+
+    async def scenario():
+        await iface._cmd_resume(agent, None)
+        await iface._cmd_resume(agent, "more")
+        assert iface._listing and iface._listing_page == 1
+        await iface._cmd_reset(agent)
+
+    asyncio.run(scenario())
+
+    assert iface._listing == []
+    assert iface._listing_page == 0
+    assert any("New session started" in ln for ln in lines)
 

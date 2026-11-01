@@ -69,8 +69,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Rows a bare /resume shows (FR 12).
+# Rows a /resume page shows (FR 12).
 _RESUME_LIST_LIMIT = 15
+# Sessions one /resume listing snapshot holds (FR 14): the paging window is
+# _RESUME_LIST_LIMIT rows, but /resume <idx> resolves against this snapshot,
+# so a fetch cap is also the highest reachable index until the next fetch.
+_RESUME_SNAPSHOT_LIMIT = 200
+# Reserved argument words of /resume: navigation, never session-id lookups.
+_RESUME_NAV: frozenset[str] = frozenset({"more", "back"})
 
 _HELP = """\
 Commands:
@@ -84,6 +90,7 @@ Commands:
   /save [path]  — save session to JSON (default: ~/.sr2-spectre/session.json)
   /load <path>  — load session from JSON
   /resume [| <idx> | <session-id>]  — list archived sessions, or take one over
+  /resume more | /resume back  — page through the last /resume listing
   /change-model [name]  — list models, or switch the active one
 
 Multiline input: Enter sends the message, Shift+Enter (or Alt+Enter) adds a
@@ -105,6 +112,8 @@ _COMMANDS = [
     "/save",
     "/load",
     "/resume",
+    "/resume more",
+    "/resume back",
     "/change-model",
 ]
 
@@ -283,27 +292,52 @@ def _is_repl_minted_key(session_id: str, name: str) -> bool:
 
 
 def render_session_listing(
-    summaries: list, current_session_id: str, limit: int = 15
+    summaries: list,
+    current_session_id: str,
+    limit: int = 15,
+    page: int = 0,
+    snapshot_limit: int | None = None,
 ) -> tuple[list[tuple[str, str]], list[str]]:
-    """Pure listing logic for bare ``/resume`` — no I/O (FR 12).
+    """Pure listing logic for bare ``/resume`` — no I/O (FR 12, FR 14).
 
     Args:
         summaries: ``SessionSummary`` rows from ``list_sessions``, newest
-            activity first (the store's own order).
+            activity first (the store's own order) — the whole snapshot, so
+            global indices continue across pages.
         current_session_id: The agent's current key, marked on its row.
-        limit: Row cap, applied here so the listing and the index the
-            ``/resume <idx>`` form resolves share one row set.
+        limit: Rows per page.
+        page: 0-based page index into the snapshot.
+        snapshot_limit: The fetch cap ``list_sessions`` was called with.
+            When the snapshot is exactly that long the true total is
+            unknown and the window indicator reads ``<cap>+`` (FR 14); None
+            leaves the total exact.
 
     Returns:
         ``(lines, rows)`` — *lines* is a list of ``(markup, style)`` pairs
-        (a header, one row per session as
+        (a header naming the visible window and the total as ``1–15 of 23``,
+        one row per session as
         ``<idx>  <YYYY-MM-DD HH:MM>  <turns>  <session-id>``, and a footer
-        naming the selection syntax); *rows* holds each session row as
-        plain text for assertions.
+        naming the selection syntax plus ``/resume more`` while an earlier
+        page is still reachable); *rows* holds each session row as plain
+        text for assertions.
     """
-    lines: list[tuple[str, str]] = [("[bold]Sessions (newest first):[/bold]", "")]
+    total = len(summaries)
+    start = min(page * limit, total)
+    visible = summaries[start : start + limit]
+    end = start + len(visible)
+    count = f"{snapshot_limit}+" if snapshot_limit is not None and total == snapshot_limit else str(total)
+    # A larger snapshot sits behind the cap: name /resume more whenever
+    # rows remain below the visible window; an earlier page adds back.
+    deeper = total > end
+    tail = " — /resume more" if deeper else ""
+    if page > 0:
+        tail += ", /resume back" if deeper else " — /resume back"
+    lines: list[tuple[str, str]] = [
+        (f"[bold]Sessions {start + 1}–{end} of {count} (newest first):[/bold]", "")
+    ]
     rows: list[str] = []
-    for idx, summary in enumerate(summaries[:limit], 1):
+    for offset, summary in enumerate(visible):
+        idx = start + offset + 1
         # A naive-local last_activity (the SQLite round-trip) is already this
         # machine's local time; a UTC-aware one (the InMemory store) converts.
         # Either way the row shows local time.
@@ -318,20 +352,24 @@ def render_session_listing(
         )
         rows.append(row)
         lines.append((f"  {row}", style))
-    lines.append(("[dim]/resume <idx> or /resume <session-id> to take over[/dim]", ""))
+    footer = "[dim]/resume <idx> or /resume <session-id> to take over"
+    footer += tail
+    lines.append((f"{footer}[/dim]", ""))
     return lines, rows
 
 
 def resolve_resume_target(
-    summaries: list | None, arg: str, limit: int = 15
+    summaries: list | None, arg: str, limit: int = _RESUME_SNAPSHOT_LIMIT
 ) -> tuple[str | None, str | None]:
-    """Pure selection logic for ``/resume <idx|session-id>`` — no I/O (FR 11).
+    """Pure selection logic for ``/resume <idx|session-id>`` — no I/O (FR 11, FR 14).
 
-    An all-digits argument is a 1-based index into *summaries* (the rows the
-    last listing fetched; None when nothing has been listed yet).  Anything
-    else is an exact session id and resolves directly — no listing is needed
-    and none is consulted, so an exact key works without a prior bare
-    ``/resume`` and the target's archive is read exactly once.
+    An all-digits argument is a 1-based index into *summaries* (the snapshot
+    the last listing fetched; None when nothing has been listed yet).  The
+    index resolves against the whole snapshot, not the visible page, and its
+    bound is the snapshot limit the fetch was capped at.  Anything else is an
+    exact session id and resolves directly — no listing is needed and none is
+    consulted, so an exact key works without a prior bare ``/resume`` and the
+    target's archive is read exactly once.
 
     Returns:
         ``(session_id, error)`` — exactly one is non-None.
@@ -345,6 +383,39 @@ def resolve_resume_target(
             )
         return listed[idx - 1].session_id, None
     return arg, None
+
+
+def render_page_result(
+    summaries: list, current_session_id: str, page: int, **render_kwargs
+) -> tuple[list[tuple[str, str]], list[str]] | tuple[str, str]:
+    """Pure paging decision for ``/resume more`` and ``/resume back`` (FR 14).
+
+    A cached snapshot makes the inputs total, not nullable: an empty
+    snapshot IS "no listing cached", and the caller treats the navigation as
+    a bare ``/resume`` (fresh fetch, page 1) instead of rendering here.
+
+    Returns:
+        Either the rendered listing for the requested page, exactly as
+        ``render_session_listing`` returns it (a ``(lines, rows)`` pair),
+        or a single ``(markup, style)`` pair: the one-line end notice for a
+        ``more`` past the snapshot's end, or the start guard for a ``back``
+        before page 1.  A *page* past the last page re-clamps to the last
+        page holding rows — what ``back`` needs after a fetch shrink.
+    """
+    if not summaries:
+        raise ValueError("render_page_result needs a cached snapshot; render a fresh listing instead")
+    total = len(summaries)
+    page_size = render_kwargs.get("limit", _RESUME_LIST_LIMIT)
+    # The guards come first, before any windowing: passing a raw negative
+    # page to the renderer would slice-wrap to the snapshot's END.
+    if page < 0:
+        return ("[dim]Start of list.[/dim]", "")
+    if page * page_size >= total:
+        return ("[dim]No more sessions — end of list.[/dim]", "")
+    last_page = -(-total // page_size) - 1
+    if page > last_page:
+        page = last_page
+    return render_session_listing(summaries, current_session_id, page=page, **render_kwargs)
 
 
 def _max_archived_turn(history: list) -> int:
@@ -471,9 +542,12 @@ class REPLInterface:
         self.console: Console = console or Console()
         self._session: PromptSession | None = None
         self._stop_event: asyncio.Event | None = None
-        # Rows fetched by the last bare /resume, so /resume <idx> refers to
-        # the listing the operator just looked at; /reset clears it.
+        # Snapshot fetched by the last /resume listing, so /resume <idx>
+        # refers to the listing the operator just looked at and paging never
+        # re-fetches (FR 14); /reset clears it along with the page.
         self._listing: list = []
+        # 0-based page in view within self._listing (FR 14).
+        self._listing_page: int = 0
 
     # ------------------------------------------------------------------
     # Interface protocol
@@ -811,6 +885,7 @@ class REPLInterface:
         else:
             agent.new_session(key)
         self._listing = []
+        self._listing_page = 0
         self.console.print("[green]New session started[/green]")
 
     async def _cmd_help(self, _arg: str | None) -> None:
@@ -899,16 +974,21 @@ class REPLInterface:
         return await store.list_sessions(TURN_ARCHIVE_LAYER, limit)
 
     async def _cmd_resume(self, agent: "Agent", arg: str | None) -> None:
-        """Handle /resume — list archived sessions, or take one over.
+        """Handle /resume — list archived sessions, page, or take one over.
 
-        Bare: list up to 15 archived sessions, newest first, current key
-        marked.  ``<idx>``: select from that listing.  ``<session-id>``:
-        select by exact key without a prior listing.  A takeover restores the
-        target's resumable history (interrupted marker and rewinds included —
-        the increment-1 reconstruction), adopts the key as this agent's
-        identity, and reads archive continuation for the adopted Session off
-        the archive, so the next turn continues the target's turn numbering
-        and this run's previous key receives no further entries (FR 11).
+        Bare: fetch one listing snapshot (up to ``_RESUME_SNAPSHOT_LIMIT``
+        sessions, newest first) and show page 1 — 15 rows under a window
+        indicator naming the total, the current key marked.  ``more`` and
+        ``back`` page through that cached snapshot without re-fetching, so
+        indices stay stable while other processes archive new sessions; with
+        nothing cached either behaves as a bare ``/resume``.  ``<idx>``
+        selects against the whole snapshot, ``<session-id>`` selects by exact
+        key without a prior listing.  A takeover restores the target's
+        resumable history (interrupted marker and rewinds included — the
+        increment-1 reconstruction), adopts the key as this agent's identity,
+        and reads archive continuation for the adopted Session off the
+        archive, so the next turn continues the target's turn numbering and
+        this run's previous key receives no further entries (FR 11).
         """
         store = getattr(agent, "provenance_store", None)
         if store is None:
@@ -917,25 +997,59 @@ class REPLInterface:
             )
             return
 
+        # Navigation words first: they are never session-id lookups, even
+        # when the store keys a session "more" (FR 14).
+        if arg in _RESUME_NAV:
+            if self._listing:
+                # Ask for the neighbouring page; the pure helper renders it,
+                # or answers a one-line notice for a step off either end
+                # (the page in view then stays put).
+                step = 1 if arg == "more" else -1
+                page = self._listing_page + step
+                result = render_page_result(
+                    self._listing,
+                    getattr(agent, "session_id", ""),
+                    page,
+                    limit=_RESUME_LIST_LIMIT,
+                    snapshot_limit=_RESUME_SNAPSHOT_LIMIT,
+                )
+                # render_page_result returns render_session_listing's
+                # (lines, rows) pair on a rendering, or a single
+                # (markup, style) pair of strings for an end/start notice:
+                # two elements whose first is a list means lines/rows.
+                if len(result) == 2 and isinstance(result[0], list):
+                    rendered, _plain_rows = result
+                    self._listing_page = page
+                    for markup, style in rendered:
+                        self.console.print(markup, style=style or None)
+                    return
+                self.console.print(*result)
+                return
+            arg = None  # nothing cached: navigate means fetch fresh, page 1
+
         if arg:
-            # The indexed form resolves against the shared listing cache —
-            # the rows bare /resume last showed.  With nothing listed yet it
-            # fetches once (an index implies the list the operator expects
-            # to pick from) and stores it as the shared listing.  An exact
-            # session id needs no listing at all; its archive read is the
-            # single store access of the takeover.
+            # The indexed form resolves against the shared snapshot cache —
+            # the rows /resume last fetched, the whole snapshot, not the
+            # visible page.  With nothing listed yet it fetches once (an
+            # index implies the list the operator expects to pick from) and
+            # stores it as the shared snapshot.  An exact session id needs no
+            # listing at all; its archive read is the single store access of
+            # the takeover.
             listing = self._listing
             if listing and arg.isdigit():
                 summaries = listing
             else:
                 try:
-                    summaries = await self._list_sessions(store, _RESUME_LIST_LIMIT)
+                    summaries = await self._list_sessions(store, _RESUME_SNAPSHOT_LIMIT)
                 except Exception as exc:
                     self.console.print(f"[red]Could not list archived sessions: {exc}[/red]")
                     return
                 if arg.isdigit():
-                    self._listing = list(summaries[:_RESUME_LIST_LIMIT])
-            session_id, error = resolve_resume_target(summaries, arg, _RESUME_LIST_LIMIT)
+                    self._listing = list(summaries)
+                    self._listing_page = 0
+            session_id, error = resolve_resume_target(
+                summaries, arg, _RESUME_SNAPSHOT_LIMIT
+            )
             if error is not None:
                 self.console.print(f"[red]{error}[/red]")
                 return
@@ -943,16 +1057,22 @@ class REPLInterface:
             return
 
         try:
-            summaries = await self._list_sessions(store, _RESUME_LIST_LIMIT)
+            summaries = await self._list_sessions(store, _RESUME_SNAPSHOT_LIMIT)
         except Exception as exc:
             self.console.print(f"[red]Could not list archived sessions: {exc}[/red]")
             return
         if not summaries:
+            self._listing = []
+            self._listing_page = 0
             self.console.print("[dim]No archived sessions found.[/dim]")
             return
-        self._listing = list(summaries[:_RESUME_LIST_LIMIT])
+        self._listing = list(summaries)
+        self._listing_page = 0
         lines, _rows = render_session_listing(
-            summaries, getattr(agent, "session_id", ""), _RESUME_LIST_LIMIT
+            summaries,
+            getattr(agent, "session_id", ""),
+            _RESUME_LIST_LIMIT,
+            snapshot_limit=_RESUME_SNAPSHOT_LIMIT,
         )
         for markup, style in lines:
             self.console.print(markup, style=style or None)
