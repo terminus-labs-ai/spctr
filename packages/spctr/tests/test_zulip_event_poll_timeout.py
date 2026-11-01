@@ -30,13 +30,13 @@ from typing import Any
 import pytest
 from aiohttp import web
 
-from sr2_spectre.interfaces.zulip import (
+from spctr.interfaces.zulip import (
     ZulipClient,
     ZulipConfig,
     ZulipCredentials,
     ZulipTransportError,
 )
-from sr2_spectre.interfaces.zulip.client import (
+from spctr.interfaces.zulip.client import (
     _DEFAULT_EVENT_POLL_TIMEOUT,
     _DEFAULT_REQUEST_TIMEOUT,
 )

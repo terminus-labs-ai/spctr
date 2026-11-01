@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import pytest
-from sr2_spectre.config_merge import merge_configs
+from spctr.config_merge import merge_configs
 
 
 # ---------------------------------------------------------------------------

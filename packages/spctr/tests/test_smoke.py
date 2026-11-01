@@ -1,4 +1,4 @@
-"""Smoke tests — end-to-end integration verification for the sr2-spectre stack.
+"""Smoke tests — end-to-end integration verification for the spctr stack.
 
 These are NOT unit tests. They verify the full stack works end-to-end:
 config loading → agent instantiation → tool registry → interface wiring →
@@ -15,22 +15,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sr2_spectre.agent import Agent
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig, load_config
-from sr2_spectre.interfaces.single_shot import SingleShotInterface
-from sr2_spectre.tools.registry import ToolRegistry
+from spctr.agent import Agent
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig, load_config
+from spctr.interfaces.single_shot import SingleShotInterface
+from spctr.tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _minimal_spectre_config(
+def _minimal_spctr_config(
     tools: list[dict] | None = None,
     mcp_servers: list | None = None,
-) -> SpectreConfig:
-    """Build a minimal SpectreConfig with a static system prompt."""
-    return SpectreConfig(
+) -> SpctrConfig:
+    """Build a minimal SpctrConfig with a static system prompt."""
+    return SpctrConfig(
         agent=AgentConfig(
             name="smoke-agent",
             tools=tools or [],
@@ -48,7 +48,7 @@ def _minimal_spectre_config(
                     "name": "tools",
                     "target": "tools",
                     "resolvers": [],
-                    "tool_providers": [{"type": "spectre_tools"}],
+                    "tool_providers": [{"type": "spctr_tools"}],
                 },
                 {
                     "name": "conversation",
@@ -74,13 +74,13 @@ class TestSmokeConfigLoading:
                   name: smoke-test
                   tools:
                     - name: terminal
-                      class_path: sr2_spectre.tools.builtins.terminal.TerminalTool
+                      class_path: spctr.tools.builtins.terminal.TerminalTool
                       config:
                         timeout: 30
                     - name: file_read
-                      class_path: sr2_spectre.tools.builtins.file_read.FileReadTool
+                      class_path: spctr.tools.builtins.file_read.FileReadTool
                     - name: file_write
-                      class_path: sr2_spectre.tools.builtins.file_write.FileWriteTool
+                      class_path: spctr.tools.builtins.file_write.FileWriteTool
                 models:
                   default:
                     model: test/model
@@ -99,7 +99,7 @@ class TestSmokeConfigLoading:
                       target: tools
                       resolvers: []
                       tool_providers:
-                        - type: spectre_tools
+                        - type: spctr_tools
                     - name: conversation
                       target: messages
                       resolvers:
@@ -148,7 +148,7 @@ class TestSmokeConfigLoading:
                   name: extended-agent
                   tools:
                     - name: terminal
-                      class_path: sr2_spectre.tools.builtins.terminal.TerminalTool
+                      class_path: spctr.tools.builtins.terminal.TerminalTool
                 models:
                   default:
                     model: test/model
@@ -183,14 +183,14 @@ class TestSmokeConfigLoading:
 class TestSmokeAgentInstantiation:
     def test_agent_creates_with_built_in_tools(self) -> None:
         """Agent instantiates and registers the specified built-in tools."""
-        cfg = _minimal_spectre_config(
+        cfg = _minimal_spctr_config(
             tools=[
-                {"name": "terminal", "class_path": "sr2_spectre.tools.builtins.terminal.TerminalTool"},
-                {"name": "file_read", "class_path": "sr2_spectre.tools.builtins.file_read.FileReadTool"},
-                {"name": "file_write", "class_path": "sr2_spectre.tools.builtins.file_write.FileWriteTool"},
+                {"name": "terminal", "class_path": "spctr.tools.builtins.terminal.TerminalTool"},
+                {"name": "file_read", "class_path": "spctr.tools.builtins.file_read.FileReadTool"},
+                {"name": "file_write", "class_path": "spctr.tools.builtins.file_write.FileWriteTool"},
             ]
         )
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -200,8 +200,8 @@ class TestSmokeAgentInstantiation:
 
     def test_agent_no_tools_has_only_auto_injected_tools(self) -> None:
         """Agent with no tools still has load_skill auto-injected."""
-        cfg = _minimal_spectre_config(tools=[])
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        cfg = _minimal_spctr_config(tools=[])
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -211,17 +211,17 @@ class TestSmokeAgentInstantiation:
     def test_agent_registers_all_built_in_tools(self) -> None:
         """All shipped built-in tools can be registered without error."""
         all_tool_defs = [
-            {"name": "terminal", "class_path": "sr2_spectre.tools.builtins.terminal.TerminalTool"},
-            {"name": "file_read", "class_path": "sr2_spectre.tools.builtins.file_read.FileReadTool"},
-            {"name": "file_write", "class_path": "sr2_spectre.tools.builtins.file_write.FileWriteTool"},
-            {"name": "edit", "class_path": "sr2_spectre.tools.builtins.edit.EditTool"},
-            {"name": "grep", "class_path": "sr2_spectre.tools.builtins.grep.GrepTool"},
-            {"name": "glob", "class_path": "sr2_spectre.tools.builtins.glob.GlobTool"},
-            {"name": "web_search", "class_path": "sr2_spectre.tools.builtins.web_search.WebSearchTool", "config": {"base_url": "http://localhost:8080"}},
-            {"name": "complete_step", "class_path": "sr2_spectre.tools.builtins.complete_step.CompleteStepTool"},
+            {"name": "terminal", "class_path": "spctr.tools.builtins.terminal.TerminalTool"},
+            {"name": "file_read", "class_path": "spctr.tools.builtins.file_read.FileReadTool"},
+            {"name": "file_write", "class_path": "spctr.tools.builtins.file_write.FileWriteTool"},
+            {"name": "edit", "class_path": "spctr.tools.builtins.edit.EditTool"},
+            {"name": "grep", "class_path": "spctr.tools.builtins.grep.GrepTool"},
+            {"name": "glob", "class_path": "spctr.tools.builtins.glob.GlobTool"},
+            {"name": "web_search", "class_path": "spctr.tools.builtins.web_search.WebSearchTool", "config": {"base_url": "http://localhost:8080"}},
+            {"name": "complete_step", "class_path": "spctr.tools.builtins.complete_step.CompleteStepTool"},
         ]
-        cfg = _minimal_spectre_config(tools=all_tool_defs)
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        cfg = _minimal_spctr_config(tools=all_tool_defs)
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -236,7 +236,7 @@ class TestSmokeAgentInstantiation:
 class TestSmokeSingleShotInterface:
     async def test_single_shot_runs_end_to_end(self, capsys: pytest.CaptureFixture) -> None:
         """Single-shot interface accepts a prompt and produces output."""
-        from sr2_spectre.core import TurnResult
+        from spctr.core import TurnResult
 
         agent = AsyncMock()
         agent.handle_user_message.return_value = TurnResult(
@@ -259,8 +259,8 @@ class TestSmokeSingleShotInterface:
 class TestSmokeMcpWiring:
     async def test_agent_initializes_mcp_and_registers_bridge(self) -> None:
         """MCP server config → MCPClient → bridge → tool registry path works."""
-        from sr2_spectre.config import McpServerConfig
-        from sr2_spectre.mcp.tool_bridge import MCPToolBridge
+        from spctr.config import McpServerConfig
+        from spctr.mcp.tool_bridge import MCPToolBridge
 
         bridge = MagicMock(spec=MCPToolBridge)
         bridge.name = "mcp_list_files"
@@ -271,14 +271,14 @@ class TestSmokeMcpWiring:
         mock_client = MagicMock()
         mock_client.connect = AsyncMock(return_value=[bridge])
 
-        cfg = _minimal_spectre_config(
+        cfg = _minimal_spctr_config(
             mcp_servers=[
                 McpServerConfig(name="fs", type="stdio", command=["fs-server"])
             ]
         )
 
-        with patch("sr2_spectre.session.SR2") as MockSR2, \
-             patch("sr2_spectre.runtime.MCPClient", return_value=mock_client):
+        with patch("spctr.session.SR2") as MockSR2, \
+             patch("spctr.runtime.MCPClient", return_value=mock_client):
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -287,20 +287,20 @@ class TestSmokeMcpWiring:
 
     async def test_agent_graceful_on_mcp_connection_failure(self) -> None:
         """MCP connection failure is swallowed and logged, not raised."""
-        from sr2_spectre.config import McpServerConfig
-        from sr2_spectre.mcp.client import MCPConnectionError
+        from spctr.config import McpServerConfig
+        from spctr.mcp.client import MCPConnectionError
 
         mock_client = MagicMock()
         mock_client.connect = AsyncMock(side_effect=MCPConnectionError("connection refused"))
 
-        cfg = _minimal_spectre_config(
+        cfg = _minimal_spctr_config(
             mcp_servers=[
                 McpServerConfig(name="unreachable", type="http", url="http://bad:9999/sse")
             ]
         )
 
-        with patch("sr2_spectre.session.SR2") as MockSR2, \
-             patch("sr2_spectre.runtime.MCPClient", return_value=mock_client):
+        with patch("spctr.session.SR2") as MockSR2, \
+             patch("spctr.runtime.MCPClient", return_value=mock_client):
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -315,7 +315,7 @@ class TestSmokeMcpWiring:
 class TestSmokeToolExecution:
     async def test_terminal_tool_executes_command(self) -> None:
         """Terminal tool can execute a simple command and return output."""
-        from sr2_spectre.tools.builtins.terminal import TerminalTool
+        from spctr.tools.builtins.terminal import TerminalTool
 
         tool = TerminalTool(timeout=5)
         result = await tool(command="echo 'smoke OK'")
@@ -330,8 +330,8 @@ class TestSmokeToolExecution:
 class TestSmokeFileTools:
     async def test_file_write_and_read_round_trip(self, tmp_path: Path) -> None:
         """file_write + file_read round-trips content correctly."""
-        from sr2_spectre.tools.builtins.file_read import FileReadTool
-        from sr2_spectre.tools.builtins.file_write import FileWriteTool
+        from spctr.tools.builtins.file_read import FileReadTool
+        from spctr.tools.builtins.file_write import FileWriteTool
 
         test_file = tmp_path / "smoke_test.txt"
         content = "Smoke test round-trip content\nLine 2\n"
@@ -346,7 +346,7 @@ class TestSmokeFileTools:
 
     async def test_file_write_creates_parent_dirs(self, tmp_path: Path) -> None:
         """file_write creates missing parent directories."""
-        from sr2_spectre.tools.builtins.file_write import FileWriteTool
+        from spctr.tools.builtins.file_write import FileWriteTool
 
         nested = tmp_path / "a" / "b" / "c" / "file.txt"
         writer = FileWriteTool()
@@ -364,7 +364,7 @@ class TestSmokePlanResolver:
     def test_plan_resolver_importable(self) -> None:
         """PlanResolver can be imported and instantiated with ResolverConfig."""
         from sr2.config.models import ResolverConfig
-        from sr2_spectre.planning.resolver import PlanResolver
+        from spctr.planning.resolver import PlanResolver
 
         resolver_cfg = ResolverConfig(
             type="plan",
@@ -417,7 +417,7 @@ class TestSmokeConfigValidation:
                       target: tools
                       resolvers: []
                       tool_providers:
-                        - type: spectre_tools
+                        - type: spctr_tools
                     - name: conversation
                       target: messages
                       resolvers:
@@ -446,8 +446,8 @@ class TestSmokeDiscordInterface:
 
     def test_discord_interface_implements_protocol(self) -> None:
         """DiscordInterface has all Interface protocol attributes."""
-        from sr2_spectre.interfaces import Interface
-        from sr2_spectre.interfaces.discord import DiscordInterface
+        from spctr.interfaces import Interface
+        from spctr.interfaces.discord import DiscordInterface
 
         interface = DiscordInterface()
         assert hasattr(interface, "name")
@@ -458,8 +458,8 @@ class TestSmokeDiscordInterface:
 
     def test_discord_interface_config_loading(self) -> None:
         """DiscordInterface loads with custom config without error."""
-        from sr2_spectre.interfaces.discord.config import DiscordConfig
-        from sr2_spectre.interfaces.discord.interface import DiscordInterface
+        from spctr.interfaces.discord.config import DiscordConfig
+        from spctr.interfaces.discord.interface import DiscordInterface
 
         config = DiscordConfig(
             token="test-token",
@@ -475,7 +475,7 @@ class TestSmokeDiscordInterface:
 
     def test_discord_handler_should_respond(self) -> None:
         """Message routing respects mention_only setting."""
-        from sr2_spectre.interfaces.discord.handler import should_respond
+        from spctr.interfaces.discord.handler import should_respond
 
         # Without mention_only, everything gets a response
         assert should_respond("hello", False, 11111, ["<@11111>"]) is True
@@ -488,7 +488,7 @@ class TestSmokeDiscordInterface:
 
     def test_discord_handler_slash_commands(self) -> None:
         """Slash command parsing and handling works correctly."""
-        from sr2_spectre.interfaces.discord.handler import (
+        from spctr.interfaces.discord.handler import (
             CommandContext,
             handle_command,
             parse_slash_command,
@@ -516,7 +516,7 @@ class TestSmokeDiscordInterface:
 
     def test_discord_session_map_isolation(self) -> None:
         """SessionMap creates isolated sessions per channel."""
-        from sr2_spectre.interfaces.discord.session_map import SessionMap
+        from spctr.interfaces.discord.session_map import SessionMap
 
         sm = SessionMap()
         s1 = sm.get_or_create(111)
@@ -538,7 +538,7 @@ class TestSmokeDiscordInterface:
 
     def test_discord_message_chunking(self) -> None:
         """Long messages are chunked correctly for Discord's 2000-char limit."""
-        from sr2_spectre.interfaces.discord.handler import chunk_message
+        from spctr.interfaces.discord.handler import chunk_message
 
         text = "x" * 5000
         chunks = chunk_message(text, 2000)

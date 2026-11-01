@@ -33,14 +33,14 @@ from sr2.config.models import ResolverConfig
 from sr2.pipeline.dependencies import Dependencies
 from sr2.pipeline.events import Event, EventPhase
 from sr2.pipeline.models import ResolvedContent
-from sr2_spectre.planning.resolver import PlanResolver
+from spctr.planning.resolver import PlanResolver
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-PROJECT = "sr2-spectre"
+PROJECT = "spctr"
 
 
 def make_resolver(plans_root: str, knowledge_root: str | None = None) -> PlanResolver:
@@ -396,7 +396,7 @@ class TestResumeWithRealPlan:
         plan_dir.mkdir()
 
         write_plan(plan_dir)
-        verify_cmd = "cd /home/shepard/git/sr2-spectre && .venv/bin/python -m pytest tests/ -q"
+        verify_cmd = "cd /home/shepard/git/spctr && .venv/bin/python -m pytest tests/ -q"
         task_file = write_task(
             plan_dir, 1, "test-task",
             status="pending",

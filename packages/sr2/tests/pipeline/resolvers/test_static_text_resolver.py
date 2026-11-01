@@ -29,24 +29,24 @@ class TestStaticTextResolver:
     async def test_interpolates_non_empty_area(self):
         resolver = StaticTextResolver(
             make_config("You are working in {area}."),
-            run_context_provider=lambda: {"area": "sr2-spectre"},
+            run_context_provider=lambda: {"area": "spctr"},
         )
 
         result = await resolver.resolve([turn_start_event()])
 
         assert isinstance(result, ResolvedContent)
-        assert result.content == [TextBlock(text="You are working in sr2-spectre.")]
+        assert result.content == [TextBlock(text="You are working in spctr.")]
 
     @pytest.mark.asyncio
     async def test_emits_placeholder_free_text_verbatim(self):
         resolver = StaticTextResolver(
-            make_config("You are Spectre. Be direct."),
+            make_config("You are spctr. Be direct."),
             run_context_provider=lambda: {"area": "ignored"},
         )
 
         result = await resolver.resolve([turn_start_event()])
 
-        assert result.content == [TextBlock(text="You are Spectre. Be direct.")]
+        assert result.content == [TextBlock(text="You are spctr. Be direct.")]
 
     @pytest.mark.asyncio
     async def test_interpolates_date_placeholder_with_local_today(self, monkeypatch):

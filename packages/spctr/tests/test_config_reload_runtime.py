@@ -6,11 +6,11 @@ A wrong ``base_url`` therefore survived every restart-free fix an operator
 could make, and survived the restart too if the file itself was wrong.
 
 These tests cover the second half: one reload per message now refreshes the
-whole SpectreConfig, and ``Runtime.apply_config`` decides what a live process
+whole SpctrConfig, and ``Runtime.apply_config`` decides what a live process
 can actually re-seat.
 
 Covers:
-  A. SpectreConfigSource — reload, last-good fallback, pinned fields
+  A. SpctrConfigSource — reload, last-good fallback, pinned fields
   B. LiveLLM — retarget semantics and delegation
   C. Runtime.apply_config — what gets applied, and what is left alone
   D. Session — config adoption and deferred SR2 rebuild
@@ -26,16 +26,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sr2_spectre.config import (
+from spctr.config import (
     AgentConfig,
     McpServerConfig,
     ModelConfig,
-    SpectreConfig,
+    SpctrConfig,
     ToolConfig,
 )
-from sr2_spectre.config_source import SpectreConfigSource
-from sr2_spectre.interfaces.discord.config import DiscordConfig
-from sr2_spectre.live_llm import LiveLLM
+from spctr.config_source import SpctrConfigSource
+from spctr.interfaces.discord.config import DiscordConfig
+from spctr.live_llm import LiveLLM
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@ def _pipeline_dict(system_text: str = "You are helpful.") -> dict:
                 "name": "tools",
                 "target": "tools",
                 "resolvers": [],
-                "tool_providers": [{"type": "spectre_tools"}],
+                "tool_providers": [{"type": "spctr_tools"}],
             },
             {
                 "name": "conversation",
@@ -75,8 +75,8 @@ def _make_config(
     discord: DiscordConfig | None = None,
     system_text: str = "You are helpful.",
     params: dict | None = None,
-) -> SpectreConfig:
-    return SpectreConfig(
+) -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(
             name=name,
             tools=tools or [],
@@ -91,13 +91,13 @@ def _make_config(
 
 
 # ---------------------------------------------------------------------------
-# A. SpectreConfigSource
+# A. SpctrConfigSource
 # ---------------------------------------------------------------------------
 
-class TestSpectreConfigSource:
+class TestSpctrConfigSource:
     def test_reload_picks_up_a_changed_endpoint(self):
         loaded = _make_config(base_url="http://new:11438/v1")
-        source = SpectreConfigSource(
+        source = SpctrConfigSource(
             loader=lambda: loaded, initial=_make_config(base_url="http://old:11438/v1")
         )
 
@@ -105,11 +105,11 @@ class TestSpectreConfigSource:
         assert source.current.models["default"].base_url == "http://new:11438/v1"
 
     def test_bad_config_keeps_the_last_good_one_in_force(self):
-        def _explode() -> SpectreConfig:
+        def _explode() -> SpctrConfig:
             raise ValueError("bad yaml")
 
         initial = _make_config(base_url="http://good:11438/v1")
-        source = SpectreConfigSource(loader=_explode, initial=initial)
+        source = SpctrConfigSource(loader=_explode, initial=initial)
 
         assert source.reload() is initial
         assert source.current.models["default"].base_url == "http://good:11438/v1"
@@ -117,23 +117,23 @@ class TestSpectreConfigSource:
     def test_recovers_after_the_file_parses_again(self):
         state = {"broken": True}
 
-        def _load() -> SpectreConfig:
+        def _load() -> SpctrConfig:
             if state["broken"]:
                 raise ValueError("bad yaml")
             return _make_config(base_url="http://fixed:11438/v1")
 
-        source = SpectreConfigSource(loader=_load, initial=_make_config())
+        source = SpctrConfigSource(loader=_load, initial=_make_config())
         source.reload()
         state["broken"] = False
 
         assert source.reload().models["default"].base_url == "http://fixed:11438/v1"
 
     def test_load_failure_is_logged_once_not_per_message(self, caplog):
-        def _explode() -> SpectreConfig:
+        def _explode() -> SpctrConfig:
             raise ValueError("bad yaml")
 
-        source = SpectreConfigSource(loader=_explode, initial=_make_config())
-        with caplog.at_level(logging.WARNING, logger="sr2_spectre.config_source"):
+        source = SpctrConfigSource(loader=_explode, initial=_make_config())
+        with caplog.at_level(logging.WARNING, logger="spctr.config_source"):
             for _ in range(5):
                 source.reload()
 
@@ -146,20 +146,20 @@ class TestSpectreConfigSource:
         loaded = _make_config(
             mcp_servers=[McpServerConfig(name="s1", type="stdio", command=["replacement"], args=[])]
         )
-        source = SpectreConfigSource(loader=lambda: loaded, initial=initial)
+        source = SpctrConfigSource(loader=lambda: loaded, initial=initial)
 
         # A live stdio server owns a subprocess a reload cannot respawn.
         assert source.reload().agent.mcp_servers[0].command == ["original"]
 
     def test_agent_name_is_pinned(self):
-        source = SpectreConfigSource(
+        source = SpctrConfigSource(
             loader=lambda: _make_config(name="renamed"),
             initial=_make_config(name="miranda"),
         )
         assert source.reload().agent.name == "miranda"
 
     def test_discord_token_is_pinned_but_siblings_reload(self):
-        source = SpectreConfigSource(
+        source = SpctrConfigSource(
             loader=lambda: _make_config(
                 discord=DiscordConfig(token="new-token", channels=[222])
             ),
@@ -175,9 +175,9 @@ class TestSpectreConfigSource:
 
     def test_pinned_change_warns_once(self, caplog):
         loaded = _make_config(name="renamed")
-        source = SpectreConfigSource(loader=lambda: loaded, initial=_make_config(name="miranda"))
+        source = SpctrConfigSource(loader=lambda: loaded, initial=_make_config(name="miranda"))
 
-        with caplog.at_level(logging.WARNING, logger="sr2_spectre.config_source"):
+        with caplog.at_level(logging.WARNING, logger="spctr.config_source"):
             for _ in range(3):
                 source.reload()
 
@@ -185,13 +185,13 @@ class TestSpectreConfigSource:
         assert "agent.name" in caplog.text
 
     def test_reload_logs_field_names_not_values(self, caplog):
-        source = SpectreConfigSource(
+        source = SpctrConfigSource(
             loader=lambda: _make_config(
                 discord=DiscordConfig(token="super-secret", channels=[9])
             ),
             initial=_make_config(discord=DiscordConfig(token="super-secret")),
         )
-        with caplog.at_level(logging.INFO, logger="sr2_spectre.config_source"):
+        with caplog.at_level(logging.INFO, logger="spctr.config_source"):
             source.reload()
 
         assert "super-secret" not in caplog.text
@@ -199,7 +199,7 @@ class TestSpectreConfigSource:
 
     def test_static_source_never_changes(self):
         config = _make_config()
-        source = SpectreConfigSource.static(config)
+        source = SpctrConfigSource.static(config)
         assert source.reload() is config
 
 
@@ -210,14 +210,14 @@ class TestSpectreConfigSource:
 class TestLiveLLM:
     def test_unchanged_config_is_not_retargeted(self):
         cfg = ModelConfig(model="m", base_url="http://a/v1")
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             live = LiveLLM(cfg)
             MockLLM.reset_mock()
             assert live.retarget(ModelConfig(model="m", base_url="http://a/v1")) is False
             MockLLM.assert_not_called()
 
     def test_changed_endpoint_rebuilds_the_inner_callable(self):
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             live = LiveLLM(ModelConfig(model="m", base_url="http://bad/v1"))
             MockLLM.reset_mock()
 
@@ -226,7 +226,7 @@ class TestLiveLLM:
         assert MockLLM.call_args.kwargs["base_url"] == "http://good/v1"
 
     def test_retarget_forwards_api_key_and_params(self):
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             live = LiveLLM(ModelConfig(model="m", base_url="http://a/v1"))
             MockLLM.reset_mock()
             live.retarget(
@@ -244,7 +244,7 @@ class TestLiveLLM:
         assert kwargs["temperature"] == 0.5
 
     def test_model_property_reads_through_to_the_current_target(self):
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock(model="openai/first")
             live = LiveLLM(ModelConfig(model="first", base_url="http://a/v1"))
             assert live.model == "openai/first"
@@ -263,7 +263,7 @@ class TestLiveLLM:
         async def _second(_request):
             yield StreamEvent(type="text", text="from-new")
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock(stream=_first)
             live = LiveLLM(ModelConfig(model="m", base_url="http://a/v1"))
 
@@ -283,9 +283,9 @@ class TestLiveLLM:
 @pytest.fixture
 def runtime_factory():
     """Build Runtimes with the LLM construction stubbed out."""
-    def _build(config: SpectreConfig):
-        from sr2_spectre.runtime import Runtime
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+    def _build(config: SpctrConfig):
+        from spctr.runtime import Runtime
+        with patch("spctr.live_llm.LiteLLMCallable"):
             return Runtime(config=config)
     return _build
 
@@ -299,7 +299,7 @@ class TestRuntimeApplyConfig:
     def test_changed_endpoint_retargets_the_llm(self, runtime_factory):
         runtime = runtime_factory(_make_config(base_url="http://bad:11438/v1"))
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             applied = runtime.apply_config(_make_config(base_url="http://good:11438/v1"))
 
         assert "models" in applied
@@ -320,7 +320,7 @@ class TestRuntimeApplyConfig:
                 tools=[
                     ToolConfig(
                         name="file_read",
-                        class_path="sr2_spectre.tools.builtins.file_read.FileReadTool",
+                        class_path="spctr.tools.builtins.file_read.FileReadTool",
                     )
                 ]
             )
@@ -335,7 +335,7 @@ class TestRuntimeApplyConfig:
                 tools=[
                     ToolConfig(
                         name="file_read",
-                        class_path="sr2_spectre.tools.builtins.file_read.FileReadTool",
+                        class_path="spctr.tools.builtins.file_read.FileReadTool",
                     )
                 ]
             )
@@ -362,7 +362,7 @@ class TestRuntimeApplyConfig:
                 tools=[
                     ToolConfig(
                         name="file_read",
-                        class_path="sr2_spectre.tools.builtins.file_read.FileReadTool",
+                        class_path="spctr.tools.builtins.file_read.FileReadTool",
                     )
                 ]
             )
@@ -375,7 +375,7 @@ class TestRuntimeApplyConfig:
     ):
         runtime = runtime_factory(_make_config())
 
-        with caplog.at_level(logging.WARNING, logger="sr2_spectre.runtime"):
+        with caplog.at_level(logging.WARNING, logger="spctr.runtime"):
             runtime.apply_config(
                 _make_config(
                     tools=[
@@ -485,7 +485,7 @@ class TestSessionConfigAdoption:
         with patch.object(session, "_build_sr2", side_effect=lambda: _fake_sr2()):
             [ev async for ev in session.stream_message("second")]
 
-        # Spectre owns history and re-seeds SR2 each turn, so a rebuilt SR2
+        # spctr owns history and re-seeds SR2 each turn, so a rebuilt SR2
         # must not cost the conversation its transcript.
         assert len(session.history) == 4
         assert session.history[0].content[0].text == "first"
@@ -537,13 +537,13 @@ class TestEndToEndEndpointFix:
         connection error. Correcting the file must be enough — the next message
         should reach the fixed endpoint without restarting the bot.
         """
-        from sr2_spectre.agent import Agent
-        from sr2_spectre.cli import build_spectre_config_source, resolve_config
+        from spctr.agent import Agent
+        from spctr.cli import build_spctr_config_source, resolve_config
 
         initial = resolve_config(config_file, cwd=config_file.parent, env={})
-        source = build_spectre_config_source(config_file, config_file.parent, initial)
+        source = build_spctr_config_source(config_file, config_file.parent, initial)
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             agent = Agent(config=initial)
         assert agent._runtime.llm.model_config.base_url == "http://192.168.50.177:11438/v1"
 
@@ -551,20 +551,20 @@ class TestEndToEndEndpointFix:
             textwrap.dedent(_CONFIG_TEMPLATE.format(base_url="http://192.168.50.117:11438/v1"))
         )
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             applied = agent.apply_config(source.reload())
 
         assert "models" in applied
         assert MockLLM.call_args.kwargs["base_url"] == "http://192.168.50.117:11438/v1"
 
     def test_open_conversations_follow_the_new_endpoint(self, config_file):
-        from sr2_spectre.agent import Agent
-        from sr2_spectre.cli import build_spectre_config_source, resolve_config
+        from spctr.agent import Agent
+        from spctr.cli import build_spctr_config_source, resolve_config
 
         initial = resolve_config(config_file, cwd=config_file.parent, env={})
-        source = build_spectre_config_source(config_file, config_file.parent, initial)
+        source = build_spctr_config_source(config_file, config_file.parent, initial)
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             agent = Agent(config=initial)
 
         # The session opened before the fix must not be stranded on the old
@@ -574,17 +574,17 @@ class TestEndToEndEndpointFix:
         config_file.write_text(
             textwrap.dedent(_CONFIG_TEMPLATE.format(base_url="http://192.168.50.117:11438/v1"))
         )
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             agent.apply_config(source.reload())
 
         assert session_llm is agent._runtime.llm
         assert session_llm.model_config.base_url == "http://192.168.50.117:11438/v1"
 
     def test_a_broken_edit_leaves_the_bot_on_the_last_good_config(self, config_file):
-        from sr2_spectre.cli import build_spectre_config_source, resolve_config
+        from spctr.cli import build_spctr_config_source, resolve_config
 
         initial = resolve_config(config_file, cwd=config_file.parent, env={})
-        source = build_spectre_config_source(config_file, config_file.parent, initial)
+        source = build_spctr_config_source(config_file, config_file.parent, initial)
 
         config_file.write_text("models:\n  default:\n    model: [unclosed\n")
 
@@ -605,9 +605,9 @@ class TestDiscordViewWiring:
                 base_url="http://new/v1", discord=DiscordConfig(token="t", channels=[222])
             ),
         ]
-        from sr2_spectre.interfaces.discord.config_source import DiscordConfigView
+        from spctr.interfaces.discord.config_source import DiscordConfigView
 
-        source = SpectreConfigSource(loader=lambda: configs[1], initial=configs[0])
+        source = SpctrConfigSource(loader=lambda: configs[1], initial=configs[0])
         view = DiscordConfigView(source)
 
         assert view.reload().channels == [222]
@@ -615,24 +615,24 @@ class TestDiscordViewWiring:
         assert view.source.current.models["default"].base_url == "http://new/v1"
 
     def test_adapter_accepts_the_view(self):
-        from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
-        from sr2_spectre.interfaces.discord.config_source import DiscordConfigView
+        from spctr.interfaces.discord.adapter import DiscordBotAdapter
+        from spctr.interfaces.discord.config_source import DiscordConfigView
 
         config = _make_config(discord=DiscordConfig(token="t", channels=[111]))
-        view = DiscordConfigView(SpectreConfigSource.static(config))
+        view = DiscordConfigView(SpctrConfigSource.static(config))
         adapter = DiscordBotAdapter(view)
 
         assert adapter.config.channels == [111]
 
     def test_interface_pushes_the_reloaded_config_into_the_agent(self):
-        from sr2_spectre.interfaces.discord.config_source import DiscordConfigView
-        from sr2_spectre.interfaces.discord.interface import DiscordInterface
+        from spctr.interfaces.discord.config_source import DiscordConfigView
+        from spctr.interfaces.discord.interface import DiscordInterface
 
         configs = [
             _make_config(base_url="http://old/v1", discord=DiscordConfig(token="t")),
             _make_config(base_url="http://new/v1", discord=DiscordConfig(token="t")),
         ]
-        source = SpectreConfigSource(loader=lambda: configs[1], initial=configs[0])
+        source = SpctrConfigSource(loader=lambda: configs[1], initial=configs[0])
         view = DiscordConfigView(source)
 
         interface = DiscordInterface(config_source=view)
@@ -645,8 +645,8 @@ class TestDiscordViewWiring:
         assert applied.models["default"].base_url == "http://new/v1"
 
     def test_plain_discord_source_leaves_the_agent_alone(self):
-        from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
-        from sr2_spectre.interfaces.discord.interface import DiscordInterface
+        from spctr.interfaces.discord.config_source import DiscordConfigSource
+        from spctr.interfaces.discord.interface import DiscordInterface
 
         interface = DiscordInterface(
             config_source=DiscordConfigSource.static(DiscordConfig(token="t"))

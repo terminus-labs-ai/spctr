@@ -72,10 +72,10 @@ from continuity._fixtures_policy import (
     CONTENT_ICE_CREAM,
     CONTENT_LOCATION,
     CONTENT_PROGRAMMING_LANGUAGE,
-    CONTENT_SPECTRE,
+    CONTENT_SPCTR,
     CONTENT_SR2_NOTE,
     CONTENT_UNASSOCIATED_NOTE,
-    PROJECT_SPECTRE,
+    PROJECT_SPCTR,
     PROJECT_SR2,
     SUBJECT_AC13,
     SUPPRESSED_EPISODE_ID,
@@ -529,7 +529,7 @@ def test_ac8_r7_support_same_record_allowed_for_its_source_agent(policy):
 # AC9 — Project boost without isolation
 #
 #   "An SR2 turn ranks SR2-associated records above equally relevant
-#    unassociated records, while a more relevant allowed Spectre/Relay record
+#    unassociated records, while a more relevant allowed spctr/Relay record
 #    can still be retrieved across project lines."
 # ===========================================================================
 
@@ -570,7 +570,7 @@ def test_ac9_r1_support_boost_follows_the_active_project(policy):
 
 
 def test_ac9_r2_more_relevant_cross_project_record_is_retrieved(policy):
-    """AC9-r2 — SR2 active; a Spectre/Relay record more relevant than any SR2
+    """AC9-r2 — SR2 active; a spctr/Relay record more relevant than any SR2
     record, allowed by policy -> it IS retrieved, across the project line.
 
     Asserted with no relevance signal on the context at all (relevance is not
@@ -583,13 +583,13 @@ def test_ac9_r2_more_relevant_cross_project_record_is_retrieved(policy):
     """
     sr2_note = project_view("note-sr2", content=CONTENT_SR2_NOTE, projects=(PROJECT_SR2,))
     cross_project_note = project_view(
-        "note-spectre", content=CONTENT_SPECTRE, projects=(PROJECT_SPECTRE,)
+        "note-spctr", content=CONTENT_SPCTR, projects=(PROJECT_SPCTR,)
     )
 
     decision = policy.evaluate(cross_project_note, CONTEXT_CODING)
     assert decision.allowed is True, (
         "the current-project boost must not act as an isolation wall: an "
-        "allowed Spectre/Relay record is retrievable on an SR2 turn"
+        "allowed spctr/Relay record is retrievable on an SR2 turn"
     )
     sr2_decision = policy.evaluate(sr2_note, CONTEXT_CODING)
     assert sr2_decision.allowed is True
@@ -600,15 +600,15 @@ def test_ac9_r2_more_relevant_cross_project_record_is_retrieved(policy):
         (sr2_note, cross_project_note),
         key=lambda v: policy.evaluate(v, CONTEXT_CODING).weight,
     )
-    assert [v.current_record.id for v in ranked] == ["note-spectre", "note-sr2"]
+    assert [v.current_record.id for v in ranked] == ["note-spctr", "note-sr2"]
 
     kept = filter_allowed(
         policy, [sr2_note, cross_project_note], CONTEXT_CODING
     )
-    assert {v.current_record.id for v in kept} == {"note-sr2", "note-spectre"}
+    assert {v.current_record.id for v in kept} == {"note-sr2", "note-spctr"}
 
     compiled = compile_request(policy, CONTEXT_CODING, [], kept)
-    assert CONTENT_SPECTRE in messages_text(compiled)
+    assert CONTENT_SPCTR in messages_text(compiled)
 
 
 # ===========================================================================

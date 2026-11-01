@@ -12,8 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from sr2_spectre.cli import build_discord_config_source
-from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
+from spctr.cli import build_discord_config_source
+from spctr.interfaces.discord.adapter import DiscordBotAdapter
 
 _BASE = """\
 agent:

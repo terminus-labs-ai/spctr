@@ -8,12 +8,12 @@ import pytest
 from sr2.config.models import ResolverConfig
 from sr2.pipeline.dependencies import Dependencies
 from sr2.pipeline.events import Event, EventPhase, EventSubscription
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.core import RunContext, RunMode
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.core import RunContext, RunMode
 
 
 def _minimal_pipeline_dict() -> dict:
-    """Build a minimal pipeline config dict for SpectreConfig construction."""
+    """Build a minimal pipeline config dict for SpctrConfig construction."""
     return {
         "layers": [
             {
@@ -30,8 +30,8 @@ def _minimal_pipeline_dict() -> dict:
     }
 
 
-def _make_config() -> SpectreConfig:
-    return SpectreConfig(
+def _make_config() -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(name="test"),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline=_minimal_pipeline_dict(),
@@ -55,7 +55,7 @@ class TestModeGuidanceResolver:
 
     async def test_headless_guidance(self):
         """When mode=headless, resolver returns headless guidance block."""
-        from sr2_spectre.pipeline.mode_guidance_resolver import (
+        from spctr.pipeline.mode_guidance_resolver import (
             ModeGuidanceResolver,
             _HEADLESS_GUIDANCE,
         )
@@ -77,7 +77,7 @@ class TestModeGuidanceResolver:
 
     async def test_interactive_guidance(self):
         """When mode=interactive, resolver returns interactive guidance block."""
-        from sr2_spectre.pipeline.mode_guidance_resolver import (
+        from spctr.pipeline.mode_guidance_resolver import (
             ModeGuidanceResolver,
             _INTERACTIVE_GUIDANCE,
         )
@@ -98,7 +98,7 @@ class TestModeGuidanceResolver:
 
     async def test_fallback_when_no_provider(self):
         """When run_context_provider is None, resolver returns fallback guidance."""
-        from sr2_spectre.pipeline.mode_guidance_resolver import (
+        from spctr.pipeline.mode_guidance_resolver import (
             ModeGuidanceResolver,
             _FALLBACK_GUIDANCE,
         )
@@ -115,7 +115,7 @@ class TestModeGuidanceResolver:
 
     async def test_fallback_when_provider_returns_none(self):
         """When provider returns None, resolver returns fallback guidance."""
-        from sr2_spectre.pipeline.mode_guidance_resolver import (
+        from spctr.pipeline.mode_guidance_resolver import (
             ModeGuidanceResolver,
             _FALLBACK_GUIDANCE,
         )
@@ -131,7 +131,7 @@ class TestModeGuidanceResolver:
 
     async def test_fallback_on_unknown_mode(self):
         """When mode has an unknown value, resolver returns fallback guidance."""
-        from sr2_spectre.pipeline.mode_guidance_resolver import (
+        from spctr.pipeline.mode_guidance_resolver import (
             ModeGuidanceResolver,
             _FALLBACK_GUIDANCE,
         )
@@ -149,7 +149,7 @@ class TestModeGuidanceResolver:
 
     async def test_execution_count_increments(self):
         """Resolver execution_count increments on each resolve()."""
-        from sr2_spectre.pipeline.mode_guidance_resolver import ModeGuidanceResolver
+        from spctr.pipeline.mode_guidance_resolver import ModeGuidanceResolver
 
         deps = Dependencies(
             run_context_provider=lambda: {"mode": "headless"}
@@ -164,7 +164,7 @@ class TestModeGuidanceResolver:
 
     async def test_subscriptions_default(self):
         """Resolver subscribes to turn_start by default."""
-        from sr2_spectre.pipeline.mode_guidance_resolver import ModeGuidanceResolver
+        from spctr.pipeline.mode_guidance_resolver import ModeGuidanceResolver
 
         deps = Dependencies()
         resolver = ModeGuidanceResolver.build(self._make_resolver_config(), deps)
@@ -176,7 +176,7 @@ class TestModeGuidanceResolver:
 
     async def test_guidance_blocks_are_different(self):
         """Headless and interactive guidance blocks have different content."""
-        from sr2_spectre.pipeline.mode_guidance_resolver import (
+        from spctr.pipeline.mode_guidance_resolver import (
             _HEADLESS_GUIDANCE,
             _INTERACTIVE_GUIDANCE,
         )
@@ -199,10 +199,10 @@ class TestSessionWiresRunContextProvider:
 
     def test_session_provider_reads_run_context(self):
         """Session's run_context_provider returns data from set_run_context()."""
-        from sr2_spectre.session import Session
-        from sr2_spectre.tools.registry import ToolRegistry
+        from spctr.session import Session
+        from spctr.tools.registry import ToolRegistry
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             registry = ToolRegistry()
             session = Session(

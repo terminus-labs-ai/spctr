@@ -29,8 +29,8 @@ from sr2.pipeline.dependencies import Dependencies
 from sr2.pipeline.events import Event, EventPhase
 from sr2.pipeline.models import ResolvedContent
 from sr2.pipeline.protocols import Resolver
-from sr2_spectre.planning.models import TaskStatus
-from sr2_spectre.planning.resolver import (
+from spctr.planning.models import TaskStatus
+from spctr.planning.resolver import (
     PlanResolver,
     PlanResolverError,
 )
@@ -865,14 +865,14 @@ class TestPlanResolverResolvedContent:
 class TestPlanResolverDefaultPaths:
     def test_default_plans_root(self):
         """Default plans_root is $SR2_HOME/plans (spc-1004: SR2_HOME, not ~/.sr2)."""
-        from sr2_spectre.config import resolve_sr2_home
+        from spctr.config import resolve_sr2_home
 
         resolver = PlanResolver(make_config())
         assert resolver._plans_root == resolve_sr2_home() / "plans"
 
     def test_default_knowledge_root(self):
         """Default knowledge_root is $SR2_HOME/knowledge/<project> (spc-1004)."""
-        from sr2_spectre.config import resolve_sr2_home
+        from spctr.config import resolve_sr2_home
 
         resolver = PlanResolver(make_config(project="myproject"))
         assert resolver._knowledge_root == resolve_sr2_home() / "knowledge" / "myproject"

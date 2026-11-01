@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sr2_spectre.config import (
+from spctr.config import (
     RemindersConfig,
     load_merged_config,
     resolve_sr2_home,
@@ -197,25 +197,25 @@ class TestLoadMergedConfig:
         assert result == {"key": "tier1"}
 
     def test_only_tier2_exists(self, tmp_path):
-        """Only $SR2_HOME/spectre.yaml exists — return its contents."""
+        """Only $SR2_HOME/spctr.yaml exists — return its contents."""
         sr2_home = tmp_path / "sr2home"
         sr2_home.mkdir()
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(sr2_home / "spectre.yaml", {"key": "tier2"})
+        _write_yaml(sr2_home / "spctr.yaml", {"key": "tier2"})
 
         result = load_merged_config(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
         assert result == {"key": "tier2"}
 
     def test_only_tier3_exists(self, tmp_path):
-        """Only <cwd>/.spectre.yaml exists — return its contents."""
+        """Only <cwd>/.spctr.yaml exists — return its contents."""
         sr2_home = tmp_path / "sr2home"
         sr2_home.mkdir()
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {"key": "tier3"})
+        _write_yaml(cwd / ".spctr.yaml", {"key": "tier3"})
 
         result = load_merged_config(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
         assert result == {"key": "tier3"}
@@ -228,8 +228,8 @@ class TestLoadMergedConfig:
         cwd.mkdir()
 
         _write_yaml(sr2_home / "config.yaml", {"key": "tier1", "from_t1": True})
-        _write_yaml(sr2_home / "spectre.yaml", {"key": "tier2", "from_t2": True})
-        _write_yaml(cwd / ".spectre.yaml", {"key": "tier3", "from_t3": True})
+        _write_yaml(sr2_home / "spctr.yaml", {"key": "tier2", "from_t2": True})
+        _write_yaml(cwd / ".spctr.yaml", {"key": "tier3", "from_t3": True})
 
         result = load_merged_config(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
 
@@ -248,7 +248,7 @@ class TestLoadMergedConfig:
         cwd.mkdir()
 
         _write_yaml(sr2_home / "config.yaml", {"key": "tier1", "shared": "from_t1"})
-        _write_yaml(sr2_home / "spectre.yaml", {"key": "tier2"})
+        _write_yaml(sr2_home / "spctr.yaml", {"key": "tier2"})
 
         result = load_merged_config(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
         assert result["key"] == "tier2"
@@ -263,8 +263,8 @@ class TestLoadMergedConfig:
 
         # Write empty files for tier 1 and tier 3; tier 2 has real content
         (sr2_home / "config.yaml").write_text("")
-        _write_yaml(sr2_home / "spectre.yaml", {"key": "tier2"})
-        (cwd / ".spectre.yaml").write_text("")
+        _write_yaml(sr2_home / "spctr.yaml", {"key": "tier2"})
+        (cwd / ".spctr.yaml").write_text("")
 
         result = load_merged_config(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
         assert result == {"key": "tier2"}
@@ -280,7 +280,7 @@ class TestLoadMergedConfig:
         tier3 = {"tools": [{"name": "search", "timeout": 60}]}
 
         _write_yaml(sr2_home / "config.yaml", tier1)
-        _write_yaml(cwd / ".spectre.yaml", tier3)
+        _write_yaml(cwd / ".spctr.yaml", tier3)
 
         result = load_merged_config(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
 
@@ -301,7 +301,7 @@ class TestLoadMergedConfig:
         tier3 = {"tools": [{"name": "exec", "timeout": 10}]}
 
         _write_yaml(sr2_home / "config.yaml", tier1)
-        _write_yaml(cwd / ".spectre.yaml", tier3)
+        _write_yaml(cwd / ".spctr.yaml", tier3)
 
         result = load_merged_config(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
         names = [t["name"] for t in result["tools"]]
@@ -315,7 +315,7 @@ class TestLoadMergedConfig:
         project_dir = tmp_path / "project"
         project_dir.mkdir()
 
-        _write_yaml(project_dir / ".spectre.yaml", {"from_cwd": True})
+        _write_yaml(project_dir / ".spctr.yaml", {"from_cwd": True})
 
         monkeypatch.chdir(project_dir)
         result = load_merged_config(cwd=None, env={"SR2_HOME": str(sr2_home)})
@@ -344,7 +344,7 @@ class TestLoadMergedConfig:
         tier3 = {"agent": {"name": "project"}}
 
         _write_yaml(sr2_home / "config.yaml", tier1)
-        _write_yaml(cwd / ".spectre.yaml", tier3)
+        _write_yaml(cwd / ".spctr.yaml", tier3)
 
         result = load_merged_config(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
         assert result["agent"]["name"] == "project"

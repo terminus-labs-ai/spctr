@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from sr2_spectre.reminders import DeliveryLoop, Reminder, ReminderStore
+from spctr.reminders import DeliveryLoop, Reminder, ReminderStore
 
 UTC = ZoneInfo("UTC")
 
@@ -77,7 +77,7 @@ def _seed(
             requester_mention="@8",
             origin_channel_id="42",
             dest_channel_id="42",
-            dest_channel_name="sr2-spectre",
+            dest_channel_name="spctr",
             dest_topic="reminders",
             text=text,
             due_at=due_at,
@@ -142,8 +142,8 @@ def test_interfaces_build_their_loop_with_their_platform():
     cheapest honest check that the platform shipped is the one written on
     reminder creation ("zulip" / "discord").
     """
-    import sr2_spectre.interfaces.discord.interface as discord_mod
-    import sr2_spectre.interfaces.zulip.interface as zulip_mod
+    import spctr.interfaces.discord.interface as discord_mod
+    import spctr.interfaces.zulip.interface as zulip_mod
 
     def source(mod) -> str:
         return Path(inspect.getsourcefile(mod)).read_text(encoding="utf-8")

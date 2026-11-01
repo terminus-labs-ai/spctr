@@ -217,7 +217,7 @@ class TestNonEmptyContentAfter:
     def test_empty_list_content_after_represented(self):
         record = make_record(
             kind="tool_provider",
-            component_name="tool_provider/spectre",
+            component_name="tool_provider/spctr",
             content_after=[],
         )
         output = render_trace([record])

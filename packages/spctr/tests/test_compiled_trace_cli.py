@@ -11,8 +11,8 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from sr2_spectre.cli import run_async
-from sr2_spectre.core import TurnResult
+from spctr.cli import run_async
+from spctr.core import TurnResult
 
 
 # ---------------------------------------------------------------------------
@@ -26,7 +26,7 @@ def _fake_interface_cls(instance):
 
 
 def _make_mock_config() -> MagicMock:
-    """Minimal SpectreConfig stand-in."""
+    """Minimal SpctrConfig stand-in."""
     config = MagicMock()
     config.agent.name = "test-agent"
     config.agent.tools = []
@@ -99,17 +99,17 @@ async def test_compiled_request_output_printed_when_trace_set(
     side_effect, mock_instance = _agent_side_effect_with_tracer("Paris")
 
     with (
-        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
-        patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris"))),
-        patch("sr2_spectre.cli.Agent") as MockAgent,
+        patch("spctr.cli.resolve_config", return_value=mock_config),
+        patch("spctr.cli._configure_logging"),
+        patch("spctr.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris"))),
+        patch("spctr.cli.Agent") as MockAgent,
         patch(
-            "sr2_spectre.cli.render_trace",
+            "spctr.cli.render_trace",
             return_value=TRACE_SENTINEL,
             create=True,
         ),
         patch(
-            "sr2_spectre.cli.render_compiled_request",
+            "spctr.cli.render_compiled_request",
             return_value=COMPILED_REQUEST_SENTINEL,
             create=True,
         ) as mock_rcr,
@@ -140,17 +140,17 @@ async def test_compiled_request_output_appears_after_firing_trace(
     side_effect, _ = _agent_side_effect_with_tracer("Paris")
 
     with (
-        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
-        patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris"))),
-        patch("sr2_spectre.cli.Agent") as MockAgent,
+        patch("spctr.cli.resolve_config", return_value=mock_config),
+        patch("spctr.cli._configure_logging"),
+        patch("spctr.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris"))),
+        patch("spctr.cli.Agent") as MockAgent,
         patch(
-            "sr2_spectre.cli.render_trace",
+            "spctr.cli.render_trace",
             return_value=TRACE_SENTINEL,
             create=True,
         ),
         patch(
-            "sr2_spectre.cli.render_compiled_request",
+            "spctr.cli.render_compiled_request",
             return_value=COMPILED_REQUEST_SENTINEL,
             create=True,
         ),
@@ -188,17 +188,17 @@ async def test_compiled_request_render_called_with_compiled_request_attribute(
     side_effect, _ = _agent_side_effect_with_tracer("Paris")
 
     with (
-        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
-        patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris"))),
-        patch("sr2_spectre.cli.Agent") as MockAgent,
+        patch("spctr.cli.resolve_config", return_value=mock_config),
+        patch("spctr.cli._configure_logging"),
+        patch("spctr.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris"))),
+        patch("spctr.cli.Agent") as MockAgent,
         patch(
-            "sr2_spectre.cli.render_trace",
+            "spctr.cli.render_trace",
             return_value=TRACE_SENTINEL,
             create=True,
         ),
         patch(
-            "sr2_spectre.cli.render_compiled_request",
+            "spctr.cli.render_compiled_request",
             side_effect=capturing_rcr,
             create=True,
         ),
@@ -228,12 +228,12 @@ async def test_render_compiled_request_not_called_when_trace_absent(
     mock_config = _make_mock_config()
 
     with (
-        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
-        patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris"))),
-        patch("sr2_spectre.cli.Agent") as MockAgent,
+        patch("spctr.cli.resolve_config", return_value=mock_config),
+        patch("spctr.cli._configure_logging"),
+        patch("spctr.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris"))),
+        patch("spctr.cli.Agent") as MockAgent,
         patch(
-            "sr2_spectre.cli.render_compiled_request",
+            "spctr.cli.render_compiled_request",
             return_value=COMPILED_REQUEST_SENTINEL,
             create=True,
         ) as mock_rcr,
@@ -256,17 +256,17 @@ async def test_compiled_request_sentinel_absent_from_stdout_without_trace_flag(
     mock_config = _make_mock_config()
 
     with (
-        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
-        patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris"))),
-        patch("sr2_spectre.cli.Agent") as MockAgent,
+        patch("spctr.cli.resolve_config", return_value=mock_config),
+        patch("spctr.cli._configure_logging"),
+        patch("spctr.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris"))),
+        patch("spctr.cli.Agent") as MockAgent,
         patch(
-            "sr2_spectre.cli.render_trace",
+            "spctr.cli.render_trace",
             return_value=TRACE_SENTINEL,
             create=True,
         ),
         patch(
-            "sr2_spectre.cli.render_compiled_request",
+            "spctr.cli.render_compiled_request",
             return_value=COMPILED_REQUEST_SENTINEL,
             create=True,
         ),

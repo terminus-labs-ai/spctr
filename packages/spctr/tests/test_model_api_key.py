@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from unittest.mock import patch, MagicMock
 
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig, load_config
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig, load_config
 
 
 def _minimal_pipeline_dict() -> dict:
@@ -31,11 +31,11 @@ def _minimal_pipeline_dict() -> dict:
     }
 
 
-def _make_config(api_key: str | None = None) -> SpectreConfig:
+def _make_config(api_key: str | None = None) -> SpctrConfig:
     model_kwargs = {"model": "test-model", "base_url": "http://test:8000"}
     if api_key is not None:
         model_kwargs["api_key"] = api_key
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="test"),
         models={"default": ModelConfig(**model_kwargs)},
         pipeline=_minimal_pipeline_dict(),
@@ -56,10 +56,10 @@ class TestModelConfigApiKey:
 # B. Runtime forwards api_key
 class TestRuntimeForwardsApiKey:
     def test_runtime_passes_api_key_to_llm(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         cfg = _make_config(api_key="dummy")
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             Runtime(config=cfg)
 
@@ -74,10 +74,10 @@ class TestRuntimeForwardsApiKey:
 # C. Backward compat — no api_key forwards nothing
 class TestBackwardCompatibility:
     def test_runtime_no_api_key_omits_kwarg(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         cfg = _make_config()  # no api_key
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             Runtime(config=cfg)
 

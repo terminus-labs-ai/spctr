@@ -4,7 +4,7 @@ The agent's LLM used to be hardcoded to ``models["default"]`` in three places
 (``runtime`` build + reload, and the startup log). These cover the new
 indirection that replaced it:
 
-  A. ``SpectreConfig.active_model`` + ``active_model_config`` resolution,
+  A. ``SpctrConfig.active_model`` + ``active_model_config`` resolution,
      including the fallbacks that stop a stale name from leaving no LLM.
   B. The writable pointer-file overlay applied in ``cli.resolve_config`` —
      the one writable surface ``/model`` touches, deliberately kept out of
@@ -17,16 +17,16 @@ from __future__ import annotations
 import logging
 from unittest.mock import patch
 
-from sr2_spectre.cli import _ACTIVE_MODEL_ENV, _apply_active_model_pointer
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
+from spctr.cli import _ACTIVE_MODEL_ENV, _apply_active_model_pointer
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
 
 
-def _cfg(active_model: str = "default", *, model_names=("default",)) -> SpectreConfig:
+def _cfg(active_model: str = "default", *, model_names=("default",)) -> SpctrConfig:
     models = {
         n: ModelConfig(model=f"m-{n}", base_url=f"http://{n}/v1")
         for n in model_names
     }
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="t"),
         models=models,
         pipeline={"layers": []},
@@ -110,8 +110,8 @@ class TestActiveModelPointer:
 
 class TestActiveModelRetarget:
     def _build(self, cfg):
-        from sr2_spectre.runtime import Runtime
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        from spctr.runtime import Runtime
+        with patch("spctr.live_llm.LiteLLMCallable"):
             return Runtime(config=cfg)
 
     def test_switching_active_model_retargets_the_llm(self):
@@ -120,7 +120,7 @@ class TestActiveModelRetarget:
         assert runtime.llm.model_config.base_url == "http://default/v1"
 
         switched = _cfg("fast", model_names=("default", "fast"))
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             applied = runtime.apply_config(switched)
 
         assert "models" in applied

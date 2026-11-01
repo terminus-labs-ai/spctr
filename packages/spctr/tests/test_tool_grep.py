@@ -1,7 +1,7 @@
 """Tests for GrepTool."""
 import pytest
 
-from sr2_spectre.tools.registry import ToolRegistry
+from spctr.tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -9,7 +9,7 @@ from sr2_spectre.tools.registry import ToolRegistry
 # ---------------------------------------------------------------------------
 
 def test_grep_class_attributes() -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     assert isinstance(GrepTool.name, str) and GrepTool.name
     assert isinstance(GrepTool.description, str) and GrepTool.description
@@ -17,13 +17,13 @@ def test_grep_class_attributes() -> None:
 
 
 def test_grep_name_is_grep() -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     assert GrepTool.name == "grep"
 
 
 def test_grep_input_schema_properties() -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     props = GrepTool.input_schema.get("properties", {})
     assert "pattern" in props
@@ -33,7 +33,7 @@ def test_grep_input_schema_properties() -> None:
 
 
 def test_grep_input_schema_required() -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     required = GrepTool.input_schema.get("required", [])
     # pattern is the only required input
@@ -50,7 +50,7 @@ def test_grep_input_schema_required() -> None:
 
 def test_grep_registers_via_class_path() -> None:
     reg = ToolRegistry()
-    reg.register_from_class_path("sr2_spectre.tools.builtins.grep.GrepTool")
+    reg.register_from_class_path("spctr.tools.builtins.grep.GrepTool")
     assert "grep" in reg
 
 
@@ -60,7 +60,7 @@ def test_grep_registers_via_class_path() -> None:
 
 @pytest.mark.asyncio
 async def test_grep_literal_single_file_match(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     target = tmp_path / "file.txt"
     target.write_text(
@@ -83,7 +83,7 @@ async def test_grep_literal_single_file_match(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_grep_regex_match(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     target = tmp_path / "file.txt"
     # "foo" and "fao" both match r"f.o"; "literal" does not.
@@ -106,7 +106,7 @@ async def test_grep_regex_match(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_grep_literal_mode_treats_metachars_literally(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     target = tmp_path / "file.txt"
     # Line 1 is the literal "a.b"; line 2 is "axb" which a regex "a.b" WOULD match.
@@ -127,7 +127,7 @@ async def test_grep_literal_mode_treats_metachars_literally(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_grep_recursive_directory_search(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     nested = tmp_path / "sub" / "deep"
     nested.mkdir(parents=True)
@@ -147,7 +147,7 @@ async def test_grep_recursive_directory_search(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_grep_multiple_files_both_appear(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     file_one = tmp_path / "one.txt"
     file_two = tmp_path / "two.txt"
@@ -167,7 +167,7 @@ async def test_grep_multiple_files_both_appear(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_grep_multiple_matches_within_one_file(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     target = tmp_path / "file.txt"
     target.write_text(
@@ -189,7 +189,7 @@ async def test_grep_multiple_matches_within_one_file(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_grep_glob_scopes_files(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     py_file = tmp_path / "a.py"
     txt_file = tmp_path / "b.txt"
@@ -211,7 +211,7 @@ async def test_grep_glob_scopes_files(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_grep_no_match_returns_string_not_raise(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     target = tmp_path / "file.txt"
     target.write_text("alpha\nbeta\ngamma\n", encoding="utf-8")
@@ -234,7 +234,7 @@ async def test_grep_no_match_returns_string_not_raise(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_grep_single_file_path(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     target = tmp_path / "solo.txt"
     target.write_text("first\nmatch_target\nthird\n", encoding="utf-8")
@@ -253,7 +253,7 @@ async def test_grep_single_file_path(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_grep_binary_file_skipped(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     binary = tmp_path / "binary.bin"
     binary.write_bytes(b"\xff\xfe\x00\x01")
@@ -275,7 +275,7 @@ async def test_grep_binary_file_skipped(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_grep_line_numbers_are_one_based(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     target = tmp_path / "file.txt"
     # The match is on the 3rd line.
@@ -317,7 +317,7 @@ _PER_LINE_TRUNC_TOKENS = ("truncat", "…", "...", "[")
 @pytest.mark.asyncio
 async def test_grep_default_ignores_venv(tmp_path) -> None:
     """A directory walk must prune the built-in default ignore dirs (.venv)."""
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     venv_dir = tmp_path / ".venv" / "lib"
     venv_dir.mkdir(parents=True)
@@ -338,7 +338,7 @@ async def test_grep_default_ignores_venv(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_grep_default_ignores_common_dirs(tmp_path) -> None:
     """Each canonical default ignore dir is pruned during a recursive walk."""
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     default_dirs = [
         ".venv",
@@ -374,7 +374,7 @@ async def test_grep_custom_ignore_dirs_merge_with_defaults(tmp_path) -> None:
     ignored directory (.venv) must STILL be pruned even when a custom set
     is supplied.
     """
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     venv_dir = tmp_path / ".venv"
     venv_dir.mkdir()
@@ -407,7 +407,7 @@ async def test_grep_custom_ignore_dirs_merge_with_defaults(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_grep_caps_per_line_length_with_truncation_marker(tmp_path) -> None:
     """An overlong matching line is truncated and marked, not dumped whole."""
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     target = tmp_path / "long.txt"
     # One match on a single, very long line (simulates minified/vendored data).
@@ -428,7 +428,7 @@ async def test_grep_caps_per_line_length_with_truncation_marker(tmp_path) -> Non
 @pytest.mark.asyncio
 async def test_grep_caps_total_matches_with_suppression_notice(tmp_path) -> None:
     """When matches exceed the total cap, output is bounded + a notice appears."""
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     target = tmp_path / "many.txt"
     # Far more matches than any reasonable cap; lines are short so this
@@ -450,7 +450,7 @@ async def test_grep_caps_total_matches_with_suppression_notice(tmp_path) -> None
 @pytest.mark.asyncio
 async def test_grep_under_cap_emits_all_without_notice(tmp_path) -> None:
     """When matches are under the cap, all appear and NO suppression notice."""
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     target = tmp_path / "few.txt"
     target.write_text(
@@ -475,7 +475,7 @@ async def test_grep_nul_byte_file_skipped(tmp_path) -> None:
     file containing a NUL byte slipped through and got dumped. Robust binary
     detection must skip it.
     """
-    from sr2_spectre.tools.builtins.grep import GrepTool
+    from spctr.tools.builtins.grep import GrepTool
 
     # Contains a NUL byte but is otherwise valid UTF-8 (decodes cleanly), so
     # only a NUL-byte sniff — not UnicodeDecodeError — catches it.

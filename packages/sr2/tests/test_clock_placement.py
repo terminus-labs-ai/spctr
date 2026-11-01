@@ -1,6 +1,6 @@
 """Tests for sr2-117 — clock placement in a messages-target layer (AC2).
 
-Covers spec FR4–FR5 (sr2-spectre/agent-reminders): a ``static_text``
+Covers spec FR4–FR5 (spctr/agent-reminders): a ``static_text``
 resolver placed between ``session`` and ``input`` in a ``messages``-target
 layer compiles after the conversation history and before the new user
 input, and the compiled system blocks stay byte-identical across two

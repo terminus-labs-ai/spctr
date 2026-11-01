@@ -1,7 +1,7 @@
 """Tests for ReadSymbolTool — grounding tool for reading full type definitions."""
 import pytest
 
-from sr2_spectre.tools.registry import ToolRegistry
+from spctr.tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -9,7 +9,7 @@ from sr2_spectre.tools.registry import ToolRegistry
 # ---------------------------------------------------------------------------
 
 def test_read_symbol_class_attributes() -> None:
-    from sr2_spectre.tools.builtins.read_symbol import ReadSymbolTool
+    from spctr.tools.builtins.read_symbol import ReadSymbolTool
 
     assert isinstance(ReadSymbolTool.name, str) and ReadSymbolTool.name
     assert isinstance(ReadSymbolTool.description, str) and ReadSymbolTool.description
@@ -17,13 +17,13 @@ def test_read_symbol_class_attributes() -> None:
 
 
 def test_read_symbol_name_is_read_symbol() -> None:
-    from sr2_spectre.tools.builtins.read_symbol import ReadSymbolTool
+    from spctr.tools.builtins.read_symbol import ReadSymbolTool
 
     assert ReadSymbolTool.name == "read_symbol"
 
 
 def test_read_symbol_input_schema_properties() -> None:
-    from sr2_spectre.tools.builtins.read_symbol import ReadSymbolTool
+    from spctr.tools.builtins.read_symbol import ReadSymbolTool
 
     props = ReadSymbolTool.input_schema.get("properties", {})
     assert "file_path" in props
@@ -32,7 +32,7 @@ def test_read_symbol_input_schema_properties() -> None:
 
 
 def test_read_symbol_input_schema_required() -> None:
-    from sr2_spectre.tools.builtins.read_symbol import ReadSymbolTool
+    from spctr.tools.builtins.read_symbol import ReadSymbolTool
 
     required = ReadSymbolTool.input_schema.get("required", [])
     assert "file_path" in required
@@ -47,7 +47,7 @@ def test_read_symbol_input_schema_required() -> None:
 def test_read_symbol_registers_via_class_path() -> None:
     reg = ToolRegistry()
     reg.register_from_class_path(
-        "sr2_spectre.tools.builtins.read_symbol.ReadSymbolTool"
+        "spctr.tools.builtins.read_symbol.ReadSymbolTool"
     )
     assert "read_symbol" in reg
 
@@ -115,7 +115,7 @@ def top_level_function(a: int, b: str = "default") -> dict:
 
 def test_find_class_returns_full_body(sample_pyfile) -> None:
     """Finding a class returns the complete class body with all fields."""
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.read_symbol import find_symbol
 
     info = find_symbol(str(sample_pyfile), "SimpleConfig")
 
@@ -133,7 +133,7 @@ def test_find_class_returns_all_fields_not_just_one(sample_pyfile) -> None:
     line matching a field name, missing other required fields. This test
     validates that read_symbol returns ALL fields.
     """
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.read_symbol import find_symbol
 
     info = find_symbol(str(sample_pyfile), "NestedConfig")
 
@@ -145,7 +145,7 @@ def test_find_class_returns_all_fields_not_just_one(sample_pyfile) -> None:
 
 def test_find_function_returns_signature_and_body(sample_pyfile) -> None:
     """Finding a function returns the signature, docstring, and body."""
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.read_symbol import find_symbol
 
     info = find_symbol(str(sample_pyfile), "helper_func")
 
@@ -157,7 +157,7 @@ def test_find_function_returns_signature_and_body(sample_pyfile) -> None:
 
 def test_find_method_returns_method_body(sample_pyfile) -> None:
     """Finding a method returns the method signature and body."""
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.read_symbol import find_symbol
 
     info = find_symbol(str(sample_pyfile), "method_two")
 
@@ -169,7 +169,7 @@ def test_find_method_returns_method_body(sample_pyfile) -> None:
 
 def test_find_nonexistent_symbol_raises(sample_pyfile) -> None:
     """Searching for a symbol that doesn't exist raises ValueError."""
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.read_symbol import find_symbol
 
     with pytest.raises(ValueError, match="not found"):
         find_symbol(str(sample_pyfile), "DoesNotExist")
@@ -177,7 +177,7 @@ def test_find_nonexistent_symbol_raises(sample_pyfile) -> None:
 
 def test_find_nonexistent_file_raises() -> None:
     """Searching a nonexistent file raises FileNotFoundError."""
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.read_symbol import find_symbol
 
     with pytest.raises(FileNotFoundError):
         find_symbol("/nonexistent/path/file.py", "SomeClass")
@@ -185,7 +185,7 @@ def test_find_nonexistent_file_raises() -> None:
 
 def test_find_top_level_function(sample_pyfile) -> None:
     """Finding a function with a multi-line docstring returns the full body."""
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.read_symbol import find_symbol
 
     info = find_symbol(str(sample_pyfile), "top_level_function")
 
@@ -197,7 +197,7 @@ def test_find_top_level_function(sample_pyfile) -> None:
 
 def test_find_class_line_numbers(sample_pyfile) -> None:
     """Line numbers are 1-based and cover the full definition."""
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.read_symbol import find_symbol
 
     info = find_symbol(str(sample_pyfile), "SimpleConfig")
 
@@ -207,7 +207,7 @@ def test_find_class_line_numbers(sample_pyfile) -> None:
 
 def test_find_class_file_path_preserved(sample_pyfile) -> None:
     """The file path from the SymbolInfo matches the input path."""
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.read_symbol import find_symbol
 
     info = find_symbol(str(sample_pyfile), "SimpleConfig")
 
@@ -221,7 +221,7 @@ def test_find_class_file_path_preserved(sample_pyfile) -> None:
 @pytest.mark.asyncio
 async def test_read_symbol_tool_returns_structured_output(sample_pyfile) -> None:
     """The async tool wrapper returns a formatted string with metadata."""
-    from sr2_spectre.tools.builtins.read_symbol import ReadSymbolTool
+    from spctr.tools.builtins.read_symbol import ReadSymbolTool
 
     tool = ReadSymbolTool()
     result = await tool(file_path=str(sample_pyfile), symbol_name="SimpleConfig")
@@ -240,7 +240,7 @@ async def test_read_symbol_tool_returns_structured_output(sample_pyfile) -> None
 @pytest.mark.asyncio
 async def test_read_symbol_tool_nonexistent_raises(sample_pyfile) -> None:
     """The tool raises FileNotFoundError for bad file paths."""
-    from sr2_spectre.tools.builtins.read_symbol import ReadSymbolTool
+    from spctr.tools.builtins.read_symbol import ReadSymbolTool
 
     tool = ReadSymbolTool()
     with pytest.raises(FileNotFoundError):
@@ -250,7 +250,7 @@ async def test_read_symbol_tool_nonexistent_raises(sample_pyfile) -> None:
 @pytest.mark.asyncio
 async def test_read_symbol_tool_nonexistent_symbol_raises(sample_pyfile) -> None:
     """The tool raises ValueError for symbols not in the file."""
-    from sr2_spectre.tools.builtins.read_symbol import ReadSymbolTool
+    from spctr.tools.builtins.read_symbol import ReadSymbolTool
 
     tool = ReadSymbolTool()
     with pytest.raises(ValueError):
@@ -287,7 +287,7 @@ class SimilarName(MyClass):
 
 def test_find_class_does_not_confuse_similar_names(edge_case_file) -> None:
     """Finding 'MyClass' returns MyClass, not SimilarName which also mentions it."""
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.read_symbol import find_symbol
 
     info = find_symbol(str(edge_case_file), "MyClass")
 
@@ -299,7 +299,7 @@ def test_find_class_does_not_confuse_similar_names(edge_case_file) -> None:
 
 def test_find_class_single_line_body(edge_case_file) -> None:
     """A class with a single-field body is captured completely."""
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.read_symbol import find_symbol
 
     info = find_symbol(str(edge_case_file), "OtherClass")
 
@@ -309,7 +309,7 @@ def test_find_class_single_line_body(edge_case_file) -> None:
 
 def test_find_subclass(edge_case_file) -> None:
     """Finding a subclass returns its own definition, not the parent's."""
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.read_symbol import find_symbol
 
     info = find_symbol(str(edge_case_file), "SimilarName")
 
@@ -348,7 +348,7 @@ class McpServerConfig(BaseModel):
         encoding="utf-8",
     )
 
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.read_symbol import find_symbol
 
     info = find_symbol(str(config_file), "McpServerConfig")
 
@@ -386,14 +386,14 @@ class McpServerConfig(BaseModel):
 
 
 class AgentConfig(BaseModel):
-    name: str = "spectre"
+    name: str = "spctr"
     mcp_servers: list[McpServerConfig] = Field(default_factory=list)
 ''',
         encoding="utf-8",
     )
 
-    from sr2_spectre.tools.builtins.read_symbol import find_symbol
-    from sr2_spectre.tools.builtins.grep import _grep
+    from spctr.tools.builtins.read_symbol import find_symbol
+    from spctr.tools.builtins.grep import _grep
 
     # What grep would return for 'name' in McpServerConfig:
     grep_result = _grep(

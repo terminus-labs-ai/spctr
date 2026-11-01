@@ -18,10 +18,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from sr2_spectre.reminders import tool as reminders_tool
-from sr2_spectre.reminders.tool import ChannelMatch
-from sr2_spectre.schedules import Schedule, ScheduleEngine, ScheduleStore
-from sr2_spectre.tools.schedule_tool import (
+from spctr.reminders import tool as reminders_tool
+from spctr.reminders.tool import ChannelMatch
+from spctr.schedules import Schedule, ScheduleEngine, ScheduleStore
+from spctr.tools.schedule_tool import (
     CROSS_PLATFORM_ERROR,
     MALFORMED_RESOLVER_ERROR,
     ScheduleOrigin,
@@ -406,7 +406,7 @@ class TestAC31StartupCatchUp:
         sent: list = []
         engine = _make_engine(store, sent, tmp_path)
 
-        with caplog.at_level(logging.INFO, logger="sr2_spectre.schedules.engine"):
+        with caplog.at_level(logging.INFO, logger="spctr.schedules.engine"):
             await engine.start()
             await asyncio.sleep(0)  # let the (fast-forwarded) poll task begin
             await engine.stop()
@@ -446,7 +446,7 @@ class TestAC31StartupCatchUp:
         sent: list = []
         engine = _make_engine(store, sent, tmp_path)
 
-        with caplog.at_level(logging.INFO, logger="sr2_spectre.schedules.engine"):
+        with caplog.at_level(logging.INFO, logger="spctr.schedules.engine"):
             await engine.start()
             await asyncio.sleep(0.4)  # real seconds: a */min poll could refire
             await engine.stop()
@@ -471,7 +471,7 @@ class TestAC31StartupCatchUp:
         sent: list = []
         engine = _make_engine(store, sent, tmp_path)
 
-        with caplog.at_level(logging.INFO, logger="sr2_spectre.schedules.engine"):
+        with caplog.at_level(logging.INFO, logger="spctr.schedules.engine"):
             await engine.start()
             await asyncio.sleep(0.1)
             await engine.stop()
@@ -573,8 +573,8 @@ class TestDiscordWiring:
     async def test_start_schedules_seats_the_real_resolver(self, tmp_path):
         import discord
 
-        from sr2_spectre.interfaces.discord.config import DiscordConfig
-        from sr2_spectre.interfaces.discord.interface import DiscordInterface
+        from spctr.interfaces.discord.config import DiscordConfig
+        from spctr.interfaces.discord.interface import DiscordInterface
 
         def channel(cls, name: str, id_: int) -> MagicMock:
             # spec= makes the mock pass the adapter's real isinstance
@@ -590,7 +590,7 @@ class TestDiscordWiring:
         # Assign the real isinstance rule: a plain MagicMock child would
         # answer "sendable" for every channel, and the Thread mock below
         # would resolve unchecked.
-        import sr2_spectre.interfaces.discord.adapter as adapter_mod
+        import spctr.interfaces.discord.adapter as adapter_mod
         real_is_text = adapter_mod.DiscordBotAdapter.is_sendable_text_channel
         # A function stored on a MagicMock attribute is called plain (no
         # descriptor binding), so the real unbound check gets its one arg.
@@ -629,7 +629,7 @@ class TestDiscordWiring:
             assert tool._schedule_channel_resolver == interface._resolve_channel
             assert tool._schedule_channel_resolver.__self__ is interface
             assert (
-                getattr(tool._schedule_channel_resolver, "spectre_platform", None)
+                getattr(tool._schedule_channel_resolver, "spctr_platform", None)
                 == "discord"
             )
 

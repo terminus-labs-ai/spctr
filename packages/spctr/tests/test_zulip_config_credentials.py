@@ -49,13 +49,13 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from sr2_spectre.interfaces.zulip import (
+from spctr.interfaces.zulip import (
     ZulipCredentialError,
     ZulipCredentials,
     is_configured_no_area_channel,
     load_zulip_credentials,
 )
-from sr2_spectre.interfaces.zulip.config import ZulipConfig
+from spctr.interfaces.zulip.config import ZulipConfig
 
 # ---------------------------------------------------------------------------
 # Fixtures — identities mirror the spec's Dependencies (Miranda bot user ID
@@ -425,7 +425,7 @@ class TestNonemptyAreaGateIntermediate:
         positively is red today (the gate raises) and green after the lift
         either way; silent area loss stays caged by the routing decision and
         journey tests, not by this row."""
-        from sr2_spectre.interfaces.zulip import validate_no_area_only_routing
+        from spctr.interfaces.zulip import validate_no_area_only_routing
 
         cfg = make_config(channels=[NO_AREA_CHANNEL, AREA_CHANNEL],
                           channel_areas={str(NO_AREA_CHANNEL): "",

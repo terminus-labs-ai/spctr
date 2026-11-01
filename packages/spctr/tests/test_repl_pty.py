@@ -32,8 +32,8 @@ _CHILD_TEMPLATE = '''\
 import asyncio, sys
 sys.path[:0] = {path!r}
 
-from sr2_spectre.interfaces.repl import REPLInterface
-from sr2_spectre.events import (
+from spctr.interfaces.repl import REPLInterface
+from spctr.events import (
     AgentDone, AgentTextDelta, AgentToolResult, AgentToolStart,
 )
 
@@ -168,9 +168,9 @@ def test_interim_narration_survives_the_turn() -> None:
 
 def _src_dir() -> str:
     """The repo's src/ directory, so the child imports the working tree."""
-    import sr2_spectre
+    import spctr
 
-    return os.path.dirname(os.path.dirname(os.path.abspath(sr2_spectre.__file__)))
+    return os.path.dirname(os.path.dirname(os.path.abspath(spctr.__file__)))
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +179,7 @@ def _src_dir() -> str:
 
 
 def test_rows_counts_wrapped_lines() -> None:
-    from sr2_spectre.interfaces.repl import _rows
+    from spctr.interfaces.repl import _rows
 
     assert _rows("", 10) == 1
     assert _rows("abc", 10) == 1
@@ -188,7 +188,7 @@ def test_rows_counts_wrapped_lines() -> None:
 
 
 def test_tail_rows_never_exceeds_the_cap() -> None:
-    from sr2_spectre.interfaces.repl import _rows, _tail_rows
+    from spctr.interfaces.repl import _rows, _tail_rows
 
     text = "\n".join(f"line {i} " + "x" * 30 for i in range(50))
     for width, cap in ((20, 5), (40, 12), (80, 3), (13, 7)):
@@ -200,7 +200,7 @@ def test_tail_rows_never_exceeds_the_cap() -> None:
 
 def test_tail_rows_crops_a_single_overlong_line() -> None:
     """One unbroken line longer than the cap is cropped from the front."""
-    from sr2_spectre.interfaces.repl import _rows, _tail_rows
+    from spctr.interfaces.repl import _rows, _tail_rows
 
     text = "y" * 500
     tail = _tail_rows(text, 20, 4)
@@ -209,6 +209,6 @@ def test_tail_rows_crops_a_single_overlong_line() -> None:
 
 
 def test_tail_rows_passes_short_text_through() -> None:
-    from sr2_spectre.interfaces.repl import _tail_rows
+    from spctr.interfaces.repl import _tail_rows
 
     assert _tail_rows("hello\nworld", 80, 10) == "hello\nworld"

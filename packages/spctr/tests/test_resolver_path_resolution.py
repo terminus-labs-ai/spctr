@@ -21,8 +21,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sr2_spectre.config import resolve_extends, resolve_resolver_paths, load_resolved_config
-from sr2_spectre.path_resolution import ConfigPathError
+from spctr.config import resolve_extends, resolve_resolver_paths, load_resolved_config
+from spctr.path_resolution import ConfigPathError
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +150,7 @@ class TestResolverPathRelative:
         """Relative plans_root resolves against declaring file's directory."""
         sub = tmp_path / "configs"
         sub.mkdir()
-        declaring = sub / "spectre.yaml"
+        declaring = sub / "spctr.yaml"
         plans = tmp_path / "plans"
         plans.mkdir()
 
@@ -168,7 +168,7 @@ class TestResolverPathRelative:
         """Relative knowledge_root resolves against declaring file's directory."""
         sub = tmp_path / "configs" / "prod"
         sub.mkdir(parents=True)
-        declaring = sub / "spectre.yaml"
+        declaring = sub / "spctr.yaml"
         knowledge = tmp_path / "knowledge"
         knowledge.mkdir()
 
@@ -378,10 +378,10 @@ class TestResolverPathMissingSections:
     def test_no_pipeline_key_is_noop(self, tmp_path):
         """Config without 'pipeline' key — no error, no change."""
         declaring = tmp_path / "config.yaml"
-        cfg = {"agent": {"name": "spectre"}}
+        cfg = {"agent": {"name": "spctr"}}
 
         resolve_resolver_paths(cfg, declaring, env={})
-        assert cfg == {"agent": {"name": "spectre"}}
+        assert cfg == {"agent": {"name": "spctr"}}
 
     def test_no_layers_is_noop(self, tmp_path):
         """Pipeline without 'layers' — no error."""
@@ -559,7 +559,7 @@ class TestResolverPathDeclaringDir:
         """The declaring file's directory is injected as 'declaring_dir'."""
         sub = tmp_path / "configs" / "prod"
         sub.mkdir(parents=True)
-        declaring = sub / "spectre.yaml"
+        declaring = sub / "spctr.yaml"
 
         resolver_cfg = _resolver_config(plans_root="../plans")
         pipeline_cfg = _pipeline_with_resolver(resolver_cfg)

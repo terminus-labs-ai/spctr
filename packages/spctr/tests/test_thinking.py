@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from sr2.protocols.llm import StreamEvent
-from sr2_spectre.events import (
+from spctr.events import (
     AgentDone,
     AgentEvent,
     AgentThinkingDelta,
@@ -98,7 +98,7 @@ async def test_thinking_events_stream_correctly():
 @pytest.mark.asyncio
 async def test_thinking_then_tool_then_text():
     """Thinking before tools: thinking block closes, tool runs, text resumes."""
-    from sr2_spectre.events import AgentToolStart, AgentToolResult
+    from spctr.events import AgentToolStart, AgentToolResult
 
     agent = MagicMock()
     agent.session_id = "test"

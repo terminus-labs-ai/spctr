@@ -20,9 +20,9 @@ from unittest.mock import patch
 import pytest
 
 from sr2.protocols.llm import StreamEvent
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.runtime import Runtime
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.core import RunContext, RunMode
+from spctr.runtime import Runtime
 
 ERROR_EVENTS = {"pipeline.error", "sr2.error"}
 FINAL_TEXT = "all finished"
@@ -37,19 +37,19 @@ def home(tmp_path, monkeypatch) -> Path:
     h = tmp_path / "sr2home"
     h.mkdir()
     monkeypatch.setenv("SR2_HOME", str(h))
-    monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
+    monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
     return h
 
 
-def _config() -> SpectreConfig:
-    return SpectreConfig(
+def _config() -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(name="edi"),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline={"layers": [
             {"name": "system", "target": "system",
              "resolvers": [{"type": "static", "config": {"text": "system prompt"}}]},
             {"name": "tools", "target": "tools", "resolvers": [],
-             "tool_providers": [{"type": "spectre_tools"}]},
+             "tool_providers": [{"type": "spctr_tools"}]},
             {"name": "conversation", "target": "messages",
              "resolvers": [{"type": "session"}, {"type": "input"}]},
         ]},
@@ -86,7 +86,7 @@ def _text_round() -> list[StreamEvent]:
 
 
 def _session(*rounds):
-    with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=ScriptedLLM(*rounds)):
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=ScriptedLLM(*rounds)):
         runtime = Runtime(_config())
 
     async def echo(value: str = "") -> str:

@@ -29,7 +29,7 @@ redirects"). Teardown audits: zero requests to the unrelated host, nothing
 off /api/v1/, no credential in any request line, query or body.
 
 The only seam pinned for construction: the public callable exported by
-``sr2_spectre.interfaces.zulip`` (package level, alongside the accepted
+``spctr.interfaces.zulip`` (package level, alongside the accepted
 spc-123 credential exports) as ``ZulipClient(credentials=…, config=…)`` —
 the accepted ``ZulipCredentials`` record and the accepted ``ZulipConfig``
 whose ``api_url`` is the documented loopback/testing origin override
@@ -53,7 +53,7 @@ from urllib.parse import parse_qsl
 import pytest
 from aiohttp import web
 
-from sr2_spectre.interfaces.zulip import (
+from spctr.interfaces.zulip import (
     ZulipAuthError,
     ZulipClient,
     ZulipConfig,

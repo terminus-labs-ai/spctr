@@ -79,7 +79,7 @@ changes the accepted range requires a new acceptance run.
 ## Build & Test
 
 This repository is a uv workspace: members `packages/sr2` (core) and
-`packages/spctr` (this package, import name `sr2_spectre`). One lock at
+`packages/spctr` (this package, import name `spctr`). One lock at
 the root; `sr2` resolves through `{ workspace = true }`.
 
 Provision the root venv (installs both members editable):
@@ -118,12 +118,12 @@ launch's session-log environment. No `env -u` prefix is needed.
 
 ### Running tests in a build worktree
 
-Build sessions work in Git worktrees under `/data/worktrees/sr2-spectre/`
+Build sessions work in Git worktrees under `/data/worktrees/spctr/`
 (one per bead). Worktrees are self-contained: create the venv and run
 both suites with:
 
 ```bash
-cd /data/worktrees/sr2-spectre/<bead> && uv sync --frozen && ./scripts/run_tests.sh
+cd /data/worktrees/spctr/<bead> && uv sync --frozen && ./scripts/run_tests.sh
 ```
 
 `uv sync` installs both workspace members from the committed root
@@ -136,14 +136,14 @@ is a member now, installed editable, and its suite runs through
 ## Architecture Overview
 
 Workflow role agent files (`role-<x>.yaml`) live under `~/.sr2-workflow/agents/`.
-The quorum voter is no longer part of Spectre: it runs as the standalone
+The quorum voter is no longer part of spctr: it runs as the standalone
 vault-tools invoker (`workflow/quorum_invoker.py`, configured by the `quorum:`
 block in `workflow/agent-models.yaml`, prompt `workflow/roles/quorum-voter.md`).
 
 ### Resolver/transformer pipeline
 
-Spectre plugs its planning behaviour into SR2 as pipeline extensions rather
-than forking SR2 itself. `src/sr2_spectre/planning/resolver.py` defines
+spctr plugs its planning behaviour into SR2 as pipeline extensions rather
+than forking SR2 itself. `src/spctr/planning/resolver.py` defines
 `PlanResolver`, which registers on the `sr2.resolvers` entry point (name
 `plan`) and subscribes to the `turn_start` event. On every turn it re-reads
 the plan/knowledge files under the configured `plans_root`/`knowledge_root`
@@ -151,7 +151,7 @@ the plan/knowledge files under the configured `plans_root`/`knowledge_root`
 next turn) and injects three layered, delimited sections into the prompt:
 L1 project knowledge, L2 the active plan, and L3 the current task, with L3
 treated as most protected and L1 dropped first if a token budget is
-exceeded. `src/sr2_spectre/planning/transformer.py` defines
+exceeded. `src/spctr/planning/transformer.py` defines
 `StepCompactionTransformer`, registered on `sr2.transformers` (name
 `step_compaction`), which subscribes to `plan_step_completed` events fired
 by the `complete_step` tool after its verify step passes. It is a
@@ -164,31 +164,31 @@ done.
 
 ### Four-tier config resolution
 
-`src/sr2_spectre/config.py` (`load_resolved_config_with_provenance`, around
-lines 557-605) resolves a single `SpectreConfig` by merging four tiers,
+`src/spctr/config.py` (`load_resolved_config_with_provenance`, around
+lines 557-605) resolves a single `SpctrConfig` by merging four tiers,
 lowest to highest priority:
 
 1. `$SR2_HOME/config.yaml`
-2. `$SR2_HOME/spectre.yaml`
-3. `<cwd>/.spectre.yaml`
+2. `$SR2_HOME/spctr.yaml`
+3. `<cwd>/.spctr.yaml`
 4. the extends-resolved positional config file passed on the command line
 
 Tiers 1-3 are optional and silently skipped if missing; the positional file
 (tier 4) is required and wins over all lower tiers. Each tier is merged onto
 the accumulated result with `merge_configs`, and a parallel provenance map
 tracks which file contributed each resolved field, which is what lets
-Spectre tell an operator exactly which config file set a given value.
+spctr tell an operator exactly which config file set a given value.
 
 ### Interface/runtime split
 
-Spectre ships multiple front ends that all sit on top of one shared
-`Runtime` (`src/sr2_spectre/runtime.py`): `single_shot`
-(`src/sr2_spectre/interfaces/single_shot.py`, for scripting — one prompt in,
+spctr ships multiple front ends that all sit on top of one shared
+`Runtime` (`src/spctr/runtime.py`): `single_shot`
+(`src/spctr/interfaces/single_shot.py`, for scripting — one prompt in,
 one response out, process exits), `repl` (default;
-`src/sr2_spectre/interfaces/repl.py`, interactive terminal session via
+`src/spctr/interfaces/repl.py`, interactive terminal session via
 prompt_toolkit + Rich — native selection and shortcuts), `tui`
-(`src/sr2_spectre/interfaces/tui.py`, Textual full-screen app, legacy),
-and Discord (`src/sr2_spectre/interfaces/discord/`, for a persistent bot
+(`src/spctr/interfaces/tui.py`, Textual full-screen app, legacy),
+and Discord (`src/spctr/interfaces/discord/`, for a persistent bot
 process). Each interface is a thin adapter that turns its own I/O model
 (stdin/stdout, a terminal UI loop, or Discord gateway events) into calls
 against the same `Runtime`, which owns session state, the SR2 pipeline, the
@@ -199,7 +199,7 @@ that shared `Runtime` without needing interface-specific reload code.
 
 ### `agent.tools` merges additively — no revocation
 
-`src/sr2_spectre/config_merge.py` implements the named-list merge rule used
+`src/spctr/config_merge.py` implements the named-list merge rule used
 throughout config merging (`_named_merge`, around lines 74-107): when a list
 of dicts all share a `name` field — which is how `agent.tools` entries are
 shaped — the child tier's list is merged with the parent tier's list by
@@ -223,7 +223,7 @@ cannot do this; the tool has to be removed at the tier that granted it.
 
 ### Live config reload (obsidian-fvfs, obsidian-bzfb)
 
-Long-running interfaces re-read the **whole** resolved `SpectreConfig` on every
+Long-running interfaces re-read the **whole** resolved `SpctrConfig` on every
 inbound message. Do not tell the operator to restart an agent for a config edit
 without checking whether the field is pinned.
 
@@ -234,7 +234,7 @@ without checking whether the field is pinned.
   `agent.name`, `agent.mcp_servers`, `memory_store_dsn`,
   `provenance_store_path`, `discord.token`.
 
-Flow: `cli.build_spectre_config_source` → `SpectreConfigSource` (last-good
+Flow: `cli.build_spctr_config_source` → `SpctrConfigSource` (last-good
 fallback; a malformed file never takes the process down) → `DiscordConfigView`
 gives the adapter the Discord slice of that same single read →
 `Runtime.apply_config` re-seats the rest, every branch gated on an observed
@@ -242,7 +242,7 @@ change so a no-op reload costs one equality check.
 
 Two invariants worth preserving when touching this:
 
-- Sessions hold a `LiveLLM` (`src/sr2_spectre/live_llm.py`), not a bare
+- Sessions hold a `LiveLLM` (`src/spctr/live_llm.py`), not a bare
   `LiteLLMCallable`. SR2 captures its LLM for the life of a session, so without
   that indirection an endpoint fix would only reach *new* conversations.
 - A pipeline change rebuilds a session's SR2, but the rebuild is **deferred to
@@ -250,8 +250,8 @@ Two invariants worth preserving when touching this:
   it eagerly would swap the SR2 out from under an in-flight reply whose tool
   executor is still publishing to `sr2.bus`.
 
-**Test seam:** patch `sr2_spectre.live_llm.LiteLLMCallable`, *not*
-`sr2_spectre.runtime.LiteLLMCallable` — LLM construction moved to
+**Test seam:** patch `spctr.live_llm.LiteLLMCallable`, *not*
+`spctr.runtime.LiteLLMCallable` — LLM construction moved to
 `live_llm.build_llm`. Docs: `docs/CONFIG-REFERENCE.md` § Live reload;
 `docs/INTERFACE-DEV-GUIDE.md` § Live config reload.
 
@@ -263,7 +263,7 @@ The Runtime selects the memory store backend at construction via
 - `config.memory_store_dsn` is authoritative when set. A non-empty DSN selects
   `PostgresMemoryStore` (persistent, shared across processes). `""` explicitly
   disables persistence → in-memory, even if the env var is set.
-- When `config.memory_store_dsn` is `None`, the `SPECTRE_MEMORY_DSN` env var is
+- When `config.memory_store_dsn` is `None`, the `SPCTR_MEMORY_DSN` env var is
   used if non-empty; otherwise the dict-backed `InMemoryMemoryStore`.
 
 The selected store is shared across all sessions and closed in `Runtime.aclose()`

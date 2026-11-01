@@ -14,7 +14,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from sr2_spectre.tools.node_injection import (
+from spctr.tools.node_injection import (
     EdgeConsumer,
     EdgeSource,
     InjectionError,

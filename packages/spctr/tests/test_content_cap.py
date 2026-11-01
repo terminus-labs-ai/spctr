@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from sr2_spectre.tools.builtins.generate_image import GenerateImageTool
-from sr2_spectre.tools.image_scenarios import ImageScenarioRegistry
+from spctr.tools.builtins.generate_image import GenerateImageTool
+from spctr.tools.image_scenarios import ImageScenarioRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -281,11 +281,11 @@ class TestRefusalString:
 class TestContentLevelComparison:
     def test_sfw_below_nsfw(self):
         """sfw level is below nsfw level."""
-        from sr2_spectre.tools.builtins.generate_image import _content_level_rank
+        from spctr.tools.builtins.generate_image import _content_level_rank
         assert _content_level_rank("sfw") < _content_level_rank("nsfw")
 
     def test_same_level_allowed(self):
         """Same level is allowed (cap == scenario level)."""
-        from sr2_spectre.tools.builtins.generate_image import _content_level_rank
+        from spctr.tools.builtins.generate_image import _content_level_rank
         assert _content_level_rank("sfw") <= _content_level_rank("sfw")
         assert _content_level_rank("nsfw") <= _content_level_rank("nsfw")

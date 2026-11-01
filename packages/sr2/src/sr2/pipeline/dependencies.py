@@ -67,6 +67,6 @@ class Dependencies:
     and component behaviour is unchanged (regression-safe).
 
     Mirrors ``active_frame_provider``: generic callable, no harness-type
-    import in core.  Spectre's ``RunContext`` is a spectre type — core
+    import in core.  spctr's ``RunContext`` is a spctr type — core
     MUST NOT import it.
     """

@@ -7,7 +7,7 @@
 # single pytest process over both directories collides on the conftest
 # plugin registration (`tests.conftest` from two files). Per member,
 # pytest picks up that member's own [tool.pytest.ini_options]
-# (asyncio_mode, sr2's `pythonpath = ["tests"]`, sr2-spectre's
+# (asyncio_mode, sr2's `pythonpath = ["tests"]`, spctr's
 # `-m 'not live'`), exactly as each repo ran standalone.
 #
 # Usage: scripts/run_tests.sh [extra pytest args...]   # both members

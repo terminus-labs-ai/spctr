@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
-from sr2_spectre.interfaces.discord.config import DiscordConfig
+from spctr.interfaces.discord.adapter import DiscordBotAdapter
+from spctr.interfaces.discord.config import DiscordConfig
 
 
 def _message(

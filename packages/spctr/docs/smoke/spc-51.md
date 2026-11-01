@@ -19,7 +19,7 @@ mkdir -p $OUTSIDE
 ```bash
 SR2_WORKSPACE=$WORKSPACE python3 -c "
 import asyncio
-from sr2_spectre.tools.builtins.file_write import FileWriteTool
+from spctr.tools.builtins.file_write import FileWriteTool
 tool = FileWriteTool(workspace_root='$WORKSPACE')
 asyncio.run(tool(path='test.txt', content='hello'))
 print(open('$WORKSPACE/test.txt').read())
@@ -33,7 +33,7 @@ print(open('$WORKSPACE/test.txt').read())
 ```bash
 SR2_WORKSPACE=$WORKSPACE python3 -c "
 import asyncio, sys
-from sr2_spectre.tools.builtins.file_write import FileWriteTool
+from spctr.tools.builtins.file_write import FileWriteTool
 tool = FileWriteTool(workspace_root='$WORKSPACE')
 async def try_write():
     try:
@@ -53,7 +53,7 @@ asyncio.run(try_write())
 ```bash
 SR2_WORKSPACE=$WORKSPACE python3 -c "
 import asyncio, sys
-from sr2_spectre.tools.builtins.file_write import FileWriteTool
+from spctr.tools.builtins.file_write import FileWriteTool
 tool = FileWriteTool(workspace_root='$WORKSPACE')
 async def try_write():
     try:
@@ -73,7 +73,7 @@ asyncio.run(try_write())
 ```bash
 python3 -c "
 import asyncio
-from sr2_spectre.tools.builtins.file_write import FileWriteTool
+from spctr.tools.builtins.file_write import FileWriteTool
 tool = FileWriteTool()  # no workspace_root
 asyncio.run(tool(path='$OUTSIDE/free.txt', content='free'))
 print(open('$OUTSIDE/free.txt').read())
@@ -87,7 +87,7 @@ print(open('$OUTSIDE/free.txt').read())
 ```bash
 SR2_WORKSPACE=$WORKSPACE python3 -c "
 import asyncio
-from sr2_spectre.tools.builtins.terminal import TerminalTool
+from spctr.tools.builtins.terminal import TerminalTool
 tool = TerminalTool(workspace_root='$WORKSPACE')
 result = asyncio.run(tool(command='pwd'))
 print(result.strip())
@@ -102,7 +102,7 @@ print(result.strip())
 echo "original" > "$OUTSIDE/target.txt"
 SR2_WORKSPACE=$WORKSPACE python3 -c "
 import asyncio, sys
-from sr2_spectre.tools.builtins.edit import EditTool
+from spctr.tools.builtins.edit import EditTool
 tool = EditTool(workspace_root='$WORKSPACE')
 async def try_edit():
     try:
@@ -123,17 +123,17 @@ asyncio.run(try_edit())
 python3 -c "
 import os, sys
 # Simulate worktree named 'spc-47'
-os.environ['SR2_PROJECT'] = 'sr2-spectre'
-from sr2_spectre.planning.resolver import PlanResolver
+os.environ['SR2_PROJECT'] = 'spctr'
+from spctr.planning.resolver import PlanResolver
 from sr2.config.models import ResolverConfig
 r = PlanResolver(ResolverConfig(type='plan', config={'project': '__auto__'}))
 project = r._resolve_project()
-assert project == 'sr2-spectre', f'Expected sr2-spectre, got {project}'
+assert project == 'spctr', f'Expected spctr, got {project}'
 print(f'OK: project resolved to {project}')
 "
 ```
 
-**Expect:** Prints `OK: project resolved to sr2-spectre`
+**Expect:** Prints `OK: project resolved to spctr`
 
 ## Teardown
 

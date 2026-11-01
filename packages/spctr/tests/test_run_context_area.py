@@ -23,8 +23,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.core import RunContext, RunMode
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.core import RunContext, RunMode
 
 
 def _minimal_pipeline_dict() -> dict:
@@ -44,8 +44,8 @@ def _minimal_pipeline_dict() -> dict:
     }
 
 
-def _make_config() -> SpectreConfig:
-    return SpectreConfig(
+def _make_config() -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(name="test"),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline=_minimal_pipeline_dict(),
@@ -58,9 +58,9 @@ def _agent_and_provider():
     The returned callable is the exact object resolvers receive as
     ``Dependencies.run_context_provider``.
     """
-    from sr2_spectre.agent import Agent
+    from spctr.agent import Agent
 
-    with patch("sr2_spectre.session.SR2") as MockSR2:
+    with patch("spctr.session.SR2") as MockSR2:
         MockSR2.return_value = MagicMock()
         agent = Agent(config=_make_config())
         provider = MockSR2.call_args.kwargs["run_context_provider"]
@@ -148,7 +148,7 @@ class TestProviderAreaKey:
 
 class TestNonDiscordInterfaces:
     async def test_tui_sets_no_area(self) -> None:
-        from sr2_spectre.interfaces.tui import TUIInterface
+        from spctr.interfaces.tui import TUIInterface
 
         agent, provider = _agent_and_provider()
         await TUIInterface().start(agent)
@@ -163,7 +163,7 @@ class TestNonDiscordInterfaces:
         cwd-basename semantics: no CLAUDE.md or .git discovery, no ancestor
         walk. The area is whatever the process was started in.
         """
-        from sr2_spectre.interfaces.repl import REPLInterface
+        from spctr.interfaces.repl import REPLInterface
 
         launch_dir = tmp_path / "projects" / "harbinger"
         launch_dir.mkdir(parents=True)
@@ -187,7 +187,7 @@ class TestNonDiscordInterfaces:
         assert agent.run_context.source == os.getcwd()
 
     async def test_single_shot_sets_no_area(self) -> None:
-        from sr2_spectre.interfaces.single_shot import SingleShotInterface
+        from spctr.interfaces.single_shot import SingleShotInterface
 
         agent, provider = _agent_and_provider()
         await SingleShotInterface(prompt="test").start(agent)

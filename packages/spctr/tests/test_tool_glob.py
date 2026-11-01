@@ -3,7 +3,7 @@ import os
 
 import pytest
 
-from sr2_spectre.tools.registry import ToolRegistry
+from spctr.tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -11,7 +11,7 @@ from sr2_spectre.tools.registry import ToolRegistry
 # ---------------------------------------------------------------------------
 
 def test_glob_class_attributes() -> None:
-    from sr2_spectre.tools.builtins.glob import GlobTool
+    from spctr.tools.builtins.glob import GlobTool
 
     assert isinstance(GlobTool.name, str) and GlobTool.name
     assert isinstance(GlobTool.description, str) and GlobTool.description
@@ -19,13 +19,13 @@ def test_glob_class_attributes() -> None:
 
 
 def test_glob_name_is_glob() -> None:
-    from sr2_spectre.tools.builtins.glob import GlobTool
+    from spctr.tools.builtins.glob import GlobTool
 
     assert GlobTool.name == "glob"
 
 
 def test_glob_input_schema_properties() -> None:
-    from sr2_spectre.tools.builtins.glob import GlobTool
+    from spctr.tools.builtins.glob import GlobTool
 
     props = GlobTool.input_schema.get("properties", {})
     assert "pattern" in props
@@ -33,7 +33,7 @@ def test_glob_input_schema_properties() -> None:
 
 
 def test_glob_input_schema_required() -> None:
-    from sr2_spectre.tools.builtins.glob import GlobTool
+    from spctr.tools.builtins.glob import GlobTool
 
     required = GlobTool.input_schema.get("required", [])
     # pattern is the only required input; path is optional.
@@ -48,7 +48,7 @@ def test_glob_input_schema_required() -> None:
 
 def test_glob_registers_via_class_path() -> None:
     reg = ToolRegistry()
-    reg.register_from_class_path("sr2_spectre.tools.builtins.glob.GlobTool")
+    reg.register_from_class_path("spctr.tools.builtins.glob.GlobTool")
     assert "glob" in reg
 
 
@@ -58,7 +58,7 @@ def test_glob_registers_via_class_path() -> None:
 
 @pytest.mark.asyncio
 async def test_glob_single_level_star_match(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.glob import GlobTool
+    from spctr.tools.builtins.glob import GlobTool
 
     (tmp_path / "a.py").write_text("", encoding="utf-8")
     (tmp_path / "b.py").write_text("", encoding="utf-8")
@@ -79,7 +79,7 @@ async def test_glob_single_level_star_match(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_glob_single_star_does_not_recurse(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.glob import GlobTool
+    from spctr.tools.builtins.glob import GlobTool
 
     (tmp_path / "top.py").write_text("", encoding="utf-8")
     (tmp_path / "sub").mkdir()
@@ -102,7 +102,7 @@ async def test_glob_single_star_does_not_recurse(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_glob_double_star_recurses(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.glob import GlobTool
+    from spctr.tools.builtins.glob import GlobTool
 
     (tmp_path / "top.py").write_text("", encoding="utf-8")
     nested_dir = tmp_path / "sub" / "deep"
@@ -125,7 +125,7 @@ async def test_glob_double_star_recurses(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_glob_subdirectory_literal_pattern(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.glob import GlobTool
+    from spctr.tools.builtins.glob import GlobTool
 
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "x.md").write_text("", encoding="utf-8")
@@ -144,7 +144,7 @@ async def test_glob_subdirectory_literal_pattern(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_glob_results_are_sorted(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.glob import GlobTool
+    from spctr.tools.builtins.glob import GlobTool
 
     names = ["zebra.txt", "alpha.txt", "mango.txt"]
     for name in names:
@@ -164,7 +164,7 @@ async def test_glob_results_are_sorted(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_glob_results_are_relative_not_absolute(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.glob import GlobTool
+    from spctr.tools.builtins.glob import GlobTool
 
     (tmp_path / "a.py").write_text("", encoding="utf-8")
 
@@ -186,7 +186,7 @@ async def test_glob_results_are_relative_not_absolute(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_glob_empty_result_returns_string_not_raise(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.glob import GlobTool
+    from spctr.tools.builtins.glob import GlobTool
 
     tool = GlobTool()
     # Should not raise on zero matches.

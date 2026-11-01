@@ -22,12 +22,12 @@ import pytest
 from aiohttp import web
 from pydantic import ValidationError
 
-from sr2_spectre.config import SpectreConfig
-from sr2_spectre.config_source import SpectreConfigSource
-from sr2_spectre.events import AgentTextDelta
-from sr2_spectre.interfaces.zulip import ZulipConfig, ZulipDMInterface, ZulipInterface
-from sr2_spectre.interfaces.zulip.client import ZulipCredentials
-from sr2_spectre.resume import ResumeResult
+from spctr.config import SpctrConfig
+from spctr.config_source import SpctrConfigSource
+from spctr.events import AgentTextDelta
+from spctr.interfaces.zulip import ZulipConfig, ZulipDMInterface, ZulipInterface
+from spctr.interfaces.zulip.client import ZulipCredentials
+from spctr.resume import ResumeResult
 
 DIEGO_ID = 8
 BOT_ID = 9
@@ -46,9 +46,9 @@ async def register_endpoint(monkeypatch):
     Pins the REAL transport and credential loader on both interface modules:
     other test files replace those module attributes without restoring them.
     """
-    import sr2_spectre.interfaces.zulip.client as client_mod
-    import sr2_spectre.interfaces.zulip.direct as direct_mod
-    import sr2_spectre.interfaces.zulip.interface as iface_mod
+    import spctr.interfaces.zulip.client as client_mod
+    import spctr.interfaces.zulip.direct as direct_mod
+    import spctr.interfaces.zulip.interface as iface_mod
 
     for module in (iface_mod, direct_mod):
         monkeypatch.setattr(module, "ZulipClient", client_mod.ZulipClient)
@@ -226,18 +226,18 @@ def _zulip(**over: Any) -> ZulipConfig:
     return ZulipConfig(zuliprc="/unused.zuliprc", users=[DIEGO_ID], **over)
 
 
-def _spectre(zulip: ZulipConfig) -> SpectreConfig:
-    return SpectreConfig(agent={"name": "miranda"},
+def _spctr(zulip: ZulipConfig) -> SpctrConfig:
+    return SpctrConfig(agent={"name": "miranda"},
                          models={"default": {"model": "synthetic-model"}},
                          pipeline={"layers": []}, zulip=zulip)
 
 
 async def _drive(monkeypatch, initial: ZulipConfig, batches: list):
     """Run the real poll loop over *batches* with a live config source."""
-    import sr2_spectre.interfaces.zulip.interface as iface_mod
+    import spctr.interfaces.zulip.interface as iface_mod
 
-    holder = {"config": _spectre(initial)}
-    source = SpectreConfigSource(loader=lambda: holder["config"],
+    holder = {"config": _spctr(initial)}
+    source = SpctrConfigSource(loader=lambda: holder["config"],
                                  initial=holder["config"])
     interface = ZulipInterface(config_source=source)
     client = _FakeClient(interface, batches, holder)
@@ -292,7 +292,7 @@ def test_AC2_d_mapping_valued_channels_fails_validation():
 async def test_AC2_e_channels_edit_applies_to_next_batch(monkeypatch):
     agent, client = await _drive(monkeypatch, _zulip(channels=[2]), [
         (None, [_msg(2, "two", "before edit", topic="t0")]),
-        (_spectre(_zulip(channels=[3])),
+        (_spctr(_zulip(channels=[3])),
          [_msg(2, "two", "in two"), _msg(3, "three", "in three")]),
     ])
     assert sorted(text for text, _area in agent.turns) == ["before edit", "in three"]
@@ -329,9 +329,9 @@ def test_AC3_e_integer_channel_areas_key_fails_validation():
 
 
 def test_AC3_f_derivation_is_one_implementation_shared_with_discord():
-    from sr2_spectre.interfaces import common
-    from sr2_spectre.interfaces.discord import handler
-    from sr2_spectre.interfaces.zulip import config as zulip_config
+    from spctr.interfaces import common
+    from spctr.interfaces.discord import handler
+    from spctr.interfaces.zulip import config as zulip_config
 
     assert zulip_config.resolve_area is common.resolve_area
     assert handler.resolve_area is common.resolve_area
@@ -341,7 +341,7 @@ def test_AC3_f_derivation_is_one_implementation_shared_with_discord():
 async def test_AC3_g_channel_areas_edit_reaches_existing_topic(monkeypatch):
     agent, _client = await _drive(monkeypatch, _zulip(channel_areas={"2": ""}), [
         (None, [_msg(2, "sandbox", "first")]),
-        (_spectre(_zulip(channel_areas={"2": "lab"})), [_msg(2, "sandbox", "second")]),
+        (_spctr(_zulip(channel_areas={"2": "lab"})), [_msg(2, "sandbox", "second")]),
     ])
     assert len(agent.sessions) == 1   # the same existing topic Session
     assert agent.turns == [("first", ""), ("second", "lab")]

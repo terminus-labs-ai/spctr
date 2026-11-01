@@ -20,16 +20,16 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.interfaces.discord.config import DiscordConfig
-from sr2_spectre.interfaces.discord.interface import DiscordInterface
-from sr2_spectre.reminders import (
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.interfaces.discord.config import DiscordConfig
+from spctr.interfaces.discord.interface import DiscordInterface
+from spctr.reminders import (
   DeliveryLoop,
   Reminder,
   ReminderStore,
   ReminderTool,
 )
-from sr2_spectre.reminders.tool import turn_scope
+from spctr.reminders.tool import turn_scope
 
 UTC = ZoneInfo("UTC")
 PLACEHOLDER = "\u23f3 Thinking..."
@@ -144,11 +144,11 @@ class FakeAdapter:
 # Helpers — real Runtime/Agent/Tool over a tmp_path store
 # ---------------------------------------------------------------------------
 
-def _config(store: Path, **reminders: Any) -> SpectreConfig:
+def _config(store: Path, **reminders: Any) -> SpctrConfig:
   agent: dict[str, Any] = {"name": "ezio", "default_skills": False}
   if reminders:
     agent["reminders"] = dict(reminders)
-  return SpectreConfig(
+  return SpctrConfig(
     agent=AgentConfig(**agent),
     models={"default": ModelConfig(model="test-model")},
     pipeline={"layers": []},
@@ -156,7 +156,7 @@ def _config(store: Path, **reminders: Any) -> SpectreConfig:
     memory_store_dsn="",
   )
 
-def _enabled(store: Path, **overrides: Any) -> SpectreConfig:
+def _enabled(store: Path, **overrides: Any) -> SpctrConfig:
   block: dict[str, Any] = {
     "enabled": True,
     "timezone": "America/Phoenix",
@@ -166,10 +166,10 @@ def _enabled(store: Path, **overrides: Any) -> SpectreConfig:
   block.update(overrides)
   return _config(store, **block)
 
-def _runtime(config: SpectreConfig):
-  from sr2_spectre.runtime import Runtime
+def _runtime(config: SpctrConfig):
+  from spctr.runtime import Runtime
 
-  with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+  with patch("spctr.live_llm.LiteLLMCallable"):
     return Runtime(config=config)
 
 async def _started(
@@ -185,11 +185,11 @@ async def _started(
   test waits on the wall clock. ``runtime`` swaps the Runtime the agent
   fronts (the reload tests).
   """
-  from sr2_spectre.agent import Agent
+  from spctr.agent import Agent
 
   store = tmp_path / "reminders.sqlite"
   config = _enabled(store, poll_seconds=60) if enabled else _config(store)
-  with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=object()):
+  with patch("spctr.live_llm.LiteLLMCallable", return_value=object()):
     agent = Agent(config=config)
   if runtime is not None:
     agent._runtime = runtime  # the facade reads its Runtime through this one attribute
@@ -204,7 +204,7 @@ async def _started(
 
   interface._start_reminders = _start  # type: ignore[method-assign]
   with patch(
-    "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter",
+    "spctr.interfaces.discord.interface.DiscordBotAdapter",
     return_value=adapter,
   ):
     await interface.start(agent)
@@ -257,7 +257,7 @@ def _create_turn(
   ``into`` collects the tool's reply; the turn itself is driven by
   ``_drive_turn``, which waits until the model turn really ran.
   """
-  from sr2_spectre.events import AgentTextDelta
+  from spctr.events import AgentTextDelta
 
   captured = [] if into is None else into
 
@@ -358,7 +358,7 @@ class TestAC14NamedChannel:
     class ResolverSpy:
       """Wrapper with the seam's marker: records what the tool's call carried."""
 
-      spectre_platform = "discord"
+      spctr_platform = "discord"
 
       async def __call__(self, platform: str, name: str, scope=None):
         seen.append((platform, name, scope))
@@ -468,16 +468,16 @@ class TestAC15Delivery:
       async def try_send_message(self, channel_id: int, content: str):
         return None, RuntimeError("403 Forbidden")
 
-    from sr2_spectre.agent import Agent
+    from spctr.agent import Agent
 
-    with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=object()):
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=object()):
       agent = Agent(
         config=_enabled(tmp_path / "fail.sqlite", poll_seconds=60)
       )
     adapter = FailingAdapter({})
     interface = DiscordInterface(config=DiscordConfig(token="test"))
     with patch(
-      "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter",
+      "spctr.interfaces.discord.interface.DiscordBotAdapter",
       return_value=adapter,
     ):
       await interface.start(agent)
@@ -493,7 +493,7 @@ class TestAC15Delivery:
   async def test_a_thread_destination_is_never_posted_to(self, tmp_path) -> None:
     """AC15: the destination must be a text channel — a thread is refused at
     the adapter rather than posted to (FR9)."""
-    from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
+    from spctr.interfaces.discord.adapter import DiscordBotAdapter
 
     adapter = DiscordBotAdapter(DiscordConfig(token="fake"))
     assert adapter.is_sendable_text_channel(_text_channel(GENERAL_ID, GENERAL_NAME))
@@ -502,7 +502,7 @@ class TestAC15Delivery:
   async def test_delivery_goes_through_the_adapter_send_path(self) -> None:
     """AC15: the destination send is the adapter's own discord.py
     ``channel.send`` — the same path a chat reply takes."""
-    from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
+    from spctr.interfaces.discord.adapter import DiscordBotAdapter
 
     adapter = DiscordBotAdapter(DiscordConfig(token="fake"))
     channel = MagicMock()
@@ -569,7 +569,7 @@ class TestOriginIsolation:
     _placeholder_reached(interface, scopes_seen, turn_a_in_flight)
 
     async def _stream(_text: str):
-      from sr2_spectre.events import AgentTextDelta
+      from spctr.events import AgentTextDelta
 
       scope = turn_scope.get()
       entered.put_nowait((scope.origin, scope.guild_id))

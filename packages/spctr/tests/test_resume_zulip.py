@@ -8,12 +8,12 @@ import yaml
 from sr2.models import TextBlock
 from sr2.protocols.llm import StreamEvent
 
-from sr2_spectre.agent import Agent
-from sr2_spectre.config import ResumeConfig, SpectreConfig
-from sr2_spectre.interfaces.zulip.client import ZulipCredentials
-from sr2_spectre.interfaces.zulip.config import ZulipConfig
-from sr2_spectre.interfaces.zulip.direct import DMessage, ZulipDMInterface
-from sr2_spectre.interfaces.zulip.interface import ZulipInterface
+from spctr.agent import Agent
+from spctr.config import ResumeConfig, SpctrConfig
+from spctr.interfaces.zulip.client import ZulipCredentials
+from spctr.interfaces.zulip.config import ZulipConfig
+from spctr.interfaces.zulip.direct import DMessage, ZulipDMInterface
+from spctr.interfaces.zulip.interface import ZulipInterface
 
 
 MARKER = "[This turn was interrupted by a restart before it finished.]"
@@ -53,7 +53,7 @@ class FakeClient:
 
 
 def config(path, enabled=True):
-    return SpectreConfig(
+    return SpctrConfig(
         agent={"name": "miranda", "resume": {"enabled": enabled}},
         models={"default": {"model": "test-model"}},
         pipeline={"layers": [{"name": "conversation", "target": "messages",
@@ -64,7 +64,7 @@ def config(path, enabled=True):
 
 async def start(monkeypatch, path, mode="topic", enabled=True):
     llm = FakeLLM()
-    monkeypatch.setattr("sr2_spectre.live_llm.LiteLLMCallable", lambda **kw: llm)
+    monkeypatch.setattr("spctr.live_llm.LiteLLMCallable", lambda **kw: llm)
     agent = Agent(config(path, enabled))
     zulip = ZulipConfig(zuliprc="unused", api_url="https://zulip.example", channels=[2],
                         edit_stream_interval=0, mode="direct" if mode == "dm" else "stream",

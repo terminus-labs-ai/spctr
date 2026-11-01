@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from sr2_spectre.interfaces.discord.session_map import ChannelSession, SessionMap
+from spctr.interfaces.discord.session_map import ChannelSession, SessionMap
 
 
 class TestChannelSession:

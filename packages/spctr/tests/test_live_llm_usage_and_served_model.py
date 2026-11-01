@@ -15,8 +15,8 @@ import pytest
 from sr2.models import Message, TextBlock, TokenUsage
 from sr2.protocols.llm import CompletionRequest, StreamEvent
 
-from sr2_spectre.config import ModelConfig
-from sr2_spectre.live_llm import LiveLLM, LoggedLLM
+from spctr.config import ModelConfig
+from spctr.live_llm import LiveLLM, LoggedLLM
 
 REQUEST = CompletionRequest(
     messages=[Message(role="user", content=[TextBlock(text="hi")])]
@@ -52,7 +52,7 @@ class RecordingLog:
 
 def _live_llm(inner: FakeInner) -> LiveLLM:
     cfg = ModelConfig(model="pool-name", base_url="http://test:8000")
-    with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=inner):
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=inner):
         return LiveLLM(cfg)
 
 

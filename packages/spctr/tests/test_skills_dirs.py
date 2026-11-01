@@ -16,12 +16,12 @@ from unittest.mock import patch
 
 import pytest
 
-from sr2_spectre.config import (
+from spctr.config import (
     AgentConfig,
     ModelConfig,
-    SpectreConfig,
+    SpctrConfig,
 )
-from sr2_spectre.skills.core import (
+from spctr.skills.core import (
     Skill,
     discover_skills,
     discover_skills_in_dir,
@@ -74,9 +74,9 @@ No frontmatter here.
 """
 
 
-def _base_config(skills_dirs: list[str] | None = None) -> SpectreConfig:
-    """Build a minimal SpectreConfig for testing."""
-    return SpectreConfig(
+def _base_config(skills_dirs: list[str] | None = None) -> SpctrConfig:
+    """Build a minimal SpctrConfig for testing."""
+    return SpctrConfig(
         agent=AgentConfig(
             name="test",
             tools=[],
@@ -95,7 +95,7 @@ def _base_config(skills_dirs: list[str] | None = None) -> SpectreConfig:
                     "name": "tools",
                     "target": "tools",
                     "resolvers": [],
-                    "tool_providers": [{"type": "spectre_tools"}],
+                    "tool_providers": [{"type": "spctr_tools"}],
                 },
                 {
                     "name": "conversation",
@@ -115,7 +115,7 @@ class TestParseSkillFrontmatter:
     """_parse_skill_frontmatter extracts skills from markdown with frontmatter."""
 
     def test_valid_skill(self, tmp_path: Path):
-        from sr2_spectre.skills.core import _parse_skill_frontmatter
+        from spctr.skills.core import _parse_skill_frontmatter
 
         f = tmp_path / "skill.md"
         f.write_text(_SKILL_WITH_FRONTMATTER)
@@ -129,7 +129,7 @@ class TestParseSkillFrontmatter:
         assert "This is the skill body content" in skill.content
 
     def test_minimal_skill(self, tmp_path: Path):
-        from sr2_spectre.skills.core import _parse_skill_frontmatter
+        from spctr.skills.core import _parse_skill_frontmatter
 
         f = tmp_path / "skill.md"
         skill = _parse_skill_frontmatter(_SKILL_MINIMAL, f)
@@ -141,7 +141,7 @@ class TestParseSkillFrontmatter:
         assert "Minimal skill content" in skill.content
 
     def test_no_name_returns_none(self, tmp_path: Path, caplog):
-        from sr2_spectre.skills.core import _parse_skill_frontmatter
+        from spctr.skills.core import _parse_skill_frontmatter
 
         f = tmp_path / "skill.md"
         with caplog.at_level(logging.WARNING):
@@ -150,7 +150,7 @@ class TestParseSkillFrontmatter:
         assert "No 'name' in frontmatter" in caplog.text
 
     def test_no_frontmatter_returns_none(self, tmp_path: Path, caplog):
-        from sr2_spectre.skills.core import _parse_skill_frontmatter
+        from spctr.skills.core import _parse_skill_frontmatter
 
         f = tmp_path / "skill.md"
         with caplog.at_level(logging.WARNING):
@@ -159,7 +159,7 @@ class TestParseSkillFrontmatter:
         assert "No frontmatter" in caplog.text
 
     def test_bad_yaml_returns_none(self, tmp_path: Path, caplog):
-        from sr2_spectre.skills.core import _parse_skill_frontmatter
+        from spctr.skills.core import _parse_skill_frontmatter
 
         f = tmp_path / "skill.md"
         with caplog.at_level(logging.WARNING):
@@ -169,7 +169,7 @@ class TestParseSkillFrontmatter:
 
     def test_tags_as_string(self, tmp_path: Path):
         """Tags can be a comma-separated string in frontmatter."""
-        from sr2_spectre.skills.core import _parse_skill_frontmatter
+        from spctr.skills.core import _parse_skill_frontmatter
 
         content = """\
 ---
@@ -275,7 +275,7 @@ class TestRuntimeSkillsDirsBootstrap:
     """Runtime discovers skills from skills_dirs during bootstrap."""
 
     def test_skills_dirs_loaded(self, tmp_path: Path):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -283,7 +283,7 @@ class TestRuntimeSkillsDirsBootstrap:
 
         cfg = _base_config(skills_dirs=[str(skills_dir)])
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "my-awesome-skill" in runtime.skill_registry
@@ -294,7 +294,7 @@ class TestRuntimeSkillsDirsBootstrap:
 
     def test_skills_dirs_and_default_coexist(self, tmp_path: Path):
         """Discovered skills and DEFAULT_SKILLS both present."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -302,7 +302,7 @@ class TestRuntimeSkillsDirsBootstrap:
 
         cfg = _base_config(skills_dirs=[str(skills_dir)])
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Builtin should still be there
@@ -312,7 +312,7 @@ class TestRuntimeSkillsDirsBootstrap:
 
     def test_skills_dirs_can_override_default(self, tmp_path: Path):
         """A discovered skill with the same name as a default overwrites it."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -329,7 +329,7 @@ Custom conventions content.
 
         cfg = _base_config(skills_dirs=[str(skills_dir)])
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         skill = runtime.skill_registry.get("sr2-conventions")
@@ -339,11 +339,11 @@ Custom conventions content.
 
     def test_skills_dirs_empty(self, tmp_path: Path):
         """Empty skills_dirs doesn't crash."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         cfg = _base_config(skills_dirs=[])
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Only defaults should be present
@@ -352,7 +352,7 @@ Custom conventions content.
 
     def test_load_skill_tool_sees_discovered_skills(self, tmp_path: Path):
         """The load_skill tool can discover and load discovered skills."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -360,7 +360,7 @@ Custom conventions content.
 
         cfg = _base_config(skills_dirs=[str(skills_dir)])
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Verify via the load_skill tool
@@ -373,7 +373,7 @@ Custom conventions content.
 
     def test_load_skill_list_includes_discovered(self, tmp_path: Path):
         """Listing skills includes discovered ones."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
@@ -381,7 +381,7 @@ Custom conventions content.
 
         cfg = _base_config(skills_dirs=[str(skills_dir)])
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         spec = runtime.registry._tools["load_skill"]
@@ -411,8 +411,8 @@ class TestAgentConfigSkillsDirs:
         assert "~/.claude/skills" in agent.skills_dirs
         assert "/opt/skills" in agent.skills_dirs
 
-    def test_in_spectre_config(self):
-        cfg = SpectreConfig(
+    def test_in_spctr_config(self):
+        cfg = SpctrConfig(
             agent=AgentConfig(
                 name="test",
                 skills_dirs=["/custom/skills"],
@@ -439,8 +439,8 @@ class TestPerFileAndDirsCoexist:
     """Per-file agent.skills[] and agent.skills_dirs[] both work."""
 
     def test_both_paths_loaded(self, tmp_path: Path):
-        from sr2_spectre.runtime import Runtime
-        from sr2_spectre.config import SkillConfig
+        from spctr.runtime import Runtime
+        from spctr.config import SkillConfig
 
         # Create a skill file for per-file config
         per_file_skill = tmp_path / "per-file.md"
@@ -460,7 +460,7 @@ class TestPerFileAndDirsCoexist:
             )
         ]
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "per-file-skill" in runtime.skill_registry
@@ -469,8 +469,8 @@ class TestPerFileAndDirsCoexist:
 
     def test_per_file_overrides_discovered(self, tmp_path: Path):
         """Per-file skills[] loaded after skills_dirs, so they can override."""
-        from sr2_spectre.runtime import Runtime
-        from sr2_spectre.config import SkillConfig
+        from spctr.runtime import Runtime
+        from spctr.config import SkillConfig
 
         # Create a discovered skill named "override-target"
         skills_dir = tmp_path / "discovered"
@@ -500,7 +500,7 @@ Discovered content.
             )
         ]
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         skill = runtime.skill_registry.get("override-target")
@@ -518,15 +518,15 @@ Discovered content.
 class TestPerFileSkillsEnvVar:
     """Runtime applies per-file path rules at startup and on reload."""
 
-    def _runtime(self, cfg: SpectreConfig):
-        from sr2_spectre.runtime import Runtime
+    def _runtime(self, cfg: SpctrConfig):
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             return Runtime(config=cfg)
 
     @staticmethod
-    def _config_with_skill(name: str, path: str) -> SpectreConfig:
-        from sr2_spectre.config import SkillConfig
+    def _config_with_skill(name: str, path: str) -> SpctrConfig:
+        from spctr.config import SkillConfig
 
         cfg = _base_config()
         cfg.agent.skills = [SkillConfig(name=name, path=path)]
@@ -639,30 +639,30 @@ class TestDeriveDescription:
     """_derive_description produces a usable, non-empty description."""
 
     def test_first_paragraph_after_heading(self):
-        from sr2_spectre.skills.core import _derive_description
+        from spctr.skills.core import _derive_description
 
         body = "# Heading\n\nThe first real paragraph.\n\nA second one.\n"
         assert _derive_description(body, "x") == "The first real paragraph."
 
     def test_skips_fenced_code(self):
-        from sr2_spectre.skills.core import _derive_description
+        from spctr.skills.core import _derive_description
 
         body = "# Heading\n\n```glsl\nshader_type canvas_item;\n```\n\nProse at last.\n"
         assert _derive_description(body, "x") == "Prose at last."
 
     def test_joins_wrapped_lines_of_one_paragraph(self):
-        from sr2_spectre.skills.core import _derive_description
+        from spctr.skills.core import _derive_description
 
         body = "Line one\nline two\n\nSecond paragraph.\n"
         assert _derive_description(body, "x") == "Line one line two"
 
     def test_strips_blockquote_marker(self):
-        from sr2_spectre.skills.core import _derive_description
+        from spctr.skills.core import _derive_description
 
         assert _derive_description("> Quoted intro.\n", "x") == "Quoted intro."
 
     def test_truncates_long_paragraph(self):
-        from sr2_spectre.skills.core import _DESCRIPTION_MAX_CHARS, _derive_description
+        from spctr.skills.core import _DESCRIPTION_MAX_CHARS, _derive_description
 
         body = "word " * 200
         out = _derive_description(body, "x")
@@ -670,14 +670,14 @@ class TestDeriveDescription:
         assert out.endswith("…")
 
     def test_last_resort_when_no_prose(self):
-        from sr2_spectre.skills.core import _derive_description
+        from spctr.skills.core import _derive_description
 
         assert _derive_description("# Only a heading\n", "my-skill") == "Skill: my-skill"
         assert _derive_description("", "my-skill") == "Skill: my-skill"
 
     def test_never_returns_empty(self):
         """Skill.__post_init__ raises on an empty description."""
-        from sr2_spectre.skills.core import _derive_description
+        from spctr.skills.core import _derive_description
 
         for body in ("", "   \n\n  ", "#\n", "```\ncode\n```\n"):
             assert _derive_description(body, "n")
@@ -687,7 +687,7 @@ class TestBundledSkillParsing:
     """_parse_skill_frontmatter is lenient only when given a fallback_name."""
 
     def test_frontmatter_wins_over_path(self, tmp_path: Path):
-        from sr2_spectre.skills.core import _parse_skill_frontmatter
+        from spctr.skills.core import _parse_skill_frontmatter
 
         f = _bundle(tmp_path, "dir-name", _BUNDLED_WITH_FRONTMATTER)
         skill = _parse_skill_frontmatter(
@@ -700,7 +700,7 @@ class TestBundledSkillParsing:
         assert skill.tags == ("alpha",)
 
     def test_no_frontmatter_named_from_directory(self, tmp_path: Path):
-        from sr2_spectre.skills.core import _parse_skill_frontmatter
+        from spctr.skills.core import _parse_skill_frontmatter
 
         f = _bundle(tmp_path, "godot-shader", _BUNDLED_NO_FRONTMATTER)
         skill = _parse_skill_frontmatter(
@@ -717,7 +717,7 @@ class TestBundledSkillParsing:
         assert skill.content == _BUNDLED_NO_FRONTMATTER
 
     def test_frontmatter_without_name_falls_back(self, tmp_path: Path):
-        from sr2_spectre.skills.core import _parse_skill_frontmatter
+        from spctr.skills.core import _parse_skill_frontmatter
 
         f = _bundle(tmp_path, "bundle-dir", _SKILL_NO_NAME)
         skill = _parse_skill_frontmatter(
@@ -729,7 +729,7 @@ class TestBundledSkillParsing:
         assert skill.description == "Has no name"
 
     def test_bad_yaml_falls_back(self, tmp_path: Path):
-        from sr2_spectre.skills.core import _parse_skill_frontmatter
+        from spctr.skills.core import _parse_skill_frontmatter
 
         f = _bundle(tmp_path, "bundle-dir", _SKILL_BAD_YAML)
         skill = _parse_skill_frontmatter(
@@ -739,7 +739,7 @@ class TestBundledSkillParsing:
         assert skill.name == "bundle-dir"
 
     def test_non_mapping_frontmatter_falls_back(self, tmp_path: Path):
-        from sr2_spectre.skills.core import _parse_skill_frontmatter
+        from spctr.skills.core import _parse_skill_frontmatter
 
         text = "---\n- a\n- b\n---\nBody prose.\n"
         f = _bundle(tmp_path, "bundle-dir", text)
@@ -749,7 +749,7 @@ class TestBundledSkillParsing:
         assert skill.description == "Body prose."
 
     def test_whitespace_only_name_falls_back(self, tmp_path: Path):
-        from sr2_spectre.skills.core import _parse_skill_frontmatter
+        from spctr.skills.core import _parse_skill_frontmatter
 
         text = "---\nname: '   '\n---\nBody prose.\n"
         f = _bundle(tmp_path, "bundle-dir", text)
@@ -759,7 +759,7 @@ class TestBundledSkillParsing:
 
     def test_flat_form_still_requires_frontmatter(self, tmp_path: Path, caplog):
         """No fallback_name means the old strict behavior, unchanged."""
-        from sr2_spectre.skills.core import _parse_skill_frontmatter
+        from spctr.skills.core import _parse_skill_frontmatter
 
         f = tmp_path / "notes.md"
         with caplog.at_level(logging.WARNING):
@@ -845,7 +845,7 @@ class TestBundledSkillDiscovery:
 
     def test_last_registration_wins_within_a_dir(self, tmp_path: Path):
         """A flat file and a bundle claiming one name: bundled is registered last."""
-        from sr2_spectre.skills.core import SkillRegistry
+        from spctr.skills.core import SkillRegistry
 
         (tmp_path / "dup.md").write_text(
             "---\nname: dup\ndescription: from flat\n---\nBody.\n"
@@ -905,13 +905,13 @@ class TestGrindsourcedShapedTree:
         assert by_name["godot-interactive"].description == "Live editor workflows."
 
     def test_reaches_the_registry_through_skills_dirs(self, tmp_path: Path):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         skills_dir = tmp_path / ".agents" / "skills"
         _bundle(skills_dir, "godot-shader", _BUNDLED_NO_FRONTMATTER)
 
         cfg = _base_config(skills_dirs=[str(skills_dir)])
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "godot-shader" in runtime.skill_registry
@@ -936,14 +936,14 @@ class TestDefaultSkillsOptOut:
     """Builtin skills describe SR2 itself; a guest-facing agent can withhold them."""
 
     def _runtime(self, cfg):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             return Runtime(config=cfg)
 
     def test_defaults_registered_by_default(self):
         """Unchanged behavior for every agent that does not opt out."""
-        from sr2_spectre.skills.builtin import DEFAULT_SKILLS
+        from spctr.skills.builtin import DEFAULT_SKILLS
 
         runtime = self._runtime(_base_config())
 
@@ -952,7 +952,7 @@ class TestDefaultSkillsOptOut:
         assert "load_skill" in runtime.registry
 
     def test_opt_out_withholds_builtins(self):
-        from sr2_spectre.skills.builtin import DEFAULT_SKILLS
+        from spctr.skills.builtin import DEFAULT_SKILLS
 
         cfg = _base_config()
         cfg.agent.default_skills = False
@@ -1012,14 +1012,14 @@ class TestDefaultSkillsOptOut:
         assert "load_skill" in runtime.registry
 
     def test_flag_defaults_true_on_agent_config(self):
-        from sr2_spectre.config import AgentConfig
+        from spctr.config import AgentConfig
 
         assert AgentConfig().default_skills is True
 
     def test_flag_round_trips_through_yaml(self, tmp_path: Path):
         import yaml
 
-        from sr2_spectre.config import AgentConfig
+        from spctr.config import AgentConfig
 
         raw = yaml.safe_load("name: brokkr\ndefault_skills: false\n")
         assert AgentConfig(**raw).default_skills is False

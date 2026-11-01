@@ -16,17 +16,17 @@ from unittest.mock import patch
 
 import pytest
 
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.runtime import Runtime
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.runtime import Runtime
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _config_with_plan_and_compaction() -> SpectreConfig:
+def _config_with_plan_and_compaction() -> SpctrConfig:
     """Config with both a plan resolver AND a step_compaction transformer."""
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="test", tools=[]),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline={
@@ -61,9 +61,9 @@ def _config_with_plan_and_compaction() -> SpectreConfig:
     )
 
 
-def _config_with_plan_no_compaction() -> SpectreConfig:
+def _config_with_plan_no_compaction() -> SpctrConfig:
     """Config with a plan resolver but NO step_compaction transformer."""
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="test", tools=[]),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline={
@@ -90,9 +90,9 @@ def _config_with_plan_no_compaction() -> SpectreConfig:
     )
 
 
-def _config_no_plan_no_compaction() -> SpectreConfig:
+def _config_no_plan_no_compaction() -> SpctrConfig:
     """Config with neither plan resolver nor step_compaction transformer."""
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="test", tools=[]),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline={
@@ -121,8 +121,8 @@ class TestBothConfigured:
         """When plan resolver AND step_compaction are both configured, no warning is emitted."""
         cfg = _config_with_plan_and_compaction()
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
-            with patch("sr2_spectre.runtime.logger") as mock_logger:
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            with patch("spctr.runtime.logger") as mock_logger:
                 runtime = Runtime(config=cfg)
 
         # Should NOT warn about step_compaction
@@ -142,8 +142,8 @@ class TestPlanWithoutCompaction:
         """When a plan resolver exists but no step_compaction transformer, a WARNING is emitted."""
         cfg = _config_with_plan_no_compaction()
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
-            with patch("sr2_spectre.runtime.logger") as mock_logger:
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            with patch("spctr.runtime.logger") as mock_logger:
                 runtime = Runtime(config=cfg)
 
         # Should emit exactly one warning mentioning step_compaction
@@ -159,8 +159,8 @@ class TestPlanWithoutCompaction:
         """The warning message names step_compaction and PlanResolver."""
         cfg = _config_with_plan_no_compaction()
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
-            with patch("sr2_spectre.runtime.logger") as mock_logger:
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            with patch("spctr.runtime.logger") as mock_logger:
                 runtime = Runtime(config=cfg)
 
         warning_calls = [
@@ -182,8 +182,8 @@ class TestNeitherConfigured:
         """When there's no plan resolver, the absence of step_compaction is not warned about."""
         cfg = _config_no_plan_no_compaction()
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
-            with patch("sr2_spectre.runtime.logger") as mock_logger:
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            with patch("spctr.runtime.logger") as mock_logger:
                 runtime = Runtime(config=cfg)
 
         warning_calls = [
@@ -210,7 +210,7 @@ class TestFindStepCompactionTransformer:
 
     def test_returns_false_with_other_transformers(self):
         """Returns False when only non-step_compaction transformers exist."""
-        cfg = SpectreConfig(
+        cfg = SpctrConfig(
             agent=AgentConfig(name="test", tools=[]),
             models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
             pipeline={
@@ -234,7 +234,7 @@ class TestFindStepCompactionTransformer:
 
     def test_finds_transformer_in_last_layer(self):
         """Finds step_compaction even when it's in a later layer."""
-        cfg = SpectreConfig(
+        cfg = SpctrConfig(
             agent=AgentConfig(name="test", tools=[]),
             models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
             pipeline={

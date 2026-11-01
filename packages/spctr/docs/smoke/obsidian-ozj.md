@@ -5,7 +5,7 @@
 ## Setup
 
 ```bash
-cd ~/git/sr2-spectre
+cd ~/git/spctr
 ```
 
 ## Scenarios

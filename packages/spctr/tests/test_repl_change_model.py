@@ -14,8 +14,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.interfaces.repl import (
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.interfaces.repl import (
     REPLInterface,
     render_change_model_command,
 )
@@ -26,9 +26,9 @@ from sr2_spectre.interfaces.repl import (
 # ---------------------------------------------------------------------------
 
 
-def _spectre_with_models(active: str = "default") -> SpectreConfig:
-    """A real SpectreConfig with two model entries, like the Discord tests."""
-    return SpectreConfig(
+def _spctr_with_models(active: str = "default") -> SpctrConfig:
+    """A real SpctrConfig with two model entries, like the Discord tests."""
+    return SpctrConfig(
         agent=AgentConfig(name="t"),
         models={
             "default": ModelConfig(model="m-default", base_url="http://default/v1"),
@@ -39,7 +39,7 @@ def _spectre_with_models(active: str = "default") -> SpectreConfig:
     )
 
 
-def _agent_with_config(config: SpectreConfig) -> MagicMock:
+def _agent_with_config(config: SpctrConfig) -> MagicMock:
     """Mock agent whose apply_config really updates its config, like Agent.
 
     ``agent.config`` is deleted from the mock up front so assignment above
@@ -50,7 +50,7 @@ def _agent_with_config(config: SpectreConfig) -> MagicMock:
     del agent.config
     agent.config = config
 
-    def _apply(new: SpectreConfig) -> list[str]:
+    def _apply(new: SpctrConfig) -> list[str]:
         agent.config = new
         return ["models"]
 
@@ -177,7 +177,7 @@ async def test_bare_change_model_lists_models_without_side_effects(
 ) -> None:
     pointer = tmp_path / "active_model"
     monkeypatch.setenv("SR2_ACTIVE_MODEL_FILE", str(pointer))
-    config = _spectre_with_models("default")
+    config = _spctr_with_models("default")
     agent = _agent_with_config(config)
     interface = REPLInterface()
     buf = _console_capturing(interface)
@@ -201,7 +201,7 @@ async def test_bare_change_model_lists_models_without_side_effects(
 async def test_switch_applies_config_and_writes_pointer(tmp_path, monkeypatch) -> None:
     pointer = tmp_path / "active_model"
     monkeypatch.setenv("SR2_ACTIVE_MODEL_FILE", str(pointer))
-    config = _spectre_with_models("default")
+    config = _spctr_with_models("default")
     agent = _agent_with_config(config)
     interface = REPLInterface()
     buf = _console_capturing(interface)
@@ -225,7 +225,7 @@ async def test_switch_passes_copied_config_to_apply(tmp_path, monkeypatch) -> No
     """The REPL must not mutate the config object in place — it copies."""
     pointer = tmp_path / "active_model"
     monkeypatch.setenv("SR2_ACTIVE_MODEL_FILE", str(pointer))
-    config = _spectre_with_models("default")
+    config = _spctr_with_models("default")
     agent = _agent_with_config(config)
     interface = REPLInterface()
     _console_capturing(interface)
@@ -247,7 +247,7 @@ async def test_switch_passes_copied_config_to_apply(tmp_path, monkeypatch) -> No
 @pytest.mark.asyncio
 async def test_switch_without_pointer_is_session_only(monkeypatch) -> None:
     monkeypatch.delenv("SR2_ACTIVE_MODEL_FILE", raising=False)
-    agent = _agent_with_config(_spectre_with_models("default"))
+    agent = _agent_with_config(_spctr_with_models("default"))
     interface = REPLInterface()
     buf = _console_capturing(interface)
 
@@ -267,7 +267,7 @@ async def test_switch_without_pointer_is_session_only(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_pointer_write_failure_changes_nothing(monkeypatch) -> None:
     monkeypatch.setenv("SR2_ACTIVE_MODEL_FILE", "/nonexistent-dir/active_model")
-    config = _spectre_with_models("default")
+    config = _spctr_with_models("default")
     agent = _agent_with_config(config)
     interface = REPLInterface()
     buf = _console_capturing(interface)
@@ -292,7 +292,7 @@ async def test_unknown_model_lists_available_and_changes_nothing(
 ) -> None:
     pointer = tmp_path / "active_model"
     monkeypatch.setenv("SR2_ACTIVE_MODEL_FILE", str(pointer))
-    config = _spectre_with_models("default")
+    config = _spctr_with_models("default")
     agent = _agent_with_config(config)
     interface = REPLInterface()
     buf = _console_capturing(interface)
@@ -316,7 +316,7 @@ async def test_unknown_model_lists_available_and_changes_nothing(
 async def test_selecting_active_model_is_a_noop(tmp_path, monkeypatch) -> None:
     pointer = tmp_path / "active_model"
     monkeypatch.setenv("SR2_ACTIVE_MODEL_FILE", str(pointer))
-    config = _spectre_with_models("default")
+    config = _spctr_with_models("default")
     agent = _agent_with_config(config)
     interface = REPLInterface()
     buf = _console_capturing(interface)
@@ -334,7 +334,7 @@ async def test_selecting_active_model_is_a_noop(tmp_path, monkeypatch) -> None:
 
 
 def test_change_model_in_commands_list() -> None:
-    from sr2_spectre.interfaces.repl import _COMMANDS
+    from spctr.interfaces.repl import _COMMANDS
 
     assert "/change-model" in _COMMANDS
 
@@ -343,7 +343,7 @@ def test_change_model_offered_by_completer() -> None:
     from prompt_toolkit.completion import CompleteEvent
     from prompt_toolkit.document import Document
 
-    from sr2_spectre.interfaces.repl import _COMMANDS, _SlashCompleter
+    from spctr.interfaces.repl import _COMMANDS, _SlashCompleter
 
     doc = Document(text="/change", cursor_position=len("/change"))
     texts = [
@@ -364,7 +364,7 @@ async def test_help_lists_change_model() -> None:
 
 
 def test_module_docstring_lists_change_model() -> None:
-    import sr2_spectre.interfaces.repl as repl_mod
+    import spctr.interfaces.repl as repl_mod
 
     assert "/change-model" in (repl_mod.__doc__ or "")
 
@@ -377,7 +377,7 @@ def test_module_docstring_lists_change_model() -> None:
 @pytest.mark.asyncio
 async def test_command_dispatched_case_insensitively() -> None:
     """The run loop lowercases the command token; the handler must match."""
-    monkey = _agent_with_config(_spectre_with_models("default"))
+    monkey = _agent_with_config(_spctr_with_models("default"))
     interface = REPLInterface()
     buf = _console_capturing(interface)
 
@@ -387,7 +387,7 @@ async def test_command_dispatched_case_insensitively() -> None:
 
 
 def test_pointer_path_reads_env(monkeypatch) -> None:
-    from sr2_spectre.interfaces.repl import _active_model_pointer
+    from spctr.interfaces.repl import _active_model_pointer
 
     monkeypatch.delenv("SR2_ACTIVE_MODEL_FILE", raising=False)
     assert _active_model_pointer() is None

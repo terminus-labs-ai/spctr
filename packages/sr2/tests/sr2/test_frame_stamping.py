@@ -584,7 +584,7 @@ class TestOriginAwareFrameProvider:
         instead of the ambient frame. On close, it falls back to ambient.
 
         This is a unit test of the provider seam — the actual FrameRouter logic
-        lives in sr2-spectre (spc-15). Here we simulate the routing table.
+        lives in spctr (spc-15). Here we simulate the routing table.
         """
         from sr2.orchestrator import SR2
 

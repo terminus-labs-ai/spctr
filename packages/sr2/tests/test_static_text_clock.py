@@ -1,6 +1,6 @@
 """Tests for sr2-117 — clock placeholders in StaticTextResolver (AC1).
 
-Covers spec FR1–FR3 (sr2-spectre/agent-reminders):
+Covers spec FR1–FR3 (spctr/agent-reminders):
   FR1: optional ``timezone`` config key holding an IANA name; an invalid
        name raises ValueError when the resolver is built.
   FR2: with ``timezone`` set, ``{date}`` renders the ISO date in that zone;
@@ -287,9 +287,9 @@ class TestDateTimezoneInteraction:
         )
         resolver = StaticTextResolver(
             make_config("{area} @ {time}", timezone="America/Phoenix"),
-            run_context_provider=lambda: {"area": "sr2-spectre"},
+            run_context_provider=lambda: {"area": "spctr"},
         )
 
         text = await resolve_text(resolver)
 
-        assert text == "sr2-spectre @ 16:40 MST (UTC-07:00)"
+        assert text == "spctr @ 16:40 MST (UTC-07:00)"

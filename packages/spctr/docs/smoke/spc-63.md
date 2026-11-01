@@ -9,7 +9,7 @@ fails fast with clear errors — never at call time.
 ## Prerequisites
 
 - Python 3.12+ with project deps installed (`uv sync` or `uv run`)
-- Working directory: project root (`sr2-spectre`)
+- Working directory: project root (`spctr`)
 
 ## Smoke Steps
 
@@ -25,10 +25,10 @@ uv run pytest tests/test_image_scenarios.py -v
 
 ```bash
 uv run python -c "
-from sr2_spectre.tools.image_scenarios import load_image_scenarios
+from spctr.tools.image_scenarios import load_image_scenarios
 from pathlib import Path
 
-config_path = Path('src/sr2_spectre/resources/scenarios/image_scenarios.yaml')
+config_path = Path('src/spctr/resources/scenarios/image_scenarios.yaml')
 registry = load_image_scenarios(config_path)
 
 print('Scenarios:', registry.scenario_names())
@@ -50,7 +50,7 @@ Scenarios: ['boudoir', 'rooftop_scene', 'selfie']
 
 ```bash
 uv run python -c "
-from sr2_spectre.tools.image_scenarios import ImageScenarioRegistry, ScenarioConfigError
+from spctr.tools.image_scenarios import ImageScenarioRegistry, ScenarioConfigError
 import tempfile, os
 
 # Bad model reference
@@ -101,7 +101,7 @@ PASS: caught error: Scenario validation failed:
 
 ```bash
 uv run python -c "
-from sr2_spectre.tools.image_scenarios import ImageScenarioRegistry, ScenarioConfigError
+from spctr.tools.image_scenarios import ImageScenarioRegistry, ScenarioConfigError
 import tempfile, os
 
 # Model doesn't support img2img
@@ -161,6 +161,6 @@ PASS: caught error: Scenario validation failed:
 
 ## Files Changed
 
-- `src/sr2_spectre/tools/image_scenarios.py` — loader + validation module
-- `src/sr2_spectre/resources/scenarios/image_scenarios.yaml` — sample config
+- `src/spctr/tools/image_scenarios.py` — loader + validation module
+- `src/spctr/resources/scenarios/image_scenarios.yaml` — sample config
 - `tests/test_image_scenarios.py` — 37 tests

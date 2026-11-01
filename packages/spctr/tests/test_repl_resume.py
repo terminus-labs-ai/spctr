@@ -40,10 +40,10 @@ from sr2.pipeline.provenance import (
     SessionSummary,
     TURN_ARCHIVE_LAYER,
 )
-from sr2_spectre.agent import Agent
-from sr2_spectre.config import SpectreConfig
-from sr2_spectre.interfaces import repl as repl_mod
-from sr2_spectre.interfaces.repl import (
+from spctr.agent import Agent
+from spctr.config import SpctrConfig
+from spctr.interfaces import repl as repl_mod
+from spctr.interfaces.repl import (
     _RESUME_LIST_LIMIT,
     _RESUME_NAV,
     _RESUME_SNAPSHOT_LIMIT,
@@ -55,8 +55,8 @@ from sr2_spectre.interfaces.repl import (
     render_session_listing,
     resolve_resume_target,
 )
-from sr2_spectre.resume import load_resumable_history
-from sr2_spectre.runtime import Runtime
+from spctr.resume import load_resumable_history
+from spctr.runtime import Runtime
 
 KEY_RE = re.compile(r"^miranda-repl-\d{8}-\d{6}$")
 
@@ -69,8 +69,8 @@ MARKER = "[This turn was interrupted by a restart before it finished.]"
 # ---------------------------------------------------------------------------
 
 
-def _config() -> SpectreConfig:
-    return SpectreConfig(
+def _config() -> SpctrConfig:
+    return SpctrConfig(
         agent={"name": "miranda"},
         models={"default": {"model": "m", "base_url": "http://x/v1"}},
         pipeline={"layers": []},
@@ -749,7 +749,7 @@ def test_ac13_out_of_range_index_errors_without_switching(tmp_path, monkeypatch)
 
 
 def test_resume_in_command_list_and_help():
-    from sr2_spectre.interfaces.repl import _COMMANDS, _HELP
+    from spctr.interfaces.repl import _COMMANDS, _HELP
 
     assert "/resume" in _COMMANDS
     assert "/resume" in _HELP

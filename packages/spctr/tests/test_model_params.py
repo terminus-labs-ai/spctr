@@ -12,7 +12,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig, load_config
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig, load_config
 
 
 # ---------------------------------------------------------------------------
@@ -31,11 +31,11 @@ def _minimal_pipeline_dict() -> dict:
     }
 
 
-def _make_config(params: dict | None = None) -> SpectreConfig:
+def _make_config(params: dict | None = None) -> SpctrConfig:
     model_kwargs = {"model": "test-model", "base_url": "http://test:8000"}
     if params is not None:
         model_kwargs["params"] = params
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="test"),
         models={"default": ModelConfig(**model_kwargs)},
         pipeline=_minimal_pipeline_dict(),
@@ -84,11 +84,11 @@ class TestModelConfigParams:
 
 class TestRuntimeForwardsParams:
     def test_runtime_passes_params_to_llm(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         cfg = _make_config(params={"temperature": 0.2, "top_p": 0.9})
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             runtime = Runtime(config=cfg)
 
@@ -102,11 +102,11 @@ class TestRuntimeForwardsParams:
 
     def test_runtime_empty_params_no_extra_kwargs(self):
         """When params is empty (default), Runtime passes model+base_url plus the default max_tokens."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         cfg = _make_config()  # params defaults to {}
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             runtime = Runtime(config=cfg)
 
@@ -118,7 +118,7 @@ class TestRuntimeForwardsParams:
 
     def test_runtime_forwards_all_param_types(self):
         """Params with various value types are forwarded correctly."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         cfg = _make_config(params={
             "temperature": 0.85,
@@ -127,7 +127,7 @@ class TestRuntimeForwardsParams:
             "stream_options": {"include_usage": True},
         })
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             runtime = Runtime(config=cfg)
 
@@ -145,7 +145,7 @@ class TestRuntimeForwardsParams:
 class TestBackwardCompatibility:
     def test_existing_config_without_params_works(self):
         """A config with only model+base_url (no params) still constructs fine."""
-        cfg = SpectreConfig(
+        cfg = SpctrConfig(
             agent=AgentConfig(name="test"),
             models={"default": ModelConfig(model="gpt-4o", base_url="http://x")},
             pipeline=_minimal_pipeline_dict(),
@@ -154,15 +154,15 @@ class TestBackwardCompatibility:
 
     def test_runtime_no_params_preserves_behavior(self):
         """Runtime with no params passes model+base_url plus the default max_tokens."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
-        cfg = SpectreConfig(
+        cfg = SpctrConfig(
             agent=AgentConfig(name="test"),
             models={"default": ModelConfig(model="gpt-4o", base_url="http://x")},
             pipeline=_minimal_pipeline_dict(),
         )
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             runtime = Runtime(config=cfg)
 

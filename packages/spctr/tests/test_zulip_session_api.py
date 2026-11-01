@@ -28,10 +28,10 @@ import pytest
 
 from sr2.pipeline.tracing import CollectingTracer
 from sr2.protocols.llm import CompletionRequest, StreamEvent
-from sr2_spectre.agent import Agent
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.session import Session
+from spctr.agent import Agent
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.core import RunContext, RunMode
+from spctr.session import Session
 
 SYSTEM_MARKER = "SYSTEM-PROMPT-MARKER-7f3a"
 
@@ -45,12 +45,12 @@ SYSTEM_MARKER = "SYSTEM-PROMPT-MARKER-7f3a"
 def _isolated_env(tmp_path, monkeypatch) -> None:
     """Isolate SR2_HOME and disable inherited persistence/pointer state."""
     monkeypatch.setenv("SR2_HOME", str(tmp_path / "sr2home"))
-    monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
+    monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
     monkeypatch.delenv("SR2_AREA", raising=False)
     monkeypatch.delenv("SR2_ACTIVE_MODEL_FILE", raising=False)
 
 
-def _config() -> SpectreConfig:
+def _config() -> SpctrConfig:
     """Minimal real pipeline: static system marker + shared tool provider.
 
     The marker is a synthetic string so every test can see, through the
@@ -58,7 +58,7 @@ def _config() -> SpectreConfig:
     context, exactly which conversation history a model call received —
     which is what makes history independence provable.
     """
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="miranda"),
         models={
             "default": ModelConfig(
@@ -78,7 +78,7 @@ def _config() -> SpectreConfig:
                     "name": "tools",
                     "target": "tools",
                     "resolvers": [],
-                    "tool_providers": [{"type": "spectre_tools"}],
+                    "tool_providers": [{"type": "spctr_tools"}],
                 },
                 {
                     "name": "conversation",
@@ -138,7 +138,7 @@ def _agent(
     tracer: CollectingTracer | None = None,
     session_id: str = "miranda-default",
 ) -> Agent:
-    with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=llm):
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=llm):
         return Agent(config=_config(), session_id=session_id, tracer=tracer)
 
 
@@ -550,7 +550,7 @@ class TestCreatedSessionTurnBehavior:
 
         assert result.text == "wrapped"
         assert result.tool_calls_executed == 1
-        # Spectre keeps the authoritative transcript: the user turn plus the
+        # spctr keeps the authoritative transcript: the user turn plus the
         # final assistant reply. The tool round-trip is proven through the
         # compiled request, not the history list.
         roles = [m.role for m in session.history]

@@ -30,7 +30,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sr2_spectre.mcp.client import MCPConnectionError
+from spctr.mcp.client import MCPConnectionError
 
 
 # ---------------------------------------------------------------------------
@@ -102,13 +102,13 @@ def _make_mock_session(
 def _patch_boundaries(transport_ctx: Any, session_ctx: Any) -> tuple:
     """Patch the transport factory and ClientSession at the client module level."""
     return (
-        patch("sr2_spectre.mcp.client.streamablehttp_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.streamablehttp_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     )
 
 
 def _make_client():
-    from sr2_spectre.mcp.client import MCPClient
+    from spctr.mcp.client import MCPClient
 
     return MCPClient("streamable-http", url="http://127.0.0.1:1/mcp")
 
@@ -287,7 +287,7 @@ async def test_connect_genuine_cancel_via_cancelling_marker_propagates() -> None
     """The same contract at the marker the implementation keys on: while
     asyncio.current_task().cancelling() > 0, a CancelledError escaping
     initialize() must propagate unchanged."""
-    from sr2_spectre.mcp.client import MCPClient
+    from spctr.mcp.client import MCPClient
 
     fake_task = MagicMock()
     fake_task.cancelling.return_value = 1
@@ -301,7 +301,7 @@ async def test_connect_genuine_cancel_via_cancelling_marker_propagates() -> None
     with (
         p_transport,
         p_session,
-        patch("sr2_spectre.mcp.client.asyncio.current_task", return_value=fake_task),
+        patch("spctr.mcp.client.asyncio.current_task", return_value=fake_task),
     ):
         client = MCPClient("streamable-http", url="http://127.0.0.1:1/mcp")
         with pytest.raises(asyncio.CancelledError):
@@ -315,7 +315,7 @@ async def test_connect_genuine_cancel_via_cancelling_marker_propagates() -> None
 async def test_connect_without_cancellation_still_returns_bridges() -> None:
     """With no cancellation anywhere, connect() must still succeed and return
     one bridge per tool."""
-    from sr2_spectre.mcp.tool_bridge import MCPToolBridge
+    from spctr.mcp.tool_bridge import MCPToolBridge
 
     transport_ctx = _RecordingCtx(value=_read_write_get_session_id())
     session_ctx = _RecordingCtx(
@@ -349,7 +349,7 @@ def _minimal_pipeline_dict() -> dict:
                 "name": "tools",
                 "target": "tools",
                 "resolvers": [],
-                "tool_providers": [{"type": "spectre_tools"}],
+                "tool_providers": [{"type": "spctr_tools"}],
             },
             {
                 "name": "conversation",
@@ -361,9 +361,9 @@ def _minimal_pipeline_dict() -> dict:
 
 
 def _make_runtime_config(**agent_kwargs: Any) -> Any:
-    from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
+    from spctr.config import AgentConfig, ModelConfig, SpctrConfig
 
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="test", **agent_kwargs),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline=_minimal_pipeline_dict(),
@@ -371,7 +371,7 @@ def _make_runtime_config(**agent_kwargs: Any) -> Any:
 
 
 def _stdio_server(name: str) -> Any:
-    from sr2_spectre.config import McpServerConfig
+    from spctr.config import McpServerConfig
 
     return McpServerConfig(name=name, type="stdio", command=[f"server_{name}"])
 
@@ -397,12 +397,12 @@ def _runtime_with_clients(mcp_servers: list[Any], clients: list[MagicMock]) -> A
     Uses the same wiring seam as tests/test_runtime.py (patching
     runtime.MCPClient); clients are handed out in config order.
     """
-    from sr2_spectre.runtime import Runtime
+    from spctr.runtime import Runtime
 
     cfg = _make_runtime_config(mcp_servers=mcp_servers)
     with (
-        patch("sr2_spectre.live_llm.LiteLLMCallable"),
-        patch("sr2_spectre.runtime.MCPClient", side_effect=list(clients)),
+        patch("spctr.live_llm.LiteLLMCallable"),
+        patch("spctr.runtime.MCPClient", side_effect=list(clients)),
     ):
         runtime = Runtime(config=cfg)
     return runtime
@@ -419,7 +419,7 @@ async def test_runtime_initialize_logs_warning_on_connection_error(
     )
     runtime = _runtime_with_clients([_stdio_server("down")], [failing])
 
-    with caplog.at_level(logging.WARNING, logger="sr2_spectre.runtime"):
+    with caplog.at_level(logging.WARNING, logger="spctr.runtime"):
         await runtime.initialize()  # must not raise
 
     assert any(

@@ -5,7 +5,7 @@ This file tests only the TurnResult dataclass, which is the public export
 plugins depend on.
 """
 
-from sr2_spectre.core import TurnResult
+from spctr.core import TurnResult
 
 
 def test_turn_result_defaults() -> None:

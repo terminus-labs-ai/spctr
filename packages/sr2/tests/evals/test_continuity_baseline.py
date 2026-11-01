@@ -1115,7 +1115,7 @@ async def test_r20_baseline_compiles_full_history_after_n_turns_and_product_unto
         "R20: the current-turn input must be delivered"
     )
     # The baseline runner leaves the product packages untouched.
-    proc = _git_rev(["status", "--porcelain", "--", "src/sr2", "src/sr2_spectre"])
+    proc = _git_rev(["status", "--porcelain", "--", "src/sr2", "src/spctr"])
     assert proc.stdout.strip() == "", (
         "R20: product packages must remain unmodified by the baseline; "
         f"git reports: {proc.stdout!r}"

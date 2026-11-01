@@ -17,7 +17,7 @@ import pytest
 
 from tests.conftest import _surviving_pids
 
-from sr2_spectre.interfaces.discord.handler import (
+from spctr.interfaces.discord.handler import (
     CommandContext,
     SlashCommand,
     _default_runner,
@@ -493,7 +493,7 @@ class TestProbeHarbingerStatus:
 # /model — pure render logic + /status model fields
 # ---------------------------------------------------------------------------
 
-from sr2_spectre.interfaces.discord.handler import render_model_command  # noqa: E402
+from spctr.interfaces.discord.handler import render_model_command  # noqa: E402
 
 
 class TestRenderModelCommand:

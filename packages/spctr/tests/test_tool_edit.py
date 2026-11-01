@@ -1,7 +1,7 @@
 """Tests for EditTool."""
 import pytest
 
-from sr2_spectre.tools.registry import ToolRegistry
+from spctr.tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -9,7 +9,7 @@ from sr2_spectre.tools.registry import ToolRegistry
 # ---------------------------------------------------------------------------
 
 def test_edit_class_attributes() -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     assert isinstance(EditTool.name, str) and EditTool.name
     assert isinstance(EditTool.description, str) and EditTool.description
@@ -17,13 +17,13 @@ def test_edit_class_attributes() -> None:
 
 
 def test_edit_name_is_edit() -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     assert EditTool.name == "edit"
 
 
 def test_edit_input_schema_properties() -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     props = EditTool.input_schema.get("properties", {})
     assert "path" in props
@@ -33,7 +33,7 @@ def test_edit_input_schema_properties() -> None:
 
 
 def test_edit_input_schema_required() -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     required = EditTool.input_schema.get("required", [])
     assert "path" in required
@@ -49,7 +49,7 @@ def test_edit_input_schema_required() -> None:
 
 def test_edit_registers_via_class_path() -> None:
     reg = ToolRegistry()
-    reg.register_from_class_path("sr2_spectre.tools.builtins.edit.EditTool")
+    reg.register_from_class_path("spctr.tools.builtins.edit.EditTool")
     assert "edit" in reg
 
 
@@ -59,20 +59,20 @@ def test_edit_registers_via_class_path() -> None:
 
 @pytest.mark.asyncio
 async def test_edit_replaces_unique_match(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     target = tmp_path / "file.txt"
     target.write_text("hello world", encoding="utf-8")
 
     tool = EditTool()
-    await tool(path=str(target), old_string="world", new_string="spectre")
+    await tool(path=str(target), old_string="world", new_string="spctr")
 
-    assert target.read_text(encoding="utf-8") == "hello spectre"
+    assert target.read_text(encoding="utf-8") == "hello spctr"
 
 
 @pytest.mark.asyncio
 async def test_edit_returns_confirmation_string(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     target = tmp_path / "file.txt"
     target.write_text("alpha beta gamma", encoding="utf-8")
@@ -85,7 +85,7 @@ async def test_edit_returns_confirmation_string(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_preserves_full_file_content(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     original = "line one\nNEEDLE here\nline three\ntrailing\n"
     target = tmp_path / "file.txt"
@@ -104,7 +104,7 @@ async def test_edit_preserves_full_file_content(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_zero_match_raises_value_error(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     target = tmp_path / "file.txt"
     target.write_text("hello world", encoding="utf-8")
@@ -116,7 +116,7 @@ async def test_edit_zero_match_raises_value_error(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_zero_match_does_not_modify_file(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     original = "untouched content\n"
     target = tmp_path / "file.txt"
@@ -135,7 +135,7 @@ async def test_edit_zero_match_does_not_modify_file(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_multi_match_raises_value_error(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     target = tmp_path / "file.txt"
     target.write_text("dup dup dup", encoding="utf-8")
@@ -147,7 +147,7 @@ async def test_edit_multi_match_raises_value_error(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_multi_match_does_not_modify_file(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     original = "dup dup dup"
     target = tmp_path / "file.txt"
@@ -166,7 +166,7 @@ async def test_edit_multi_match_does_not_modify_file(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_replace_all_replaces_every_occurrence(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     target = tmp_path / "file.txt"
     target.write_text("dup dup dup", encoding="utf-8")
@@ -179,7 +179,7 @@ async def test_edit_replace_all_replaces_every_occurrence(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_replace_all_returns_successfully_with_multiple_matches(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     target = tmp_path / "file.txt"
     target.write_text("a-a-a-a", encoding="utf-8")
@@ -193,7 +193,7 @@ async def test_edit_replace_all_returns_successfully_with_multiple_matches(tmp_p
 
 @pytest.mark.asyncio
 async def test_edit_replace_all_single_match(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     target = tmp_path / "file.txt"
     target.write_text("only one here", encoding="utf-8")
@@ -210,7 +210,7 @@ async def test_edit_replace_all_single_match(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_missing_file_raises_file_not_found(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     tool = EditTool()
     with pytest.raises(FileNotFoundError):
@@ -227,7 +227,7 @@ async def test_edit_missing_file_raises_file_not_found(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_old_string_at_start_preserves_rest(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     original = "START middle end\n"
     target = tmp_path / "file.txt"
@@ -241,7 +241,7 @@ async def test_edit_old_string_at_start_preserves_rest(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_old_string_at_end_preserves_rest(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     original = "begin middle FINISH"
     target = tmp_path / "file.txt"
@@ -255,7 +255,7 @@ async def test_edit_old_string_at_end_preserves_rest(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_preserves_surrounding_whitespace_and_newlines(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     original = "\n\n  indented TARGET line  \n\n\ttabbed\n"
     target = tmp_path / "file.txt"
@@ -274,7 +274,7 @@ async def test_edit_preserves_surrounding_whitespace_and_newlines(tmp_path) -> N
 
 @pytest.mark.asyncio
 async def test_edit_new_string_contains_old_string_no_infinite_loop(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     target = tmp_path / "file.txt"
     target.write_text("foo", encoding="utf-8")
@@ -288,7 +288,7 @@ async def test_edit_new_string_contains_old_string_no_infinite_loop(tmp_path) ->
 
 @pytest.mark.asyncio
 async def test_edit_replace_all_new_string_contains_old_string(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     target = tmp_path / "file.txt"
     target.write_text("ab ab", encoding="utf-8")
@@ -302,7 +302,7 @@ async def test_edit_replace_all_new_string_contains_old_string(tmp_path) -> None
 
 @pytest.mark.asyncio
 async def test_edit_empty_new_string_deletes_match(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     target = tmp_path / "file.txt"
     target.write_text("keep DELETEME keep", encoding="utf-8")
@@ -315,7 +315,7 @@ async def test_edit_empty_new_string_deletes_match(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_same_old_and_new_string_leaves_rest_untouched(tmp_path) -> None:
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     original = "prefix SAME suffix\nsecond line\n"
     target = tmp_path / "file.txt"
@@ -335,7 +335,7 @@ async def test_edit_same_old_and_new_string_leaves_rest_untouched(tmp_path) -> N
 @pytest.mark.asyncio
 async def test_edit_resolves_relative_path_against_workspace_root(tmp_path) -> None:
     """When workspace_root is set, relative paths resolve against it, not cwd."""
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     # Workspace root is tmp_path; file lives inside a subdirectory.
     workspace = tmp_path / "workspace"
@@ -348,16 +348,16 @@ async def test_edit_resolves_relative_path_against_workspace_root(tmp_path) -> N
     tool = EditTool(workspace_root=str(workspace))
 
     # Call with relative path from workspace root, not cwd.
-    result = await tool(path="src/file.txt", old_string="world", new_string="spectre")
+    result = await tool(path="src/file.txt", old_string="world", new_string="spctr")
 
-    assert target.read_text(encoding="utf-8") == "hello spectre"
+    assert target.read_text(encoding="utf-8") == "hello spctr"
     assert isinstance(result, str) and result
 
 
 @pytest.mark.asyncio
 async def test_edit_relative_path_fails_when_cwd_not_workspace(tmp_path) -> None:
     """Relative paths resolve against workspace_root even when cwd is elsewhere."""
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
     import os
 
     workspace = tmp_path / "workspace"
@@ -377,9 +377,9 @@ async def test_edit_relative_path_fails_when_cwd_not_workspace(tmp_path) -> None
 
         tool = EditTool(workspace_root=str(workspace))
         # This SHOULD work — relative path resolves against workspace_root, not cwd
-        result = await tool(path="src/file.txt", old_string="world", new_string="spectre")
+        result = await tool(path="src/file.txt", old_string="world", new_string="spctr")
 
-        assert target.read_text(encoding="utf-8") == "hello spectre"
+        assert target.read_text(encoding="utf-8") == "hello spctr"
     finally:
         os.chdir(original_cwd)
 
@@ -387,7 +387,7 @@ async def test_edit_relative_path_fails_when_cwd_not_workspace(tmp_path) -> None
 @pytest.mark.asyncio
 async def test_edit_resolve_path_absolute_passthrough(tmp_path) -> None:
     """_resolve_path leaves absolute paths unchanged."""
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     tool = EditTool(workspace_root=str(tmp_path / "workspace"))
     assert tool._resolve_path("/etc/passwd") == "/etc/passwd"
@@ -396,7 +396,7 @@ async def test_edit_resolve_path_absolute_passthrough(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_edit_resolve_path_no_workspace(tmp_path) -> None:
     """_resolve_path returns raw path when workspace_root is None."""
-    from sr2_spectre.tools.builtins.edit import EditTool
+    from spctr.tools.builtins.edit import EditTool
 
     tool = EditTool()
     assert tool._resolve_path("relative/path") == "relative/path"

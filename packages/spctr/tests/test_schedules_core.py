@@ -17,10 +17,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from sr2_spectre.schedules import ScheduleStore, Schedule, ScheduleEngine, parse_cron
-from sr2_spectre.schedules.cron import CronParseError, CronSpec
-from sr2_spectre.schedules.command import CommandResult, run_command
-from sr2_spectre.tools.schedule_tool import (
+from spctr.schedules import ScheduleStore, Schedule, ScheduleEngine, parse_cron
+from spctr.schedules.cron import CronParseError, CronSpec
+from spctr.schedules.command import CommandResult, run_command
+from spctr.tools.schedule_tool import (
     NO_INTERFACE_ERROR,
     ScheduleOrigin,
     ScheduleTool,
@@ -217,10 +217,10 @@ class TestAC18ConfigGate:
     """Disabled config registers no tool and starts no engine; enabled registers both."""
 
     def test_disabled_no_tool_no_engine(self):
-        from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig, SchedulesConfig
-        from sr2_spectre.runtime import Runtime
+        from spctr.config import AgentConfig, ModelConfig, SpctrConfig, SchedulesConfig
+        from spctr.runtime import Runtime
 
-        config = SpectreConfig(
+        config = SpctrConfig(
             agent=AgentConfig(name="test", default_skills=False, schedules=SchedulesConfig(enabled=False)),
             models={"default": ModelConfig(model="test")},
             pipeline={"layers": []},
@@ -232,10 +232,10 @@ class TestAC18ConfigGate:
         assert runtime.schedules is None
 
     def test_enabled_registers_tool(self, tmp_path):
-        from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig, SchedulesConfig
-        from sr2_spectre.runtime import Runtime
+        from spctr.config import AgentConfig, ModelConfig, SpctrConfig, SchedulesConfig
+        from spctr.runtime import Runtime
 
-        config = SpectreConfig(
+        config = SpctrConfig(
             agent=AgentConfig(name="test", default_skills=False, schedules=SchedulesConfig(
                 enabled=True, timezone="America/Phoenix",
                 store_path=str(tmp_path / "s.sqlite"),

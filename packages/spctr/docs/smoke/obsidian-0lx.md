@@ -9,7 +9,7 @@
 ## Setup
 
 ```
-cd /home/shepard/git/sr2-spectre
+cd /home/shepard/git/spctr
 ```
 
 ```
@@ -41,7 +41,7 @@ $PY -m pytest tests/test_discord_handler.py tests/test_discord_interface.py -q
 ## Scenario 3 — Probe runs the real CLI (offline of Discord)
 
 ```
-$PY -c "import asyncio; from sr2_spectre.interfaces.discord.handler import probe_harbinger_status; print(asyncio.run(probe_harbinger_status()))"
+$PY -c "import asyncio; from spctr.interfaces.discord.handler import probe_harbinger_status; print(asyncio.run(probe_harbinger_status()))"
 ```
 
 **Expect:** A fenced code block starting with ```` ``` ```` then `Harbinger status —`, a `Live slots:` line, run outcomes, and recent runs. Total length ≤ 2000 chars.
@@ -51,7 +51,7 @@ $PY -c "import asyncio; from sr2_spectre.interfaces.discord.handler import probe
 ## Scenario 4 — `hb` is in the loaded command set
 
 ```
-$PY -c "from sr2_spectre.interfaces.discord.handler import SLASH_COMMANDS; print('hb' in SLASH_COMMANDS)"
+$PY -c "from spctr.interfaces.discord.handler import SLASH_COMMANDS; print('hb' in SLASH_COMMANDS)"
 ```
 
 **Expect:** `True`.

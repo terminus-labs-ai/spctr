@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sr2_spectre.tools.builtins.generate_image import GenerateImageTool
-from sr2_spectre.tools.builtins.comfyui_client import ComfyUIClient, ImageRef
+from spctr.tools.builtins.generate_image import GenerateImageTool
+from spctr.tools.builtins.comfyui_client import ComfyUIClient, ImageRef
 
 
 @pytest.fixture

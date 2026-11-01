@@ -1,4 +1,4 @@
-"""Unit tests for sr2_spectre.run_log (spc-107, spec: live-session-log.md).
+"""Unit tests for spctr.run_log (spc-107, spec: live-session-log.md).
 
 Covers SessionLog / SessionLogManager behaviour: path form, envelope,
 per-line flush, 16 KiB previews, key redaction, file modes, retention
@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from sr2_spectre.run_log import SessionLog, SessionLogManager
+from spctr.run_log import SessionLog, SessionLogManager
 
 KIB16 = 16 * 1024
 SECRET_KEYS = ["api_key", "authorization", "token", "password", "secret", "cookie"]
@@ -95,7 +95,7 @@ def _run_py(code: str, home: Path, **kw) -> subprocess.Popen:
 def _cleanup_in_other_process(home: Path) -> list[str]:
     code = (
         "import json\n"
-        "from sr2_spectre.run_log import SessionLogManager\n"
+        "from spctr.run_log import SessionLogManager\n"
         "print(json.dumps([str(p) for p in SessionLogManager().cleanup_once()]))\n"
     )
     out, _ = _run_py(code, home).communicate(timeout=30)
@@ -341,7 +341,7 @@ class TestCleanup:
     def test_log_held_by_another_live_process_survives(self, home):
         holder = _run_py(
             "import os, sys, time\n"
-            "from sr2_spectre.run_log import SessionLogManager\n"
+            "from spctr.run_log import SessionLogManager\n"
             "log = SessionLogManager().open_session('held', 'edi')\n"
             "log.append('x', {})\n"
             "t = time.time() - 48 * 3600\n"

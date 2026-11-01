@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from sr2_spectre.interfaces.zulip import (
+from spctr.interfaces.zulip import (
     ZulipCredentialError,
     load_zulip_credentials,
 )

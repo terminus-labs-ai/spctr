@@ -5,7 +5,7 @@ always using InMemoryMemoryStore:
 
   1. Default (no DSN, no env) -> InMemoryMemoryStore   (existing behavior)
   2. config.memory_store_dsn set -> PostgresMemoryStore(dsn)
-  3. env SPECTRE_MEMORY_DSN set (config absent) -> PostgresMemoryStore(env dsn)
+  3. env SPCTR_MEMORY_DSN set (config absent) -> PostgresMemoryStore(env dsn)
   4. config DSN wins over env DSN
   5. memory_store_dsn == "" -> explicitly disabled -> InMemoryMemoryStore
      (mirrors the provenance "" convention in Runtime._resolve_provenance_path)
@@ -14,7 +14,7 @@ always using InMemoryMemoryStore:
   8. One real-DB integration test proving end-to-end construction
 
 PATCH-TARGET CONTRACT (IMPORTANT for the implementer):
-  These unit tests patch ``sr2_spectre.runtime.PostgresMemoryStore``. For that
+  These unit tests patch ``spctr.runtime.PostgresMemoryStore``. For that
   target to exist and be the symbol the Runtime actually instantiates, the
   implementer MUST import PostgresMemoryStore at the TOP of runtime.py:
 
@@ -22,11 +22,11 @@ PATCH-TARGET CONTRACT (IMPORTANT for the implementer):
 
   i.e. bind it into the runtime module namespace (NOT a lazy
   ``from sr2.memory import PostgresMemoryStore`` inside __init__, which would
-  make ``patch("sr2_spectre.runtime.PostgresMemoryStore")`` a no-op). This is a
+  make ``patch("spctr.runtime.PostgresMemoryStore")`` a no-op). This is a
   hard contract the tests depend on.
 
 These tests are written BEFORE the implementation. Expected red failures at
-this stage: SpectreConfig rejects ``memory_store_dsn`` and/or the Runtime has
+this stage: SpctrConfig rejects ``memory_store_dsn`` and/or the Runtime has
 no DSN-based selection logic.
 """
 
@@ -42,11 +42,11 @@ from sr2.memory import InMemoryMemoryStore, PostgresMemoryStore
 # test_memory_wiring.py style.
 from unittest.mock import MagicMock, patch  # noqa: E402
 
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig  # noqa: E402
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig  # noqa: E402
 
 
-def _make_config(**kwargs) -> SpectreConfig:
-    """Build a minimal SpectreConfig, allowing overrides.
+def _make_config(**kwargs) -> SpctrConfig:
+    """Build a minimal SpctrConfig, allowing overrides.
 
     Copied from tests/test_memory_wiring.py. By default leaves
     ``memory_store_dsn`` UNSET so the default-in-memory path is exercised
@@ -62,7 +62,7 @@ def _make_config(**kwargs) -> SpectreConfig:
         ]},
     )
     overrides.update(kwargs)
-    return SpectreConfig(**overrides)
+    return SpctrConfig(**overrides)
 
 
 _PG_DSN = "postgresql://user:pw@db.example:5432/mem"
@@ -76,10 +76,10 @@ _ENV_DSN = "postgresql://user:pw@env.example:5432/envmem"
 class TestDefaultIsInMemory:
     def test_no_dsn_no_env_selects_in_memory(self, monkeypatch):
         """No config DSN + no env var -> InMemoryMemoryStore (legacy behavior)."""
-        monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
-        from sr2_spectre.runtime import Runtime
+        monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=_make_config())
 
         assert isinstance(runtime._memory_store, InMemoryMemoryStore)
@@ -92,11 +92,11 @@ class TestDefaultIsInMemory:
 class TestConfigDsnSelectsPostgres:
     def test_config_dsn_constructs_postgres_with_that_dsn(self, monkeypatch):
         """memory_store_dsn in config -> PostgresMemoryStore(<dsn>) once."""
-        monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
-        from sr2_spectre.runtime import Runtime
+        monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
-                patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg:
+        with patch("spctr.live_llm.LiteLLMCallable"), \
+                patch("spctr.runtime.PostgresMemoryStore") as MockPg:
             MockPg.return_value = MagicMock()
             runtime = Runtime(config=_make_config(memory_store_dsn=_PG_DSN))
 
@@ -110,12 +110,12 @@ class TestConfigDsnSelectsPostgres:
 
 class TestEnvDsnSelectsPostgres:
     def test_env_dsn_selects_postgres_when_config_dsn_absent(self, monkeypatch):
-        """env SPECTRE_MEMORY_DSN + no config DSN -> Postgres(env dsn)."""
-        monkeypatch.setenv("SPECTRE_MEMORY_DSN", _ENV_DSN)
-        from sr2_spectre.runtime import Runtime
+        """env SPCTR_MEMORY_DSN + no config DSN -> Postgres(env dsn)."""
+        monkeypatch.setenv("SPCTR_MEMORY_DSN", _ENV_DSN)
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
-                patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg:
+        with patch("spctr.live_llm.LiteLLMCallable"), \
+                patch("spctr.runtime.PostgresMemoryStore") as MockPg:
             MockPg.return_value = MagicMock()
             runtime = Runtime(config=_make_config())  # memory_store_dsn unset (None)
 
@@ -130,11 +130,11 @@ class TestEnvDsnSelectsPostgres:
 class TestConfigDsnPrecedence:
     def test_config_dsn_takes_precedence_over_env(self, monkeypatch):
         """Both set -> the config DSN is used, not the env DSN."""
-        monkeypatch.setenv("SPECTRE_MEMORY_DSN", _ENV_DSN)
-        from sr2_spectre.runtime import Runtime
+        monkeypatch.setenv("SPCTR_MEMORY_DSN", _ENV_DSN)
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
-                patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg:
+        with patch("spctr.live_llm.LiteLLMCallable"), \
+                patch("spctr.runtime.PostgresMemoryStore") as MockPg:
             MockPg.return_value = MagicMock()
             runtime = Runtime(config=_make_config(memory_store_dsn=_PG_DSN))
 
@@ -152,11 +152,11 @@ class TestEmptyStringDsnDisabled:
         Mirrors Runtime._resolve_provenance_path: "" == disabled, NOT a path.
         Postgres must NOT be constructed.
         """
-        monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
-        from sr2_spectre.runtime import Runtime
+        monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
-                patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg:
+        with patch("spctr.live_llm.LiteLLMCallable"), \
+                patch("spctr.runtime.PostgresMemoryStore") as MockPg:
             runtime = Runtime(config=_make_config(memory_store_dsn=""))
 
         MockPg.assert_not_called()
@@ -166,14 +166,14 @@ class TestEmptyStringDsnDisabled:
         """Explicit "" disable beats a populated env var.
 
         Mirrors the provenance "" convention: an explicit empty string is a hard
-        disable, not "unset". A set SPECTRE_MEMORY_DSN must NOT resurrect Postgres
+        disable, not "unset". A set SPCTR_MEMORY_DSN must NOT resurrect Postgres
         when the config explicitly disables it.
         """
-        monkeypatch.setenv("SPECTRE_MEMORY_DSN", _ENV_DSN)
-        from sr2_spectre.runtime import Runtime
+        monkeypatch.setenv("SPCTR_MEMORY_DSN", _ENV_DSN)
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
-                patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg:
+        with patch("spctr.live_llm.LiteLLMCallable"), \
+                patch("spctr.runtime.PostgresMemoryStore") as MockPg:
             runtime = Runtime(config=_make_config(memory_store_dsn=""))
 
         MockPg.assert_not_called()
@@ -188,11 +188,11 @@ class TestAcloseClosesStore:
     @pytest.mark.asyncio
     async def test_aclose_closes_postgres_store(self, monkeypatch):
         """When a Postgres store is selected, aclose() calls its close()."""
-        monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
-        from sr2_spectre.runtime import Runtime
+        monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
-                patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg:
+        with patch("spctr.live_llm.LiteLLMCallable"), \
+                patch("spctr.runtime.PostgresMemoryStore") as MockPg:
             mock_store = MagicMock()
             MockPg.return_value = mock_store
             runtime = Runtime(config=_make_config(memory_store_dsn=_PG_DSN))
@@ -204,10 +204,10 @@ class TestAcloseClosesStore:
     @pytest.mark.asyncio
     async def test_aclose_does_not_raise_for_in_memory_store(self, monkeypatch):
         """In-memory store has no close(); aclose() must not raise."""
-        monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
-        from sr2_spectre.runtime import Runtime
+        monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=_make_config())  # default -> in-memory
 
         # Must complete cleanly even though InMemoryMemoryStore has no close().
@@ -221,12 +221,12 @@ class TestAcloseClosesStore:
 class TestSelectedStoreThreadedToSessions:
     def test_new_session_forwards_postgres_store_to_sr2(self, monkeypatch):
         """A Postgres-selected store is the store passed to SR2 by new_session."""
-        monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
-        from sr2_spectre.runtime import Runtime
+        monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"), \
-                patch("sr2_spectre.runtime.PostgresMemoryStore") as MockPg, \
-                patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.live_llm.LiteLLMCallable"), \
+                patch("spctr.runtime.PostgresMemoryStore") as MockPg, \
+                patch("spctr.session.SR2") as MockSR2:
             MockPg.return_value = MagicMock()
             MockSR2.return_value = MagicMock()
             runtime = Runtime(config=_make_config(memory_store_dsn=_PG_DSN))
@@ -273,9 +273,9 @@ async def test_real_postgres_store_constructed_and_closed():
     Proves real construction works, not just the mock. No LLM is needed, so
     LiteLLMCallable is still patched to keep the test hermetic.
     """
-    from sr2_spectre.runtime import Runtime
+    from spctr.runtime import Runtime
 
-    with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+    with patch("spctr.live_llm.LiteLLMCallable"):
         runtime = Runtime(config=_make_config(memory_store_dsn=_TEST_DSN))
 
     assert isinstance(runtime._memory_store, PostgresMemoryStore)

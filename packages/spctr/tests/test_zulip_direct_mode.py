@@ -37,7 +37,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from sr2_spectre.interfaces.zulip import (
+from spctr.interfaces.zulip import (
     ZulipClient,
     ZulipConfig,
     ZulipDMInterface,
@@ -47,11 +47,11 @@ from sr2_spectre.interfaces.zulip import (
     admits_human_trigger,
     is_configured_no_area_channel,
 )
-from sr2_spectre.interfaces.zulip.config import (
+from spctr.interfaces.zulip.config import (
     bot_ids_from_registration,
     validate_direct_mode,
 )
-from sr2_spectre.resume import ResumeResult
+from spctr.resume import ResumeResult
 
 # Identities mirror the spec's Dependencies (Miranda bot 9, Diego 8).
 BOT_ID = 9
@@ -377,7 +377,7 @@ def _dm_event(msg_id: int, sender_id: Any, content: str = "hey") -> dict:
 @pytest.fixture
 def patched_credentials(monkeypatch):
     """No credential I/O, no real ZulipClient construction."""
-    import sr2_spectre.interfaces.zulip.direct as direct_mod
+    import spctr.interfaces.zulip.direct as direct_mod
 
     monkeypatch.setattr(
         direct_mod,
@@ -413,7 +413,7 @@ class StubSession:
     async def handle_user_message(self, text):
         if self.fail:
             raise RuntimeError("brain down")
-        from sr2_spectre.core import TurnResult
+        from spctr.core import TurnResult
         self.turns.append(text)
         return TurnResult(text=self.reply)
 
@@ -439,7 +439,7 @@ class StubAgent:
 
 
 def test_implements_the_interface_protocol():
-    from sr2_spectre.interfaces import Interface
+    from spctr.interfaces import Interface
 
     iface = ZulipDMInterface(_direct_config())
     assert isinstance(iface, Interface)
@@ -479,7 +479,7 @@ def test_construction_without_peer_fails_explicitly():
     with pytest.raises(ValueError, match="peer_id"):
         ZulipDMInterface(_direct_config(peer_id=None))
 
-    import sr2_spectre.interfaces.zulip.direct as direct_mod
+    import spctr.interfaces.zulip.direct as direct_mod
 
     class _StubView:
         """Stands in for ZulipConfigView: slice in force has no peer."""
@@ -646,14 +646,14 @@ def test_poll_transport_error_propagates(patched_credentials):
 # ---------------------------------------------------------------------------
 
 def test_cli_zulip_defaults_to_stream_interface():
-    from sr2_spectre.cli import _load_interface
+    from spctr.cli import _load_interface
 
     assert _load_interface("zulip") is ZulipInterface
     assert _load_interface("zulip", config=_stream_config()) is ZulipInterface
 
 
 def test_cli_zulip_direct_mode_selects_dm_interface():
-    from sr2_spectre.cli import _load_interface
+    from spctr.cli import _load_interface
 
     assert _load_interface("zulip", config=_direct_config()) is ZulipDMInterface
 
@@ -662,7 +662,7 @@ def test_cli_zulip_via_loaded_config_block_selects_dm():
     """The block as it arrives from YAML resolution drives the choice."""
     import yaml
 
-    from sr2_spectre.cli import _load_interface
+    from spctr.cli import _load_interface
 
     block = yaml.safe_load(
         "zuliprc: /tmp/x\nusers: [8]\nmode: direct\npeer_id: 8\n"

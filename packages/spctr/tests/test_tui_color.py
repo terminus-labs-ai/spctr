@@ -9,14 +9,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from sr2_spectre.events import (
+from spctr.events import (
     AgentDone,
     AgentTextDelta,
     AgentThinkingDelta,
     AgentToolResult,
     AgentToolStart,
 )
-from sr2_spectre.interfaces.tui import SpectreTUI
+from spctr.interfaces.tui import SpctrTUI
 from tests.conftest import (
     _make_mock_agent,
     assert_log_contains,
@@ -39,7 +39,7 @@ async def test_tool_start_shows_gear_icon_and_name(
         AgentToolStart(tool_id="t1", name="file_read", input={"path": "x.txt"}),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")
@@ -65,7 +65,7 @@ async def test_tool_start_truncates_args_at_60(
         AgentToolStart(tool_id="t1", name="grep", input=long_input),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")
@@ -102,7 +102,7 @@ async def test_tool_success_shows_check_and_done(
         AgentToolResult(tool_id="t1", name="file_read", content="file contents"),
         AgentDone(tool_calls_executed=1),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")
@@ -129,7 +129,7 @@ async def test_tool_failure_shows_x_and_failed(
         AgentToolResult(tool_id="t1", name="terminal", content="error output", is_error=True),
         AgentDone(tool_calls_executed=1),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")
@@ -160,7 +160,7 @@ async def test_markdown_renders_with_color(
         AgentTextDelta(text="# Hello\n\nThis is **bold** and *italic*."),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")
@@ -178,7 +178,7 @@ async def test_markdown_renders_with_color(
 
 
 @pytest.mark.asyncio
-async def test_user_input_echo_has_distinct_style(tui_app: SpectreTUI) -> None:
+async def test_user_input_echo_has_distinct_style(tui_app: SpctrTUI) -> None:
     """User input echo uses a distinct style from agent output."""
     async with tui_app.run_test(headless=True) as pilot:
         await submit_input(pilot, tui_app, "user message")
@@ -200,7 +200,7 @@ async def test_thinking_region_has_distinct_style(
         AgentTextDelta(text="answer"),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")
@@ -232,7 +232,7 @@ async def test_no_color_env_disables_color(monkeypatch: pytest.MonkeyPatch) -> N
         AgentTextDelta(text="# Title\n\n**bold** text"),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")

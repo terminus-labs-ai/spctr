@@ -21,17 +21,17 @@ from typing import Any
 import pytest
 from aiohttp import web
 
-from sr2_spectre.events import AgentDone, AgentTextDelta, AgentToolStart
-from sr2_spectre.interfaces.common import chunk_message
-from sr2_spectre.interfaces.zulip import (
+from spctr.events import AgentDone, AgentTextDelta, AgentToolStart
+from spctr.interfaces.common import chunk_message
+from spctr.interfaces.zulip import (
     ZulipAuthError,
     ZulipClient,
     ZulipConfig,
     ZulipInterface,
     ZulipTransportError,
 )
-from sr2_spectre.interfaces.zulip.client import ZulipCredentials
-from sr2_spectre.resume import ResumeResult
+from spctr.interfaces.zulip.client import ZulipCredentials
+from spctr.resume import ResumeResult
 
 DIEGO_ID = 8
 BOT_ID = 9
@@ -164,7 +164,7 @@ def _post(content: str, topic: str = TOPIC, ok: bool = True) -> tuple:
 async def _drive(monkeypatch, batches: list[list[dict]], script: dict[str, Any],
                  **over: Any) -> list:
     """Run the real poll loop; return the shared ordered log."""
-    import sr2_spectre.interfaces.zulip.interface as iface_mod
+    import spctr.interfaces.zulip.interface as iface_mod
 
     fail_post = over.pop("fail_post", lambda form: False)
     fail_patch = over.pop("fail_patch", frozenset())
@@ -375,8 +375,8 @@ def test_working_indicator_config_defaults():
 
 
 def test_chunking_is_one_implementation_shared_with_discord():
-    from sr2_spectre.interfaces import common
-    from sr2_spectre.interfaces.discord import handler
+    from spctr.interfaces import common
+    from spctr.interfaces.discord import handler
 
     assert handler.chunk_message is common.chunk_message
     assert handler.tail_for_stream is common.tail_for_stream

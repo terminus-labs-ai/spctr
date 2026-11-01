@@ -254,10 +254,10 @@ class TestRunContextThroughSR2:
         assert any(e.type == "end" for e in events)
         await sr2.aclose()
 
-    async def test_core_has_no_spectre_import(self):
-        """Core dependencies module does not import spectre types.
+    async def test_core_has_no_spctr_import(self):
+        """Core dependencies module does not import spctr types.
 
-        Checks for actual import statements ('import spectre' or 'from spectre'),
+        Checks for actual import statements ('import spctr' or 'from spctr'),
         not mentions in docstrings/comments.
         """
         import re
@@ -270,18 +270,18 @@ class TestRunContextThroughSR2:
         # Match actual Python import statements only.
         imports = re.findall(r'^(?:import\s+\S+|from\s+\S+\s+import)', content, re.MULTILINE)
         for imp in imports:
-            assert "spectre" not in imp.lower(), (
-                f"Core dependencies must not import spectre types: {imp}"
+            assert "spctr" not in imp.lower(), (
+                f"Core dependencies must not import spctr types: {imp}"
             )
 
-    async def test_orchestrator_has_no_spectre_import(self):
-        """Orchestrator module does not import spectre types."""
+    async def test_orchestrator_has_no_spctr_import(self):
+        """Orchestrator module does not import spctr types."""
         import sr2.orchestrator as orch_module
         source = orch_module.__file__ or ""
 
         with open(source) as f:
             content = f.read()
 
-        assert "spectre" not in content.lower(), (
-            "Orchestrator must not import spectre types"
+        assert "spctr" not in content.lower(), (
+            "Orchestrator must not import spctr types"
         )

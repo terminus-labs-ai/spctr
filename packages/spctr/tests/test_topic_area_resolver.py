@@ -10,7 +10,7 @@ from sr2.pipeline.resolvers.markdown_file import MarkdownTokenBudgetError
 from sr2.pipeline.token_counting import CHARS_PER_TOKEN
 
 
-def _topic(path, area="sr2-spectre"):
+def _topic(path, area="spctr"):
     path.mkdir(parents=True)
     (path / "README.md").write_text(f"---\nkind: topic\nid: topic:{area}\n---\nTopic\n")
     (path / "NOW.md").write_text(
@@ -29,8 +29,8 @@ def _doc_text(filename, area, body):
     return body
 
 
-def _build(root, filename="AGENTS.md", provider=lambda: {"area": "sr2-spectre"}, **options):
-    from sr2_spectre.pipeline.topic_area_resolver import TopicAreaResolver
+def _build(root, filename="AGENTS.md", provider=lambda: {"area": "spctr"}, **options):
+    from spctr.pipeline.topic_area_resolver import TopicAreaResolver
 
     config = ResolverConfig(
         type="topic_area", config={"topics_root": str(root), "filename": filename, **options}
@@ -46,9 +46,9 @@ async def _text(resolver):
 
 @pytest.mark.parametrize("filename", ["AGENTS.md", "NOW.md", "README.md"])
 @pytest.mark.parametrize("folder,area", [
-    ("sr2/sr2-spectre", "sr2-spectre"),
+    ("sr2/spctr", "spctr"),
     ("family/henrique (pai)", "henrique"),
-    ("unrelated/deep/directory", "sr2-spectre"),
+    ("unrelated/deep/directory", "spctr"),
 ])
 async def test_selects_identity_at_any_depth(tmp_path, filename, folder, area):
     topic = _topic(tmp_path / folder, area)
@@ -59,22 +59,22 @@ async def test_selects_identity_at_any_depth(tmp_path, filename, folder, area):
 
 @pytest.mark.parametrize("filename", ["AGENTS.md", "README.md"])
 @pytest.mark.parametrize("document,metadata", [
-    ("README.md", "kind: family\nid: topic:sr2-spectre"),
+    ("README.md", "kind: family\nid: topic:spctr"),
     ("README.md", "kind: topic\nid: topic:other"),
     ("README.md", "kind: topic"),
-    ("README.md", "- topic:sr2-spectre"),
+    ("README.md", "- topic:spctr"),
     ("README.md", "null"),
     ("README.md", "kind: [unterminated"),
-    ("NOW.md", "kind: continuity\nfor: topic:sr2-spectre\nmode: view"),
-    ("NOW.md", "kind: topic\nfor: topic:sr2-spectre\nmode: source"),
+    ("NOW.md", "kind: continuity\nfor: topic:spctr\nmode: view"),
+    ("NOW.md", "kind: topic\nfor: topic:spctr\nmode: source"),
     ("NOW.md", "kind: continuity\nfor: topic:other\nmode: source"),
-    ("NOW.md", "kind: continuity\nfor: topic:sr2-spectre"),
+    ("NOW.md", "kind: continuity\nfor: topic:spctr"),
     ("NOW.md", "- continuity"),
     ("NOW.md", "null"),
     ("NOW.md", "kind: [unterminated"),
 ])
 async def test_ineligible_metadata_never_injects(tmp_path, caplog, filename, document, metadata):
-    topic = _topic(tmp_path / "sr2-spectre")
+    topic = _topic(tmp_path / "spctr")
     (topic / document).write_text(f"---\n{metadata}\n---\nExcluded content")
     with caplog.at_level(logging.DEBUG):
         assert await _text(_build(tmp_path, filename)) == ""
@@ -85,16 +85,16 @@ async def test_ineligible_metadata_never_injects(tmp_path, caplog, filename, doc
 
 @pytest.mark.parametrize("document", ["README.md", "NOW.md"])
 async def test_metadata_without_frontmatter_is_ineligible(tmp_path, document):
-    topic = _topic(tmp_path / "sr2-spectre")
-    (topic / document).write_text("kind: topic\nid: topic:sr2-spectre")
+    topic = _topic(tmp_path / "spctr")
+    (topic / document).write_text("kind: topic\nid: topic:spctr")
     assert await _text(_build(tmp_path)) == ""
 
 
 @pytest.mark.parametrize("filename", ["AGENTS.md", "NOW.md", "README.md"])
 async def test_nested_decoy_and_family_view_do_not_override_identity(tmp_path, filename):
     source = _topic(tmp_path / "sr2" / "actual")
-    decoy = _topic(tmp_path / "characters" / "sr2-spectre", "vexa")
-    view = _topic(tmp_path / "family" / "sr2-spectre")
+    decoy = _topic(tmp_path / "characters" / "spctr", "vexa")
+    view = _topic(tmp_path / "family" / "spctr")
     for topic, marker in [(source, "Intended source"), (decoy, "Excluded decoy"),
                           (view, "Excluded view")]:
         (topic / "AGENTS.md").write_text(marker + "\n")
@@ -198,7 +198,7 @@ async def test_no_provider_skips_at_debug(tmp_path, caplog):
 
 @pytest.mark.parametrize("area", ["*", "../outside", "/absolute", "sr2-*"])
 async def test_area_is_not_a_path_or_glob(tmp_path, area):
-    _topic(tmp_path / "sr2-spectre")
+    _topic(tmp_path / "spctr")
     _topic(tmp_path / "outside", "outside")
     assert await _text(_build(tmp_path, provider=lambda: {"area": area})) == ""
 
@@ -229,9 +229,9 @@ async def test_escaping_symlinks_never_inject(tmp_path, caplog, escaping):
 async def test_area_content_and_topic_moves_are_live(tmp_path, filename):
     topic = _topic(tmp_path / "first")
     other = _topic(tmp_path / "second", "henrique")
-    (topic / "AGENTS.md").write_text("Spectre AGENTS\n")
+    (topic / "AGENTS.md").write_text("spctr AGENTS\n")
     (other / "AGENTS.md").write_text("Henrique AGENTS\n")
-    area = "sr2-spectre"
+    area = "spctr"
     resolver = _build(tmp_path, filename, provider=lambda: {"area": area})
     original, other_text = (topic / filename).read_text(), (other / filename).read_text()
     assert original != other_text
@@ -245,7 +245,7 @@ async def test_area_content_and_topic_moves_are_live(tmp_path, filename):
     assert await _text(resolver) == ""
     area = "henrique"
     assert await _text(resolver) == other_text
-    area = "sr2-spectre"
+    area = "spctr"
     topic.rename(tmp_path / "moved")
     assert await _text(resolver) == changed
 
@@ -256,7 +256,7 @@ async def test_revalidates_metadata_and_duplicates_each_turn(tmp_path):
     assert await _text(resolver) == "Selected AGENTS\n"
     readme = topic / "README.md"
     identity = readme.read_text()
-    readme.write_text(identity.replace("topic:sr2-spectre", "topic:other"))
+    readme.write_text(identity.replace("topic:spctr", "topic:other"))
     assert await _text(resolver) == ""
     readme.write_text(identity)
     assert await _text(resolver) == "Selected AGENTS\n"
@@ -296,15 +296,15 @@ async def test_selected_path_containment_is_revalidated_each_turn(tmp_path, capl
 async def test_budget_uses_sr2_approximation_and_rechecks_edits(tmp_path, filename):
     topic = _topic(tmp_path / "topic")
     target = topic / filename
-    envelope = len(_doc_text(filename, "sr2-spectre", ""))
+    envelope = len(_doc_text(filename, "spctr", ""))
     base_tokens = -(-envelope // CHARS_PER_TOKEN)
     max_tokens = base_tokens + 2
     body = "x" * (max_tokens * CHARS_PER_TOKEN + CHARS_PER_TOKEN - 1 - envelope)
-    target.write_text(_doc_text(filename, "sr2-spectre", body))
+    target.write_text(_doc_text(filename, "spctr", body))
     resolver = _build(tmp_path, filename, max_tokens=max_tokens)
     assert await _text(resolver) == target.read_text()
     target.write_text(
-        _doc_text(filename, "sr2-spectre", "x" * ((max_tokens + 1) * CHARS_PER_TOKEN - envelope))
+        _doc_text(filename, "spctr", "x" * ((max_tokens + 1) * CHARS_PER_TOKEN - envelope))
     )
     with pytest.raises(MarkdownTokenBudgetError):
         await resolver.resolve([])
@@ -315,7 +315,7 @@ async def test_budget_uses_sr2_approximation_and_rechecks_edits(tmp_path, filena
 async def test_omitted_or_null_budget_is_unlimited(tmp_path, options, filename):
     topic = _topic(tmp_path / "topic")
     (topic / filename).write_text(
-        _doc_text(filename, "sr2-spectre", "x" * (5000 * CHARS_PER_TOKEN))
+        _doc_text(filename, "spctr", "x" * (5000 * CHARS_PER_TOKEN))
     )
     assert await _text(_build(tmp_path, filename, **options)) == (topic / filename).read_text()
 
@@ -328,7 +328,7 @@ async def test_omitted_or_null_budget_is_unlimited(tmp_path, options, filename):
     {"max_tokens": "4"}, {"max_tokens": True},
 ])
 def test_invalid_configuration_is_rejected(tmp_path, override):
-    from sr2_spectre.pipeline.topic_area_resolver import TopicAreaResolver
+    from spctr.pipeline.topic_area_resolver import TopicAreaResolver
 
     config = {"topics_root": str(tmp_path), "filename": "AGENTS.md", **override}
     with pytest.raises((ValueError, TypeError)):
@@ -336,7 +336,7 @@ def test_invalid_configuration_is_rejected(tmp_path, override):
 
 
 def test_readme_filename_configuration_is_accepted(tmp_path):
-    from sr2_spectre.pipeline.topic_area_resolver import TopicAreaResolver
+    from spctr.pipeline.topic_area_resolver import TopicAreaResolver
 
     config = ResolverConfig(
         type="topic_area", config={"topics_root": str(tmp_path), "filename": "README.md"}
@@ -350,7 +350,7 @@ def test_readme_filename_configuration_is_accepted(tmp_path):
     " README.md", "README.md ", "directory/README.md", "../README.md", "", "md",
 ])
 def test_arbitrary_filenames_are_not_accepted(tmp_path, filename):
-    from sr2_spectre.pipeline.topic_area_resolver import TopicAreaResolver
+    from spctr.pipeline.topic_area_resolver import TopicAreaResolver
 
     config = ResolverConfig(
         type="topic_area", config={"topics_root": str(tmp_path), "filename": filename}
@@ -360,7 +360,7 @@ def test_arbitrary_filenames_are_not_accepted(tmp_path, filename):
 
 
 def test_missing_required_configuration_is_rejected(tmp_path):
-    from sr2_spectre.pipeline.topic_area_resolver import TopicAreaResolver
+    from spctr.pipeline.topic_area_resolver import TopicAreaResolver
 
     for config in [{"filename": "NOW.md"}, {"topics_root": str(tmp_path)}]:
         with pytest.raises((ValueError, TypeError)):
@@ -368,7 +368,7 @@ def test_missing_required_configuration_is_rejected(tmp_path):
 
 
 def test_resolver_subscription_and_execution_contract(tmp_path):
-    from sr2_spectre.pipeline.topic_area_resolver import TopicAreaResolver
+    from spctr.pipeline.topic_area_resolver import TopicAreaResolver
 
     config = ResolverConfig(
         type="topic_area", config={"topics_root": str(tmp_path), "filename": "NOW.md"},

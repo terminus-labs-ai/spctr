@@ -12,9 +12,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from sr2_spectre.schedules import ScheduleStore, Schedule, ScheduleEngine
-from sr2_spectre.schedules.agent import AgentResult, split_message
-from sr2_spectre.tools.schedule_tool import (
+from spctr.schedules import ScheduleStore, Schedule, ScheduleEngine
+from spctr.schedules.agent import AgentResult, split_message
+from spctr.tools.schedule_tool import (
     AGENT_INSTRUCTION_MAX,
     ScheduleOrigin,
     ScheduleTool,

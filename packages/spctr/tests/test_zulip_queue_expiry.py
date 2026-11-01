@@ -18,8 +18,8 @@ from typing import Any
 import pytest
 from aiohttp import web
 
-from sr2_spectre.interfaces.zulip import ZulipConfig, ZulipDMInterface, ZulipInterface
-from sr2_spectre.interfaces.zulip.client import (
+from spctr.interfaces.zulip import ZulipConfig, ZulipDMInterface, ZulipInterface
+from spctr.interfaces.zulip.client import (
     ZulipClient,
     ZulipCredentials,
     ZulipQueueExpiredError,
@@ -77,9 +77,9 @@ class _Realm:
 
 @pytest.fixture
 async def realm(monkeypatch):
-    import sr2_spectre.interfaces.zulip.client as client_mod
-    import sr2_spectre.interfaces.zulip.direct as direct_mod
-    import sr2_spectre.interfaces.zulip.interface as iface_mod
+    import spctr.interfaces.zulip.client as client_mod
+    import spctr.interfaces.zulip.direct as direct_mod
+    import spctr.interfaces.zulip.interface as iface_mod
 
     # Other test files replace these module attributes without restoring them.
     for module in (iface_mod, direct_mod):

@@ -1,6 +1,6 @@
-# SR2 Spectre — Quickstart
+# SR2 spctr — Quickstart
 
-Get Spectre running in 5 minutes with a local LLM.
+Get spctr running in 5 minutes with a local LLM.
 
 ## Prerequisites
 
@@ -12,11 +12,11 @@ Get Spectre running in 5 minutes with a local LLM.
 
 ```bash
 git clone https://github.com/terminus-labs-ai/sr2
-git clone https://github.com/terminus-labs-ai/sr2-spectre
-cd sr2-spectre
+git clone https://github.com/terminus-labs-ai/spctr
+cd spctr
 ```
 
-Spectre depends on the SR2 engine. Clone both repos as sibling directories — `uv` resolves the path dependency automatically.
+spctr depends on the SR2 engine. Clone both repos as sibling directories — `uv` resolves the path dependency automatically.
 
 ## Step 2: Install
 
@@ -57,23 +57,23 @@ Everything else in the example config works out of the box.
 
 **Interactive TUI:**
 ```bash
-uv run sr2-spectre my-config.yaml --interface tui
+uv run spctr my-config.yaml --interface tui
 ```
 
 **Single-shot (one question, one answer):**
 ```bash
-uv run sr2-spectre my-config.yaml "Explain the architecture of this project"
+uv run spctr my-config.yaml "Explain the architecture of this project"
 ```
 
 **Pipe input:**
 ```bash
-cat README.md | uv run sr2-spectre my-config.yaml "Summarize this"
+cat README.md | uv run spctr my-config.yaml "Summarize this"
 ```
 
 ## What happens next?
 
 - **TUI mode:** Type your prompt, watch tokens stream in real time. Tool calls are visible as they execute.
-- **Single-shot mode:** Spectre reads the prompt (or stdin), calls your LLM, prints the response, and exits.
+- **Single-shot mode:** spctr reads the prompt (or stdin), calls your LLM, prints the response, and exits.
 - **With tools enabled:** The LLM can use `terminal`, `file_read`, `file_write`, and other built-in tools. Responses are richer because the model can actually read files, run commands, and explore the system.
 
 ## Next steps

@@ -1,6 +1,6 @@
 # Smoke: spc-49 — in-memory memory subsystem wiring
 
-**Proves:** Spectre's Runtime constructs one shared `InMemoryMemoryStore` and threads it through `new_session()` → `Session` → `SR2`, so the memory resolver/transformer share a store across frames, and a fact extracted from one turn is retrievable on a later turn of the same process.
+**Proves:** spctr's Runtime constructs one shared `InMemoryMemoryStore` and threads it through `new_session()` → `Session` → `SR2`, so the memory resolver/transformer share a store across frames, and a fact extracted from one turn is retrievable on a later turn of the same process.
 
 **Single caveat:** in-memory only. The store is dict-backed and lost on process restart — persistence across restart is OUT of scope (follow-on `obsidian-cor`). This runbook does NOT exercise a real LLM turn; the extract→inject roundtrip uses the rule-based extractor + real store/resolver directly.
 
@@ -11,7 +11,7 @@
 Move to the repo.
 
 ```bash
-cd ~/git/sr2-spectre
+cd ~/git/spctr
 ```
 
 Confirm you are on the branch with the wiring.
@@ -79,7 +79,7 @@ uv run python -m pytest tests/test_memory_wiring.py::TestResolverOnlyInjection -
 Construct a Runtime and inspect the store directly. Single line, copy-paste.
 
 ```bash
-uv run python -c "from unittest.mock import patch; from sr2_spectre.runtime import Runtime; from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig; cfg=SpectreConfig(agent=AgentConfig(name='t'), models={'default': ModelConfig(model='m', base_url='http://x')}, pipeline={'layers':[{'name':'system','target':'system','resolvers':[{'type':'static','config':{'text':'hi'}}]}]}); p=patch('sr2_spectre.runtime.LiteLLMCallable'); p.start(); rt=Runtime(config=cfg); print(type(rt._memory_store).__name__)"
+uv run python -c "from unittest.mock import patch; from spctr.runtime import Runtime; from spctr.config import AgentConfig, ModelConfig, SpctrConfig; cfg=SpctrConfig(agent=AgentConfig(name='t'), models={'default': ModelConfig(model='m', base_url='http://x')}, pipeline={'layers':[{'name':'system','target':'system','resolvers':[{'type':'static','config':{'text':'hi'}}]}]}); p=patch('spctr.runtime.LiteLLMCallable'); p.start(); rt=Runtime(config=cfg); print(type(rt._memory_store).__name__)"
 ```
 
 **Expect:** prints `InMemoryMemoryStore`.

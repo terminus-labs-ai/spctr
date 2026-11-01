@@ -17,16 +17,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from sr2.models import TextBlock
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.runtime import Runtime
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.runtime import Runtime
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_config_with_plan(plans_root: str, project: str = "test-proj") -> SpectreConfig:
-    """Build a SpectreConfig with a plan resolver in the pipeline."""
+def _make_config_with_plan(plans_root: str, project: str = "test-proj") -> SpctrConfig:
+    """Build a SpctrConfig with a plan resolver in the pipeline."""
     layers = [
         {
             "name": "system",
@@ -52,15 +52,15 @@ def _make_config_with_plan(plans_root: str, project: str = "test-proj") -> Spect
             "resolvers": [{"type": "session"}, {"type": "input"}],
         },
     ]
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="test"),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline={"layers": layers},
     )
 
 
-def _make_config_no_plan() -> SpectreConfig:
-    """Build a SpectreConfig WITHOUT a plan resolver."""
+def _make_config_no_plan() -> SpctrConfig:
+    """Build a SpctrConfig WITHOUT a plan resolver."""
     layers = [
         {
             "name": "system",
@@ -73,7 +73,7 @@ def _make_config_no_plan() -> SpectreConfig:
             "resolvers": [{"type": "session"}, {"type": "input"}],
         },
     ]
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="test"),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline={"layers": layers},
@@ -107,12 +107,12 @@ class TestRuntimeBuildsPlanResolver:
 
         config = _make_config_with_plan(str(plans_dir))
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             # Patch PlanResolver in the planning module (imported inside Runtime.__init__)
             with patch(
-                "sr2_spectre.planning.PlanResolver",
+                "spctr.planning.PlanResolver",
                 wraps=__import__(
-                    "sr2_spectre.planning.resolver", fromlist=["PlanResolver"]
+                    "spctr.planning.resolver", fromlist=["PlanResolver"]
                 ).PlanResolver,
             ) as MockPlanResolver:
                 runtime = Runtime(config=config)
@@ -124,11 +124,11 @@ class TestRuntimeBuildsPlanResolver:
         """Runtime does NOT build PlanResolver when no plan resolver in pipeline."""
         config = _make_config_no_plan()
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             # Patch PlanResolver in the planning module to detect if it's ever
             # imported during Runtime init.
             with patch(
-                "sr2_spectre.planning.PlanResolver",
+                "spctr.planning.PlanResolver",
                 side_effect=AttributeError("should not be called"),
             ):
                 runtime = Runtime(config=config)
@@ -152,8 +152,8 @@ class TestRuntimePassesProviderToSession:
 
         config = _make_config_with_plan(str(plans_dir))
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
-            with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            with patch("spctr.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=config)
                 runtime.new_session(frame_id="frame-1")
@@ -166,8 +166,8 @@ class TestRuntimePassesProviderToSession:
         """Without a plan resolver, Session receives active_frame_provider=None."""
         config = _make_config_no_plan()
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
-            with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            with patch("spctr.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=config)
                 runtime.new_session(frame_id="frame-1")
@@ -192,7 +192,7 @@ class TestFrameProviderReturnsCorrectFrame:
 
         config = _make_config_with_plan(str(plans_dir))
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=config)
 
         provider = runtime._active_frame_provider
@@ -220,8 +220,8 @@ class TestSR2BlockStamping:
 
         config = _make_config_with_plan(str(plans_dir))
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
-            with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            with patch("spctr.session.SR2") as MockSR2:
                 mock_sr2_instance = MagicMock()
                 MockSR2.return_value = mock_sr2_instance
                 runtime = Runtime(config=config)
@@ -257,7 +257,7 @@ class TestStepCompactionIntegration:
         from sr2.config.models import TransformerConfig
         from sr2.pipeline.dependencies import Dependencies
         from sr2.pipeline.events import Event, EventPhase
-        from sr2_spectre.planning.transformer import StepCompactionTransformer
+        from spctr.planning.transformer import StepCompactionTransformer
 
         plans_dir = tmp_path / "plans"
         plans_dir.mkdir()
@@ -267,7 +267,7 @@ class TestStepCompactionIntegration:
 
         config = _make_config_with_plan(str(plans_dir))
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=config)
 
         provider = runtime._active_frame_provider

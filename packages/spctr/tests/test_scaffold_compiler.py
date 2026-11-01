@@ -18,7 +18,7 @@ from typing import Any
 
 import pytest
 
-from sr2_spectre.tools.image_scenarios import (
+from spctr.tools.image_scenarios import (
     ContentFragment,
     FrameFragment,
     ImageScenarioRegistry,
@@ -27,7 +27,7 @@ from sr2_spectre.tools.image_scenarios import (
     ModelFragment,
     ResolvedScenario,
 )
-from sr2_spectre.tools.scaffold_compiler import (
+from spctr.tools.scaffold_compiler import (
     CompiledPrompt,
     compile_scaffold,
 )

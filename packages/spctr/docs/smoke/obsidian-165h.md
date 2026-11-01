@@ -10,7 +10,7 @@
 ## 0. One-time setup
 
 ```bash
-cd /home/shepard/git/sr2-spectre
+cd /home/shepard/git/spctr
 ```
 
 ```bash
@@ -34,9 +34,9 @@ git log --oneline -3
 ## 2. TUI — visual region check (manual, no eyeballing a terminal)
 
 ```bash
-.venv/bin/python -c "import asyncio; from unittest.mock import MagicMock; from sr2_spectre.interfaces.tui import SpectreTUI; from textual.widgets import Static, Footer
+.venv/bin/python -c "import asyncio; from unittest.mock import MagicMock; from spctr.interfaces.tui import SpctrTUI; from textual.widgets import Static, Footer
 async def m():
- app=SpectreTUI(MagicMock())
+ app=SpctrTUI(MagicMock())
  async with app.run_test(size=(80,24)) as p:
   app.set_working_status(); await p.pause()
   print('status', app.query_one('#status',Static).region.y, 'footer', app.query_one(Footer).region.y, 'visible', 'Working' in app.export_screenshot())

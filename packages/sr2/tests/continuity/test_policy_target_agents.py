@@ -2,7 +2,7 @@
 
 Landing spot fixed by the bead: ``sr2.continuity.policy._rule_matches``.
 
-FR16 (spec, verbatim): "Each Spectre agent MUST have a configurable profile
+FR16 (spec, verbatim): "Each spctr agent MUST have a configurable profile
 containing allow, deny, and boost rules matched on record kind, projects,
 topics/tags, sensitivity, source agent, and target agent/profile tags. Deny
 is evaluated before scoring and always wins."

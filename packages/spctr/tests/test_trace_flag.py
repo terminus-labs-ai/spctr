@@ -13,8 +13,8 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
-from sr2_spectre.cli import _parse_args, run_async
-from sr2_spectre.core import TurnResult
+from spctr.cli import _parse_args, run_async
+from spctr.core import TurnResult
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +41,7 @@ def test_parse_args_trace_is_true_when_flag_given() -> None:
 # ---------------------------------------------------------------------------
 
 def _make_mock_config() -> MagicMock:
-    """Minimal SpectreConfig stand-in."""
+    """Minimal SpctrConfig stand-in."""
     config = MagicMock()
     config.agent.name = "test-agent"
     config.agent.tools = []
@@ -76,10 +76,10 @@ async def test_trace_flag_wires_collecting_tracer_into_agent(
     captured_tracer: list = []
 
     with (
-        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
-        patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface()),),
-        patch("sr2_spectre.cli.Agent") as MockAgent,
+        patch("spctr.cli.resolve_config", return_value=mock_config),
+        patch("spctr.cli._configure_logging"),
+        patch("spctr.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface()),),
+        patch("spctr.cli.Agent") as MockAgent,
     ):
         # Agent() returns an async-capable mock
         mock_agent_instance = AsyncMock()
@@ -130,16 +130,16 @@ async def test_trace_output_printed_after_reply(
     TRACE_SENTINEL = "<<TRACE_OUTPUT_SENTINEL>>"
 
     with (
-        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
-        patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris")),),
-        patch("sr2_spectre.cli.Agent") as MockAgent,
+        patch("spctr.cli.resolve_config", return_value=mock_config),
+        patch("spctr.cli._configure_logging"),
+        patch("spctr.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris")),),
+        patch("spctr.cli.Agent") as MockAgent,
         # render_trace may be imported as a name into cli (from ... import render_trace)
         # or called qualified (sr2.pipeline.tracing.render_trace).  Patch both so the
         # test works regardless of which import form the implementer chooses.
         # create=True allows patching names that don't exist in the module yet.
         patch(
-            "sr2_spectre.cli.render_trace",
+            "spctr.cli.render_trace",
             return_value=TRACE_SENTINEL,
             create=True,
         ),
@@ -187,11 +187,11 @@ async def test_no_trace_output_when_flag_absent(
     mock_config = _make_mock_config()
 
     with (
-        patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
-        patch("sr2_spectre.cli._configure_logging"),
-        patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris")),),
-        patch("sr2_spectre.cli.Agent") as MockAgent,
-        patch("sr2_spectre.cli.render_trace", return_value="TRACE", create=True) as mock_rt,
+        patch("spctr.cli.resolve_config", return_value=mock_config),
+        patch("spctr.cli._configure_logging"),
+        patch("spctr.cli._load_interface", return_value=_fake_interface_cls(_make_mock_interface("Paris")),),
+        patch("spctr.cli.Agent") as MockAgent,
+        patch("spctr.cli.render_trace", return_value="TRACE", create=True) as mock_rt,
     ):
         mock_agent_instance = AsyncMock()
         mock_agent_instance.handle_user_message.return_value = TurnResult(

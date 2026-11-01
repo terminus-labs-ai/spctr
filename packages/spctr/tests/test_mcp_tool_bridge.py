@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from sr2_spectre.mcp.tool_bridge import MCPToolBridge
+from spctr.mcp.tool_bridge import MCPToolBridge
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +248,7 @@ def test_bridge_call_is_detected_as_coroutine_function() -> None:
 
 def test_bridge_is_registered_as_async_in_tool_registry() -> None:
     """Smoke test: registering the bridge produces is_async=True in ToolSpec."""
-    from sr2_spectre.tools.registry import ToolRegistry
+    from spctr.tools.registry import ToolRegistry
 
     tool = _make_mcp_tool(
         name="registered_tool",

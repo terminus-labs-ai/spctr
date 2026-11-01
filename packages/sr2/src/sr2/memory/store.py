@@ -1,6 +1,6 @@
 """In-memory MemoryStore implementation.
 
-Dict-backed store for Spectre MVP — no persistence, no embeddings.
+Dict-backed store for spctr MVP — no persistence, no embeddings.
 Search uses keyword matching on content + tags, ranked by frequency × recency.
 """
 

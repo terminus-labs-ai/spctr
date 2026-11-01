@@ -1,13 +1,13 @@
-# SR2 Spectre — Configuration Reference
+# SR2 spctr — Configuration Reference
 
 Complete reference for all configuration fields, resolution order, and environment variables.
 
 ## File structure
 
-A Spectre config is a YAML file with three top-level sections:
+A spctr config is a YAML file with three top-level sections:
 
 ```yaml
-agent:      # Spectre-owned concerns (tools, MCP, skills)
+agent:      # spctr-owned concerns (tools, MCP, skills)
 models:     # LLM endpoints
 pipeline:   # SR2 pipeline (layers, budgets, resolvers)
 ```
@@ -27,7 +27,7 @@ agent:
   tool_result_max_bytes: 65536
 ```
 
-### `agent.name` (str, default: `"spectre"`)
+### `agent.name` (str, default: `"spctr"`)
 
 Human-readable name for the agent. Used in logs and session identifiers.
 
@@ -53,7 +53,7 @@ Built-in tools to register. Each entry:
 ```yaml
   tools:
     - name: terminal
-      class_path: sr2_spectre.tools.builtins.terminal.TerminalTool
+      class_path: spctr.tools.builtins.terminal.TerminalTool
       config:
         timeout: 30
 ```
@@ -66,18 +66,18 @@ Built-in tools to register. Each entry:
 
 | `name` | `class_path` | Config options |
 |--------|-------------|----------------|
-| `terminal` | `sr2_spectre.tools.builtins.terminal.TerminalTool` | `timeout` (int, default: 30) |
-| `file_read` | `sr2_spectre.tools.builtins.file_read.FileReadTool` | `max_bytes` (int, default: 1000000) |
-| `file_write` | `sr2_spectre.tools.builtins.file_write.FileWriteTool` | none |
-| `edit` | `sr2_spectre.tools.builtins.edit.EditTool` | none |
-| `grep` | `sr2_spectre.tools.builtins.grep.GrepTool` | none |
-| `glob` | `sr2_spectre.tools.builtins.glob.GlobTool` | none |
-| `web_search` | `sr2_spectre.tools.builtins.web_search.WebSearchTool` | `base_url` (str, required — SearXNG URL), `max_results` (int, default: 5) |
-| `code_exec` | `sr2_spectre.tools.builtins.code_exec.CodeExecTool` | `timeout` (int, default: 10) |
-| `read_symbol` | `sr2_spectre.tools.builtins.read_symbol.ReadSymbolTool` | none |
-| `complete_step` | `sr2_spectre.tools.builtins.complete_step.CompleteStepTool` | `plans_root` (str, default: `~/.sr2/plans`) |
-| `load_skill` | `sr2_spectre.tools.builtins.load_skill.LoadSkillTool` | none |
-| `test_guard` | `sr2_spectre.tools.builtins.test_guard.TestGuardTool` | none |
+| `terminal` | `spctr.tools.builtins.terminal.TerminalTool` | `timeout` (int, default: 30) |
+| `file_read` | `spctr.tools.builtins.file_read.FileReadTool` | `max_bytes` (int, default: 1000000) |
+| `file_write` | `spctr.tools.builtins.file_write.FileWriteTool` | none |
+| `edit` | `spctr.tools.builtins.edit.EditTool` | none |
+| `grep` | `spctr.tools.builtins.grep.GrepTool` | none |
+| `glob` | `spctr.tools.builtins.glob.GlobTool` | none |
+| `web_search` | `spctr.tools.builtins.web_search.WebSearchTool` | `base_url` (str, required — SearXNG URL), `max_results` (int, default: 5) |
+| `code_exec` | `spctr.tools.builtins.code_exec.CodeExecTool` | `timeout` (int, default: 10) |
+| `read_symbol` | `spctr.tools.builtins.read_symbol.ReadSymbolTool` | none |
+| `complete_step` | `spctr.tools.builtins.complete_step.CompleteStepTool` | `plans_root` (str, default: `~/.sr2/plans`) |
+| `load_skill` | `spctr.tools.builtins.load_skill.LoadSkillTool` | none |
+| `test_guard` | `spctr.tools.builtins.test_guard.TestGuardTool` | none |
 
 ### `agent.mcp_servers` (list[McpServerConfig])
 
@@ -122,13 +122,13 @@ Loadable skill files — knowledge packages loaded at runtime.
 
 - **`name`** (str, required): Skill identifier.
 - **`path`** (str, required): File path. Supports `~` and `${VAR}` expansion.
-  Plain relative paths resolve from Spectre's process working directory.
+  Plain relative paths resolve from spctr's process working directory.
 - **`description`** (str, optional): Override the auto-derived description.
 - **`version`** (str, default: `"0.1.0"`): Skill version.
 - **`tags`** (list[str], optional): Tags for skill filtering.
 
 An unset variable in `agent.skills[].path` produces a warning that identifies
-the skill and path. Spectre skips only that skill; startup and live reload
+the skill and path. spctr skips only that skill; startup and live reload
 continue with the remaining registry entries.
 
 ### `agent.tool_result_max_bytes` (int, default: `65536`)
@@ -231,7 +231,7 @@ pipeline:
       target: tools
       resolvers: []
       tool_providers:
-        - type: spectre_tools
+        - type: spctr_tools
     - name: conversation
       target: messages
       resolvers:
@@ -332,14 +332,14 @@ fallback, and no `path` or `on_missing` setting.
 
 ## Config Resolution (4-tier merge)
 
-Spectre uses a 4-tier configuration resolution system. Later tiers override earlier ones:
+spctr uses a 4-tier configuration resolution system. Later tiers override earlier ones:
 
 | Tier | File | Scope |
 |------|------|-------|
 | 1 | `$SR2_HOME/config.yaml` | User global defaults |
-| 2 | `$SR2_HOME/spectre.yaml` | Spectre-specific defaults |
-| 3 | `<cwd>/.spectre.yaml` | Project overrides |
-| 4 | Positional file (`sr2-spectre my-config.yaml`) | Active run config |
+| 2 | `$SR2_HOME/spctr.yaml` | spctr-specific defaults |
+| 3 | `<cwd>/.spctr.yaml` | Project overrides |
+| 4 | Positional file (`spctr my-config.yaml`) | Active run config |
 
 Missing tier files are silently skipped. The positional file (tier 4) must exist.
 
@@ -373,7 +373,7 @@ longstanding process-CWD-relative behavior while supporting the same `~` and
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `SR2_HOME` | `~/.sr2` | Base directory for SR2/Spectre configs and data |
+| `SR2_HOME` | `~/.sr2` | Base directory for SR2/spctr configs and data |
 | `SR2_SESSION_LOG_DIR` | `$SR2_HOME/logs/sessions` | Session log directory; `off` disables session logs |
 
 ---
@@ -454,7 +454,7 @@ is no `CLAUDE.md` lookup, no `.git` walk, and no ancestor discovery.
 
 - `/data/obsidian/topics/harbinger` → `harbinger` (even though
   `/data/obsidian` contains `CLAUDE.md` and a git root)
-- `~/git/sr2-spectre/src` → `src`
+- `~/git/spctr/src` → `src`
 - a directory with no markers at all → its own basename, no fallback warning
 
 A non-empty `SR2_AREA` environment variable is the only override; an empty
@@ -550,7 +550,7 @@ A missing, unreadable, malformed or incomplete zuliprc fails startup with `Zulip
 ### Transport
 
 `ZulipClient(credentials=..., config=..., request_timeout=...)` (from
-`sr2_spectre.interfaces.zulip`) is the public HTTP transport: `register()`
+`spctr.interfaces.zulip`) is the public HTTP transport: `register()`
 (subscribes to `message` events and fetches `realm_user` state; in stream
 mode it also sets `all_public_streams`, so public channels deliver
 messages without a bot subscription),
@@ -722,7 +722,7 @@ The schedule stays active.
 
 ### Agent payload
 
-Runs a headless dispatch turn via `sr2-spectre dispatch --agent <name>
+Runs a headless dispatch turn via `spctr dispatch --agent <name>
 --prompt-file <tmp> --timeout <agent_timeout_seconds> --out <tmp>` with
 the stored instruction. The engine reads the JSON envelope and posts the
 result to the destination channel.
@@ -805,7 +805,7 @@ A change to one of these logs a warning **once** — not per message — then ke
 the startup value:
 
 ```
-Spectre config: 'agent.mcp_servers' changed on disk but cannot be applied
+spctr config: 'agent.mcp_servers' changed on disk but cannot be applied
 without a restart — keeping the value the process started with.
 ```
 
@@ -863,8 +863,8 @@ traffic, not with config size.
 
 | Piece | Where |
 |-------|-------|
-| Reload machinery, pinned fields | `sr2_spectre/config_source.py` |
-| Swappable LLM handle | `sr2_spectre/live_llm.py` |
+| Reload machinery, pinned fields | `spctr/config_source.py` |
+| Swappable LLM handle | `spctr/live_llm.py` |
 | Applying a reload to a live process | `Runtime.apply_config` |
 | Per-conversation adoption, SR2 rebuild | `Session.apply_config` |
 | Discord wiring (one read serves both halves) | `interfaces/discord/config_source.py` |

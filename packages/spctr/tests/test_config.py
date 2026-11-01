@@ -3,10 +3,10 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
-from sr2_spectre.config import (
+from spctr.config import (
     AgentConfig,
     ModelConfig,
-    SpectreConfig,
+    SpctrConfig,
     ToolConfig,
     load_config,
 )
@@ -34,7 +34,7 @@ class TestModelConfig:
 class TestAgentConfig:
     def test_defaults(self):
         cfg = AgentConfig()
-        assert cfg.name == "spectre"
+        assert cfg.name == "spctr"
         assert cfg.tools == []
 
     def test_no_model_field(self):
@@ -46,17 +46,17 @@ class TestAgentConfig:
 
     def test_with_tools(self):
         cfg = AgentConfig(tools=[
-            ToolConfig(name="search", class_path="sr2_spectre.tools:Search")
+            ToolConfig(name="search", class_path="spctr.tools:Search")
         ])
         assert len(cfg.tools) == 1
         assert cfg.tools[0].name == "search"
 
 
 # ---------------------------------------------------------------------------
-# SpectreConfig — new shape with models + pipeline
+# SpctrConfig — new shape with models + pipeline
 # ---------------------------------------------------------------------------
 
-class TestSpectreConfig:
+class TestSpctrConfig:
     def _make_pipeline_dict(self):
         return {
             "layers": [
@@ -69,22 +69,22 @@ class TestSpectreConfig:
         }
 
     def test_minimal_valid_config(self):
-        cfg = SpectreConfig(
+        cfg = SpctrConfig(
             agent=AgentConfig(),
             models={"default": ModelConfig(model="openai/gpt-4o")},
             pipeline=self._make_pipeline_dict(),
         )
-        assert cfg.agent.name == "spectre"
+        assert cfg.agent.name == "spctr"
         assert "default" in cfg.models
         assert len(cfg.pipeline.layers) == 1
 
     def test_models_required(self):
         with pytest.raises((ValidationError, TypeError)):
-            SpectreConfig(agent=AgentConfig(), pipeline=self._make_pipeline_dict())
+            SpctrConfig(agent=AgentConfig(), pipeline=self._make_pipeline_dict())
 
     def test_pipeline_required(self):
         with pytest.raises((ValidationError, TypeError)):
-            SpectreConfig(
+            SpctrConfig(
                 agent=AgentConfig(),
                 models={"default": ModelConfig(model="openai/gpt-4o")},
             )
@@ -121,7 +121,7 @@ class TestLoadConfig:
             "      target: tools\n"
             "      resolvers: []\n"
             "      tool_providers:\n"
-            "        - type: spectre_tools\n"
+            "        - type: spctr_tools\n"
             "    - name: conversation\n"
             "      target: messages\n"
             "      resolvers:\n"

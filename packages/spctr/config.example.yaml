@@ -1,7 +1,7 @@
-# SR2 Spectre — example configuration
+# SR2 spctr — example configuration
 #
-# Copy this file, fill in your values, and pass it to sr2-spectre:
-#   sr2-spectre my-config.yaml --plugin tui
+# Copy this file, fill in your values, and pass it to spctr:
+#   spctr my-config.yaml --plugin tui
 
 # Agent-level settings
 agent:
@@ -18,28 +18,28 @@ agent:
   # Remove tools you don't want, or add custom ones.
   tools:
     - name: terminal
-      class_path: sr2_spectre.tools.builtins.terminal.TerminalTool
+      class_path: spctr.tools.builtins.terminal.TerminalTool
       config:
         timeout: 30           # seconds before command is killed
 
     - name: file_read
-      class_path: sr2_spectre.tools.builtins.file_read.FileReadTool
+      class_path: spctr.tools.builtins.file_read.FileReadTool
       config:
         max_bytes: 1000000    # refuse files larger than this
 
     - name: file_write
-      class_path: sr2_spectre.tools.builtins.file_write.FileWriteTool
+      class_path: spctr.tools.builtins.file_write.FileWriteTool
 
     # Uncomment to enable web search via a SearXNG instance
     # - name: web_search
-    #   class_path: sr2_spectre.tools.builtins.web_search.WebSearchTool
+    #   class_path: spctr.tools.builtins.web_search.WebSearchTool
     #   config:
     #     base_url: http://localhost:8080   # your SearXNG URL
     #     max_results: 5
 
     # Planning: verify-gated task completion (requires PlanResolver in pipeline)
     # - name: complete_step
-    #   class_path: sr2_spectre.tools.builtins.complete_step.CompleteStepTool
+    #   class_path: spctr.tools.builtins.complete_step.CompleteStepTool
     #   config:
     #     plans_root: ~/.sr2/plans   # optional; defaults to ~/.sr2/plans
 
@@ -70,7 +70,7 @@ pipeline:
       target: tools
       resolvers: []
       tool_providers:
-        - type: spectre_tools
+        - type: spctr_tools
 
     # Conversation history layer
     - name: conversation

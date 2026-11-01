@@ -1,12 +1,12 @@
-"""Tests for SpectreToolProvider (Step 2).
+"""Tests for SpctrToolProvider (Step 2).
 
 Covers:
   A. build() reads tool_registry from deps.tool_source
   B. provide() returns ToolDefinition list from the registry
   C. Protocol attributes (subscriptions, max_executions, execution_count)
   D. execution_count incremented inside provide()
-  E. Entry-point discovery: spectre_tools appears in _TOOL_PROVIDERS
-  F. End-to-end: SpectreToolProvider injects tools into CompletionRequest.tools
+  E. Entry-point discovery: spctr_tools appears in _TOOL_PROVIDERS
+  F. End-to-end: SpctrToolProvider injects tools into CompletionRequest.tools
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from sr2.models import ToolDefinition
 from sr2.pipeline.events import EventSubscription
 from sr2.pipeline.token_counting import CharacterTokenCounter
 from sr2.protocols.llm import CompletionRequest, CompletionResponse, StreamEvent, TextBlock
-from sr2_spectre.tools.registry import ToolRegistry
+from spctr.tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,7 @@ def _make_deps(registry: ToolRegistry | None = None) -> Any:
 
 def _make_config(max_executions: int = 1) -> Any:
     from sr2.config.models import ToolProviderConfig
-    return ToolProviderConfig(type="spectre_tools", max_executions=max_executions)
+    return ToolProviderConfig(type="spctr_tools", max_executions=max_executions)
 
 
 # ---------------------------------------------------------------------------
@@ -56,22 +56,22 @@ def _make_config(max_executions: int = 1) -> Any:
 
 class TestBuild:
     def test_build_returns_provider_instance(self):
-        from sr2_spectre.providers import SpectreToolProvider
-        provider = SpectreToolProvider.build(_make_config(), _make_deps())
-        assert isinstance(provider, SpectreToolProvider)
+        from spctr.providers import SpctrToolProvider
+        provider = SpctrToolProvider.build(_make_config(), _make_deps())
+        assert isinstance(provider, SpctrToolProvider)
 
     def test_build_reads_tool_registry_from_tool_source(self):
-        from sr2_spectre.providers import SpectreToolProvider
+        from spctr.providers import SpctrToolProvider
         reg = _make_registry("search")
-        provider = SpectreToolProvider.build(_make_config(), _make_deps(reg))
+        provider = SpctrToolProvider.build(_make_config(), _make_deps(reg))
         assert provider._registry is reg
 
     def test_build_missing_tool_registry_raises(self):
         from sr2.pipeline.dependencies import Dependencies
-        from sr2_spectre.providers import SpectreToolProvider
+        from spctr.providers import SpctrToolProvider
         deps = Dependencies(tool_source=None)
         with pytest.raises(RuntimeError, match="tool_source"):
-            SpectreToolProvider.build(_make_config(), deps)
+            SpctrToolProvider.build(_make_config(), deps)
 
 
 # ---------------------------------------------------------------------------
@@ -81,9 +81,9 @@ class TestBuild:
 class TestProvide:
     @pytest.mark.asyncio
     async def test_provide_returns_tool_definitions(self):
-        from sr2_spectre.providers import SpectreToolProvider
+        from spctr.providers import SpctrToolProvider
         reg = _make_registry("search", "write")
-        provider = SpectreToolProvider.build(_make_config(), _make_deps(reg))
+        provider = SpctrToolProvider.build(_make_config(), _make_deps(reg))
         result = await provider.provide(events=[])
         assert len(result) == 2
         assert all(isinstance(d, ToolDefinition) for d in result)
@@ -92,18 +92,18 @@ class TestProvide:
 
     @pytest.mark.asyncio
     async def test_provide_empty_registry(self):
-        from sr2_spectre.providers import SpectreToolProvider
-        provider = SpectreToolProvider.build(_make_config(), _make_deps(_make_registry()))
+        from spctr.providers import SpctrToolProvider
+        provider = SpctrToolProvider.build(_make_config(), _make_deps(_make_registry()))
         result = await provider.provide(events=[])
         assert result == []
 
     @pytest.mark.asyncio
     async def test_provide_definition_fields_match_registry(self):
-        from sr2_spectre.providers import SpectreToolProvider
+        from spctr.providers import SpctrToolProvider
         schema = {"type": "object", "properties": {"q": {"type": "string"}}}
         reg = ToolRegistry()
         reg.register(name="lookup", description="Look something up", input_schema=schema, fn=lambda q: q)
-        provider = SpectreToolProvider.build(_make_config(), _make_deps(reg))
+        provider = SpctrToolProvider.build(_make_config(), _make_deps(reg))
         result = await provider.provide(events=[])
         assert result[0].name == "lookup"
         assert result[0].description == "Look something up"
@@ -116,25 +116,25 @@ class TestProvide:
 
 class TestProtocolAttributes:
     def test_has_subscriptions(self):
-        from sr2_spectre.providers import SpectreToolProvider
-        provider = SpectreToolProvider.build(_make_config(), _make_deps())
+        from spctr.providers import SpctrToolProvider
+        provider = SpctrToolProvider.build(_make_config(), _make_deps())
         assert hasattr(provider, "subscriptions")
         assert isinstance(provider.subscriptions, list)
 
     def test_subscriptions_include_turn_start(self):
-        from sr2_spectre.providers import SpectreToolProvider
-        provider = SpectreToolProvider.build(_make_config(), _make_deps())
+        from spctr.providers import SpctrToolProvider
+        provider = SpctrToolProvider.build(_make_config(), _make_deps())
         event_names = [s.event_name for s in provider.subscriptions]
         assert "turn_start" in event_names
 
     def test_has_max_executions(self):
-        from sr2_spectre.providers import SpectreToolProvider
-        provider = SpectreToolProvider.build(_make_config(max_executions=3), _make_deps())
+        from spctr.providers import SpctrToolProvider
+        provider = SpctrToolProvider.build(_make_config(max_executions=3), _make_deps())
         assert provider.max_executions == 3
 
     def test_has_execution_count_zero(self):
-        from sr2_spectre.providers import SpectreToolProvider
-        provider = SpectreToolProvider.build(_make_config(), _make_deps())
+        from spctr.providers import SpctrToolProvider
+        provider = SpctrToolProvider.build(_make_config(), _make_deps())
         assert provider.execution_count == 0
 
 
@@ -145,16 +145,16 @@ class TestProtocolAttributes:
 class TestExecutionCount:
     @pytest.mark.asyncio
     async def test_execution_count_incremented_after_provide(self):
-        from sr2_spectre.providers import SpectreToolProvider
-        provider = SpectreToolProvider.build(_make_config(), _make_deps())
+        from spctr.providers import SpctrToolProvider
+        provider = SpctrToolProvider.build(_make_config(), _make_deps())
         assert provider.execution_count == 0
         await provider.provide(events=[])
         assert provider.execution_count == 1
 
     @pytest.mark.asyncio
     async def test_execution_count_increments_each_call(self):
-        from sr2_spectre.providers import SpectreToolProvider
-        provider = SpectreToolProvider.build(_make_config(max_executions=5), _make_deps())
+        from spctr.providers import SpctrToolProvider
+        provider = SpctrToolProvider.build(_make_config(max_executions=5), _make_deps())
         for i in range(3):
             await provider.provide(events=[])
         assert provider.execution_count == 3
@@ -165,21 +165,21 @@ class TestExecutionCount:
 # ---------------------------------------------------------------------------
 
 class TestEntryPointDiscovery:
-    def test_spectre_tools_entry_point_registered(self):
-        """spectre_tools appears in importlib entry points after uv sync."""
+    def test_spctr_tools_entry_point_registered(self):
+        """spctr_tools appears in importlib entry points after uv sync."""
         eps = importlib.metadata.entry_points(group="sr2.tool_providers")
         names = [ep.name for ep in eps]
-        assert "spectre_tools" in names, (
-            f"spectre_tools not found in sr2.tool_providers entry points. "
+        assert "spctr_tools" in names, (
+            f"spctr_tools not found in sr2.tool_providers entry points. "
             f"Found: {names}. Did you run 'uv sync'?"
         )
 
-    def test_spectre_tools_loads_correct_class(self):
-        from sr2_spectre.providers import SpectreToolProvider
+    def test_spctr_tools_loads_correct_class(self):
+        from spctr.providers import SpctrToolProvider
         eps = importlib.metadata.entry_points(group="sr2.tool_providers")
-        ep = next(ep for ep in eps if ep.name == "spectre_tools")
+        ep = next(ep for ep in eps if ep.name == "spctr_tools")
         cls = ep.load()
-        assert cls is SpectreToolProvider
+        assert cls is SpctrToolProvider
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +215,7 @@ class TestEndToEnd:
         _reset_discovery()
 
     def _ep_side_effect(self, registry: ToolRegistry):
-        from sr2_spectre.providers import SpectreToolProvider
+        from spctr.providers import SpctrToolProvider
         from sr2.pipeline.resolvers.static import StaticResolver
 
         def _side(group: str):
@@ -227,16 +227,16 @@ class TestEndToEnd:
                 return [ep]
             if group == "sr2.tool_providers":
                 ep = MagicMock(spec=importlib.metadata.EntryPoint)
-                ep.name = "spectre_tools"
-                ep.load.return_value = SpectreToolProvider
-                ep.dist = MagicMock(); ep.dist.name = "sr2-spectre"
+                ep.name = "spctr_tools"
+                ep.load.return_value = SpctrToolProvider
+                ep.dist = MagicMock(); ep.dist.name = "spctr"
                 return [ep]
             return []
         return _side
 
     @pytest.mark.asyncio
-    async def test_spectre_tools_injected_into_request(self, reset_registries):
-        """SpectreToolProvider on a TOOLS layer → tools in CompletionRequest."""
+    async def test_spctr_tools_injected_into_request(self, reset_registries):
+        """SpctrToolProvider on a TOOLS layer → tools in CompletionRequest."""
         from sr2.config.models import LayerConfig, PipelineConfig, ResolverConfig, ToolProviderConfig
         from sr2.orchestrator import SR2
 
@@ -248,7 +248,7 @@ class TestEndToEnd:
                 ResolverConfig(type="static", config={"text": "You are helpful."})
             ]),
             LayerConfig(name="tools", target="tools", resolvers=[], tool_providers=[
-                ToolProviderConfig(type="spectre_tools")
+                ToolProviderConfig(type="spctr_tools")
             ]),
         ])
 
@@ -268,7 +268,7 @@ class TestEndToEnd:
         assert tools[0].name == "web_search"
 
     @pytest.mark.asyncio
-    async def test_spectre_tools_present_on_turn_two(self, reset_registries):
+    async def test_spctr_tools_present_on_turn_two(self, reset_registries):
         """Tools appear in CompletionRequest on both turn 1 and turn 2."""
         from sr2.config.models import LayerConfig, PipelineConfig, ResolverConfig, ToolProviderConfig
         from sr2.orchestrator import SR2
@@ -281,7 +281,7 @@ class TestEndToEnd:
                 ResolverConfig(type="static", config={"text": "You are helpful."})
             ]),
             LayerConfig(name="tools", target="tools", resolvers=[], tool_providers=[
-                ToolProviderConfig(type="spectre_tools")
+                ToolProviderConfig(type="spctr_tools")
             ]),
         ])
 

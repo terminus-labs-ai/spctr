@@ -11,7 +11,7 @@ Covers:
   H. handle_user_message() still works (re-implemented on top of stream_message())
   I. Multi-round: text + tool + text emitted in correct order
 
-NOTE: Imports from sr2_spectre.events will fail until that module is implemented.
+NOTE: Imports from spctr.events will fail until that module is implemented.
 This is intentional — these are TDD tests written before the implementation exists.
 """
 
@@ -25,10 +25,10 @@ import pytest
 from sr2.config.models import ToolLoopLimitError
 from sr2.models import Message, TextBlock, ToolResultBlock, ToolUseBlock
 from sr2.protocols.llm import StreamEvent
-from sr2_spectre.agent import Agent
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.core import TurnResult
-from sr2_spectre.events import (
+from spctr.agent import Agent
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.core import TurnResult
+from spctr.events import (
     AgentDone,
     AgentEvent,
     AgentThinkingDelta,
@@ -54,7 +54,7 @@ def _minimal_pipeline_dict() -> dict:
                 "name": "tools",
                 "target": "tools",
                 "resolvers": [],
-                "tool_providers": [{"type": "spectre_tools"}],
+                "tool_providers": [{"type": "spctr_tools"}],
             },
             {
                 "name": "conversation",
@@ -65,8 +65,8 @@ def _minimal_pipeline_dict() -> dict:
     }
 
 
-def _make_config(**agent_kwargs) -> SpectreConfig:
-    return SpectreConfig(
+def _make_config(**agent_kwargs) -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(name="test", **agent_kwargs),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline=_minimal_pipeline_dict(),
@@ -94,7 +94,7 @@ def _mock_sr2_with_rounds(*round_event_lists: list[StreamEvent]) -> MagicMock:
 
 
 def _make_agent(mock_sr2: MagicMock, **config_kwargs) -> Agent:
-    with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
+    with patch("spctr.session.SR2", return_value=mock_sr2):
         return Agent(config=_make_config(**config_kwargs), session_id="test-session")
 
 

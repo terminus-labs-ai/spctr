@@ -1,4 +1,4 @@
-"""LiteLLM must not use its aiohttp transport in a Spectre process.
+"""LiteLLM must not use its aiohttp transport in a spctr process.
 
 LiteLLM caches HTTP clients for an hour and drops expired ones without
 closing them; with the aiohttp transport each dropped client logs
@@ -13,7 +13,7 @@ import litellm
 import pytest
 from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler
 
-from sr2_spectre.cli import _configure_logging
+from spctr.cli import _configure_logging
 
 
 @pytest.fixture
@@ -33,6 +33,6 @@ def restore_global_state(monkeypatch):
 def test_configure_logging_selects_httpx_transport(tmp_path, restore_global_state):
     assert AsyncHTTPHandler._should_use_aiohttp_transport() is True
 
-    _configure_logging("INFO", str(tmp_path / "spectre.log"))
+    _configure_logging("INFO", str(tmp_path / "spctr.log"))
 
     assert AsyncHTTPHandler._should_use_aiohttp_transport() is False

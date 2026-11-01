@@ -25,11 +25,11 @@ from sr2.models import ToolResultBlock, ToolUseBlock
 
 from tests.conftest import _surviving_pids
 
-from sr2_spectre.tools.builtins.complete_step import (
+from spctr.tools.builtins.complete_step import (
     CompleteStepResult,
     CompleteStepTool,
 )
-from sr2_spectre.tools.output import PostExecuteEvent, ToolOutput
+from spctr.tools.output import PostExecuteEvent, ToolOutput
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +362,7 @@ class TestStatusFlipSpacingVariants:
         data = _extract_json(result)
         assert data["success"] is True
 
-        from sr2_spectre.planning import parse_file
+        from spctr.planning import parse_file
 
         parsed = parse_file(task)
         assert parsed is not None
@@ -462,7 +462,7 @@ class TestStatusFlipSpacingVariants:
         data = _extract_json(result)
         assert data["success"] is True
 
-        from sr2_spectre.planning import parse_file
+        from spctr.planning import parse_file
 
         parsed = parse_file(task)
         assert parsed is not None
@@ -513,7 +513,7 @@ class TestSessionToolOutputDispatch:
 
     async def test_executor_dispatches_tool_output_events(self) -> None:
         """When a tool returns ToolOutput with events, they are dispatched on the bus."""
-        from sr2_spectre.session import Session
+        from spctr.session import Session
 
         # Build a minimal session with mocks
         mock_config = MagicMock()
@@ -565,7 +565,7 @@ class TestSessionToolOutputDispatch:
 
     async def test_executor_plain_result_no_dispatch(self) -> None:
         """Plain string results (no ToolOutput) produce no bus events."""
-        from sr2_spectre.session import Session
+        from spctr.session import Session
 
         mock_config = MagicMock()
         mock_config.agent.tool_result_max_bytes = 1024
@@ -600,7 +600,7 @@ class TestSessionToolOutputDispatch:
         This verifies the OCP fix: events come from the tool, not from
         the executor sniffing block.name.
         """
-        from sr2_spectre.session import Session
+        from spctr.session import Session
         import inspect
 
         source = inspect.getsource(Session._execute_tool)
@@ -609,7 +609,7 @@ class TestSessionToolOutputDispatch:
 
     async def test_executor_multiple_events(self) -> None:
         """A tool can declare multiple post-execute events."""
-        from sr2_spectre.session import Session
+        from spctr.session import Session
 
         mock_config = MagicMock()
         mock_config.agent.tool_result_max_bytes = 1024
@@ -660,7 +660,7 @@ class TestAgentModuleClean:
     def test_agent_no_complete_step_sniffing(self) -> None:
         """agent.py should not contain complete_step name-magic."""
         import inspect
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         source = inspect.getsource(Agent)
         assert "complete_step" not in source
@@ -668,9 +668,9 @@ class TestAgentModuleClean:
 
     def test_agent_no_json_import(self) -> None:
         """agent.py no longer imports json for result parsing."""
-        from sr2_spectre.agent import __dict__ as agent_dict
+        from spctr.agent import __dict__ as agent_dict
         # The module shouldn't have _is_complete_step_success
-        assert "_is_complete_step_success" not in dir(__import__("sr2_spectre.agent", fromlist=[""]))
+        assert "_is_complete_step_success" not in dir(__import__("spctr.agent", fromlist=[""]))
 
 
 # ---------------------------------------------------------------------------

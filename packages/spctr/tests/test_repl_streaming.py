@@ -34,7 +34,7 @@ class _LineSink:
 def _make_repl_with_sink():
     """Build a REPLInterface with an in-memory Rich console; returns (iface, sink)."""
     from rich.console import Console
-    from sr2_spectre.interfaces.repl import REPLInterface
+    from spctr.interfaces.repl import REPLInterface
 
     sink = _LineSink()
     iface = REPLInterface(console=Console(file=sink, force_terminal=True, width=100))
@@ -56,7 +56,7 @@ async def test_stream_turn_live_region_wipes_and_streams(make_mock_agent) -> Non
     deltas appear as one blob instead of streaming).
     """
     import rich.live
-    from sr2_spectre.events import AgentDone, AgentTextDelta
+    from spctr.events import AgentDone, AgentTextDelta
 
     captured: dict = {}
     real_live = rich.live.Live
@@ -94,7 +94,7 @@ async def test_stream_turn_live_region_wipes_and_streams(make_mock_agent) -> Non
 
 @pytest.mark.asyncio
 async def test_stream_turn_renders_text(make_mock_agent) -> None:
-    from sr2_spectre.events import AgentDone, AgentTextDelta
+    from spctr.events import AgentDone, AgentTextDelta
 
     agent = make_mock_agent(stream_events=[
         AgentTextDelta(text="Hello "),
@@ -122,7 +122,7 @@ async def test_stream_turn_streams_thinking_in_the_live_frame(make_mock_agent) -
     So this inspects what _stream_turn actually hands to Live.update().
     """
     import rich.live
-    from sr2_spectre.events import AgentDone, AgentThinkingDelta, AgentTextDelta
+    from spctr.events import AgentDone, AgentThinkingDelta, AgentTextDelta
 
     frames: list[str] = []
     real_live = rich.live.Live
@@ -164,8 +164,8 @@ async def test_stream_turn_commits_each_round_once(make_mock_agent, monkeypatch)
     console performs no erasure, so it cannot prove the live frame was wiped.
     tests/test_repl_pty.py covers that against a real terminal.
     """
-    import sr2_spectre.interfaces.repl as repl_mod
-    from sr2_spectre.events import (
+    import spctr.interfaces.repl as repl_mod
+    from spctr.events import (
         AgentDone,
         AgentToolResult,
         AgentToolStart,
@@ -202,8 +202,8 @@ async def test_stream_turn_commits_each_round_once(make_mock_agent, monkeypatch)
 @pytest.mark.asyncio
 async def test_stream_turn_commits_nothing_twice_within_a_round(make_mock_agent, monkeypatch) -> None:
     """Text committed when a round ends is not carried into the next commit."""
-    import sr2_spectre.interfaces.repl as repl_mod
-    from sr2_spectre.events import (
+    import spctr.interfaces.repl as repl_mod
+    from spctr.events import (
         AgentDone,
         AgentToolResult,
         AgentToolStart,
@@ -239,7 +239,7 @@ async def test_stream_turn_commits_nothing_twice_within_a_round(make_mock_agent,
 async def test_stream_turn_error_path_preserves_partial_text(make_mock_agent) -> None:
     """On a stream error the whole accumulated buffer is still committed (not
     just the final round, which never completed) so the user sees what streamed."""
-    from sr2_spectre.events import (
+    from spctr.events import (
         AgentTextDelta,
         AgentToolResult,
         AgentToolStart,
@@ -269,7 +269,7 @@ async def test_stream_turn_error_path_preserves_partial_text(make_mock_agent) ->
 
 @pytest.mark.asyncio
 async def test_stream_turn_tool_start_and_result(make_mock_agent) -> None:
-    from sr2_spectre.events import (
+    from spctr.events import (
         AgentDone,
         AgentToolResult,
         AgentToolStart,
@@ -297,7 +297,7 @@ async def test_stream_turn_tool_start_and_result(make_mock_agent) -> None:
 
 @pytest.mark.asyncio
 async def test_stream_turn_tool_error(make_mock_agent) -> None:
-    from sr2_spectre.events import (
+    from spctr.events import (
         AgentDone,
         AgentToolResult,
         AgentToolStart,
@@ -321,7 +321,7 @@ async def test_stream_turn_tool_error(make_mock_agent) -> None:
 @pytest.mark.asyncio
 async def test_stream_turn_error_path(make_mock_agent) -> None:
     """A stream exception is reported; partial text before it is still committed."""
-    from sr2_spectre.events import AgentTextDelta
+    from spctr.events import AgentTextDelta
 
     agent = make_mock_agent()
     # Replace the factory with one that yields a delta then raises.
@@ -342,7 +342,7 @@ async def test_stream_turn_error_path(make_mock_agent) -> None:
 
 @pytest.mark.asyncio
 async def test_stream_turn_empty_response(make_mock_agent) -> None:
-    from sr2_spectre.events import AgentDone
+    from spctr.events import AgentDone
 
     agent = make_mock_agent(stream_events=[AgentDone(tool_calls_executed=0)])
     iface, sink = _make_repl_with_sink()
@@ -356,7 +356,7 @@ async def test_stream_turn_empty_response(make_mock_agent) -> None:
 @pytest.mark.asyncio
 async def test_stream_turn_dispatches_text(make_mock_agent) -> None:
     """The user text is passed verbatim to agent.stream_message (quotes intact)."""
-    from sr2_spectre.events import AgentDone
+    from spctr.events import AgentDone
 
     agent = make_mock_agent(stream_events=[AgentDone(tool_calls_executed=0)])
     iface, sink = _make_repl_with_sink()
@@ -371,7 +371,7 @@ async def test_stream_turn_dispatches_text(make_mock_agent) -> None:
 @pytest.mark.asyncio
 async def test_run_loop_processes_commands_and_text(make_mock_agent, monkeypatch) -> None:
     """run() loops: dispatches a slash command, then a text turn, then /quit."""
-    from sr2_spectre.events import AgentDone
+    from spctr.events import AgentDone
 
     agent = make_mock_agent(stream_events=[AgentDone(tool_calls_executed=0)])
     iface, sink = _make_repl_with_sink()
@@ -389,7 +389,7 @@ async def test_run_loop_processes_commands_and_text(make_mock_agent, monkeypatch
         return FakeSession(iter(["/tools", 'say "hi"', "/quit"]))
 
     monkeypatch.setattr(
-        "sr2_spectre.interfaces.repl._make_prompt_session",
+        "spctr.interfaces.repl._make_prompt_session",
         _fake_session,
     )
 
@@ -415,7 +415,7 @@ def _blocking_agent(stall_s: float = 0.3):
     import asyncio
     from unittest.mock import MagicMock
 
-    from sr2_spectre.events import AgentTextDelta
+    from spctr.events import AgentTextDelta
 
     started = asyncio.Event()
 
@@ -523,7 +523,7 @@ async def test_run_loop_ctrl_c_at_prompt_reprompts(make_mock_agent, monkeypatch)
             raise EOFError
 
     monkeypatch.setattr(
-        "sr2_spectre.interfaces.repl._make_prompt_session",
+        "spctr.interfaces.repl._make_prompt_session",
         lambda completer: FakeSession(),
     )
 

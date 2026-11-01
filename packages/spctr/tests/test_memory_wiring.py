@@ -1,7 +1,7 @@
 """Tests for spc-49: in-memory memory subsystem wiring.
 
 Wires sr2's existing memory components (InMemoryMemoryStore, MemoryResolver,
-MemoryExtractionTransformer) into Spectre's Runtime → Session → SR2 path.
+MemoryExtractionTransformer) into spctr's Runtime → Session → SR2 path.
 
 Covers:
   A. Runtime constructs a shared InMemoryMemoryStore
@@ -31,11 +31,11 @@ from sr2.memory import (
 from sr2.models import TextBlock
 from sr2.pipeline.dependencies import Dependencies
 from sr2.pipeline.events import Event, EventPhase
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
 
 
-def _make_config(**kwargs) -> SpectreConfig:
-    """Build a minimal SpectreConfig, allowing overrides."""
+def _make_config(**kwargs) -> SpctrConfig:
+    """Build a minimal SpctrConfig, allowing overrides."""
     overrides = dict(
         agent=AgentConfig(name="test"),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
@@ -46,7 +46,7 @@ def _make_config(**kwargs) -> SpectreConfig:
         ]},
     )
     overrides.update(kwargs)
-    return SpectreConfig(**overrides)
+    return SpctrConfig(**overrides)
 
 
 # ---------------------------------------------------------------------------
@@ -55,9 +55,9 @@ def _make_config(**kwargs) -> SpectreConfig:
 
 class TestRuntimeMemoryStoreConstruction:
     def test_runtime_has_memory_store(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=_make_config())
 
         assert runtime._memory_store is not None
@@ -66,9 +66,9 @@ class TestRuntimeMemoryStoreConstruction:
     def test_memory_store_available_before_initialize(self):
         """Unlike the async provenance store, the in-memory store exists at
         construction time — no initialize() round-trip required."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=_make_config())
 
         assert isinstance(runtime._memory_store, InMemoryMemoryStore)
@@ -80,10 +80,10 @@ class TestRuntimeMemoryStoreConstruction:
 
 class TestMemoryStoreThreading:
     def test_new_session_passes_store_to_sr2(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
-            with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            with patch("spctr.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=_make_config())
                 runtime.new_session(frame_id="test-frame")
@@ -94,10 +94,10 @@ class TestMemoryStoreThreading:
     def test_new_session_passes_non_none_store(self):
         """The store is always present (constructed in __init__), so SR2 never
         receives None — distinct from the lazily-connected provenance store."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
-            with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            with patch("spctr.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=_make_config())
                 runtime.new_session(frame_id="test-frame")
@@ -112,11 +112,11 @@ class TestMemoryStoreThreading:
 
 class TestSessionMemoryStoreParam:
     def test_session_forwards_memory_store_to_sr2(self):
-        from sr2_spectre.session import Session
+        from spctr.session import Session
 
         mock_store = MagicMock()
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             Session(
                 frame_id="f1",
@@ -131,9 +131,9 @@ class TestSessionMemoryStoreParam:
 
     def test_session_memory_store_defaults_to_none(self):
         """Sessions built without a store (e.g. legacy callers) pass None."""
-        from sr2_spectre.session import Session
+        from spctr.session import Session
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             Session(
                 frame_id="f1",
@@ -152,12 +152,12 @@ class TestSessionMemoryStoreParam:
 
 class TestSharedStoreAcrossSessions:
     def test_two_sessions_share_one_store(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         captured: list[object] = []
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
-            with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            with patch("spctr.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=_make_config())
                 runtime.new_session(frame_id="frame-a")

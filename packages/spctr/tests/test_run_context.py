@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sr2_spectre.config import AgentConfig, ModelConfig
-from sr2_spectre.core import RunContext, RunMode
+from spctr.config import AgentConfig, ModelConfig
+from spctr.core import RunContext, RunMode
 
 
 def _minimal_pipeline_dict() -> dict:
-    """Build a minimal pipeline config dict for SpectreConfig construction."""
+    """Build a minimal pipeline config dict for SpctrConfig construction."""
     return {
         "layers": [
             {
@@ -29,10 +29,10 @@ def _minimal_pipeline_dict() -> dict:
     }
 
 
-def _make_config() -> "SpectreConfig":  # type: ignore[name-defined]
-    from sr2_spectre.config import SpectreConfig
+def _make_config() -> "SpctrConfig":  # type: ignore[name-defined]
+    from spctr.config import SpctrConfig
 
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="test"),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline=_minimal_pipeline_dict(),
@@ -89,9 +89,9 @@ def test_run_mode_str_comparison() -> None:
 
 def test_agent_run_context_defaults_none() -> None:
     """A fresh Agent must have run_context == None."""
-    from sr2_spectre.agent import Agent
+    from spctr.agent import Agent
 
-    with patch("sr2_spectre.session.SR2") as MockSR2:
+    with patch("spctr.session.SR2") as MockSR2:
         MockSR2.return_value = MagicMock()
         agent = Agent(config=_make_config())
 
@@ -100,9 +100,9 @@ def test_agent_run_context_defaults_none() -> None:
 
 def test_agent_set_run_context() -> None:
     """Agent.set_run_context must store and return the context."""
-    from sr2_spectre.agent import Agent
+    from spctr.agent import Agent
 
-    with patch("sr2_spectre.session.SR2") as MockSR2:
+    with patch("spctr.session.SR2") as MockSR2:
         MockSR2.return_value = MagicMock()
         agent = Agent(config=_make_config())
 
@@ -116,9 +116,9 @@ def test_agent_set_run_context() -> None:
 
 def test_agent_set_run_context_overwrites() -> None:
     """Calling set_run_context twice must replace the previous context."""
-    from sr2_spectre.agent import Agent
+    from spctr.agent import Agent
 
-    with patch("sr2_spectre.session.SR2") as MockSR2:
+    with patch("spctr.session.SR2") as MockSR2:
         MockSR2.return_value = MagicMock()
         agent = Agent(config=_make_config())
 
@@ -137,10 +137,10 @@ def test_agent_set_run_context_overwrites() -> None:
 @pytest.mark.asyncio
 async def test_single_shot_sets_headless_context() -> None:
     """SingleShotInterface.start() must set a headless RunContext."""
-    from sr2_spectre.agent import Agent
-    from sr2_spectre.interfaces.single_shot import SingleShotInterface
+    from spctr.agent import Agent
+    from spctr.interfaces.single_shot import SingleShotInterface
 
-    with patch("sr2_spectre.session.SR2") as MockSR2:
+    with patch("spctr.session.SR2") as MockSR2:
         MockSR2.return_value = MagicMock()
         agent = Agent(config=_make_config())
 
@@ -160,10 +160,10 @@ async def test_single_shot_sets_headless_context() -> None:
 @pytest.mark.asyncio
 async def test_tui_sets_interactive_context() -> None:
     """TUIInterface.start() must set an interactive RunContext with cwd as source."""
-    from sr2_spectre.agent import Agent
-    from sr2_spectre.interfaces.tui import TUIInterface
+    from spctr.agent import Agent
+    from spctr.interfaces.tui import TUIInterface
 
-    with patch("sr2_spectre.session.SR2") as MockSR2:
+    with patch("spctr.session.SR2") as MockSR2:
         MockSR2.return_value = MagicMock()
         agent = Agent(config=_make_config())
 
@@ -183,11 +183,11 @@ async def test_tui_sets_interactive_context() -> None:
 @pytest.mark.asyncio
 async def test_discord_sets_interactive_context() -> None:
     """DiscordInterface.start() must set an interactive RunContext."""
-    from sr2_spectre.agent import Agent
-    from sr2_spectre.interfaces.discord.config import DiscordConfig
-    from sr2_spectre.interfaces.discord.interface import DiscordInterface
+    from spctr.agent import Agent
+    from spctr.interfaces.discord.config import DiscordConfig
+    from spctr.interfaces.discord.interface import DiscordInterface
 
-    with patch("sr2_spectre.session.SR2") as MockSR2:
+    with patch("spctr.session.SR2") as MockSR2:
         MockSR2.return_value = MagicMock()
         agent = Agent(config=_make_config())
 
@@ -201,7 +201,7 @@ async def test_discord_sets_interactive_context() -> None:
     with patch.object(
         iface.__class__, "_process_message", new=AsyncMock()
     ), patch(
-        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter",
+        "spctr.interfaces.discord.interface.DiscordBotAdapter",
         return_value=mock_adapter,
     ):
         await iface.start(agent)
@@ -222,9 +222,9 @@ def test_new_session_preserves_run_context() -> None:
     The new Session has fresh history but inherits the run context already in
     force, so interfaces that reset (REPL/TUI /reset) need not re-set it.
     """
-    from sr2_spectre.agent import Agent
+    from spctr.agent import Agent
 
-    with patch("sr2_spectre.session.SR2") as MockSR2:
+    with patch("spctr.session.SR2") as MockSR2:
         MockSR2.return_value = MagicMock()
         agent = Agent(config=_make_config())
 

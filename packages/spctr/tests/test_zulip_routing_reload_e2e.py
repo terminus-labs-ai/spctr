@@ -1,6 +1,6 @@
 """J1C (E2E) — spc-120: Zulip area routing and live whole-config reload.
 
-Runs the real entry point (``python -m sr2_spectre.cli <config> --interface
+Runs the real entry point (``python -m spctr.cli <config> --interface
 zulip``) with only the Zulip server and the OpenAI-compatible model endpoint
 substituted on loopback (``zulip_e2e_support``).  CLI, config resolution and
 reload, the Zulip interface, Agent/Runtime/Session, the SR2 pipeline and the
@@ -55,10 +55,10 @@ from zulip_e2e_support import (  # noqa: E402
 
 ALPHA_AREA, ALPHA_MARKER = "alpha-area", "SPC120_ALPHA_MARKER"
 # Identity deliberately differs from its folder name ("beta").
-BETA_AREA, BETA_MARKER = "sr2-spectre-beta", "SPC120_BETA_MARKER"
+BETA_AREA, BETA_MARKER = "spctr-beta", "SPC120_BETA_MARKER"
 CWD_AREA, CWD_MARKER = "cwd-area", "SPC120_CWD_MARKER"
 # Ineligible: README has no id; NOW.md is for an identity no README claims.
-STALE_AREA, NEAR_MISS_AREA = "sr2-stale", "sr2-spectre-near-miss"
+STALE_AREA, NEAR_MISS_AREA = "sr2-stale", "spctr-near-miss"
 NEAR_MISS_MARKER = "SPC120_NEAR_MISS_MARKER"
 MISC_AREA, MISC_MARKER = "misc-area", "SPC120_MISC_MARKER"
 MARKERS = (ALPHA_MARKER, BETA_MARKER, CWD_MARKER, NEAR_MISS_MARKER, MISC_MARKER)

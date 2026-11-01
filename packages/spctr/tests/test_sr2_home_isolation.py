@@ -10,7 +10,7 @@ per-test temp dir, so a default that resolves through ``resolve_sr2_home()``
 lands outside the real ``~/.sr2`` — and a default that still hardcodes
 ``Path.home() / ".sr2"`` lands inside it, failing every test here.
 
-The ``~/.sr2-spectre`` dash-dir (dispatch log, session.json, provenance db)
+The ``~/.spctr`` dash-dir (dispatch log, session.json, provenance db)
 is a different directory and deliberately out of scope.
 """
 
@@ -22,13 +22,13 @@ from pathlib import Path
 import pytest
 from sr2.config.models import ResolverConfig
 
-from sr2_spectre.cli import resolve_agent_config_path
-from sr2_spectre.planning.resolver import PlanResolver
-from sr2_spectre.run_log import SessionLogManager
-from sr2_spectre.schedules.agent import log_dir_for as agent_log_dir_for
-from sr2_spectre.schedules.command import log_dir_for as command_log_dir_for
-from sr2_spectre.schedules.command import run_command
-from sr2_spectre.tools.builtins.complete_step import CompleteStepTool
+from spctr.cli import resolve_agent_config_path
+from spctr.planning.resolver import PlanResolver
+from spctr.run_log import SessionLogManager
+from spctr.schedules.agent import log_dir_for as agent_log_dir_for
+from spctr.schedules.command import log_dir_for as command_log_dir_for
+from spctr.schedules.command import run_command
+from spctr.tools.builtins.complete_step import CompleteStepTool
 
 
 def real_home() -> Path:
@@ -56,7 +56,7 @@ def test_schedules_agent_log_dir_for_follows_sr2_home():
     assert resolved.name == datetime.now(timezone.utc).strftime("%Y-%m-%d")
     # Pinned to the fixture's SR2_HOME, so a path merely *outside* ~/.sr2
     # (e.g. /tmp) could not pass by accident.
-    from sr2_spectre.config import resolve_sr2_home
+    from spctr.config import resolve_sr2_home
 
     assert resolved.is_relative_to(resolve_sr2_home().resolve())
 
@@ -67,7 +67,7 @@ def test_schedules_command_log_dir_for_follows_sr2_home():
     assert not resolved.is_relative_to(real_home())
     assert resolved.parts[-4:-1] == ("logs", "schedules", "x")
     assert resolved.name == datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    from sr2_spectre.config import resolve_sr2_home
+    from spctr.config import resolve_sr2_home
 
     assert resolved.is_relative_to(resolve_sr2_home().resolve())
 
@@ -134,6 +134,6 @@ async def test_run_command_does_not_write_under_real_sr2_home(tmp_path):
 
 def resolve_expected() -> Path:
     """The active SR2_HOME (the fixture's temp dir), resolved."""
-    from sr2_spectre.config import resolve_sr2_home
+    from spctr.config import resolve_sr2_home
 
     return resolve_sr2_home().resolve()
