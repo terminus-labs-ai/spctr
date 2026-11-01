@@ -46,3 +46,6 @@ dev = ["pytest>=9.0.3", "pytest-asyncio>=0.25.0", "ruff>=0.15.11"]
 [tool.pytest.ini_options]
 pythonpath = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    'baseline_debt(bead_id): test fails for a known tracked reason; the bead id must match ^(spc|sr2)-\\d+$ (see test_baseline_debt_guard.py); deselected in CI via -m "not baseline_debt"',
+]

@@ -40,6 +40,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from zulip_e2e_support import (  # noqa: E402
@@ -164,6 +166,7 @@ def _route(channel: int, old: str, new: str) -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.baseline_debt("spc-965")
 def test_area_routing_and_isolation(tmp_path):
     """Two mapped channels get their own areas through the real resolvers; the
     explicit no-area channel and an area without an eligible topic get none
@@ -221,6 +224,7 @@ def test_area_routing_and_isolation(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.baseline_debt("spc-965")
 def test_live_reload_and_last_good(tmp_path):
     """Routing, area-document and model-endpoint edits made while the CLI
     runs apply on the next message, every time (not only the first); document

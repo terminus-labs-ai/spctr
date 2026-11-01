@@ -248,6 +248,7 @@ def _run_dispatch_cli(
     return proc
 
 
+@pytest.mark.baseline_debt("spc-1030")
 def test_dispatch_e2e_done_envelope_to_stdout(tmp_path):
     home, agents = _write_isolated_home(tmp_path)
     env = _child_env(home)
@@ -274,6 +275,7 @@ def test_dispatch_e2e_done_envelope_to_stdout(tmp_path):
     assert envelope["duration_s"] >= 0
 
 
+@pytest.mark.baseline_debt("spc-1030")
 def test_dispatch_e2e_out_file(tmp_path):
     home, agents = _write_isolated_home(tmp_path)
     env = _child_env(home)
@@ -311,6 +313,7 @@ def test_dispatch_unknown_agent_exits_error(tmp_path):
     assert "config error" in proc.stderr
 
 
+@pytest.mark.baseline_debt("spc-1030")
 def test_dispatch_e2e_timeout_leaves_no_surviving_children(tmp_path):
     """spc-947 defect 3: a turn timeout while a terminal command is running
     must leave no surviving child process after dispatch exits.

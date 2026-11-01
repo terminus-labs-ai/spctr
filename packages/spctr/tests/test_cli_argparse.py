@@ -96,6 +96,7 @@ class TestParseArgsBrokenForms:
     broken form must still error to make users read the corrected docs.
     """
 
+    @pytest.mark.baseline_debt("spc-1029")
     def test_interface_between_config_and_prompt_fails(self) -> None:
         """spctr config.yaml --interface single_shot 'prompt' exits 2."""
         with pytest.raises(SystemExit) as exc_info:
@@ -104,12 +105,14 @@ class TestParseArgsBrokenForms:
             )
         assert exc_info.value.code == 2
 
+    @pytest.mark.baseline_debt("spc-1029")
     def test_trace_between_config_and_prompt_fails(self) -> None:
         """Any flag between config and prompt fails."""
         with pytest.raises(SystemExit) as exc_info:
             _parse_args(["config.yaml", "--trace", "hello"])
         assert exc_info.value.code == 2
 
+    @pytest.mark.baseline_debt("spc-1029")
     def test_agent_between_config_and_prompt_fails(self) -> None:
         """--agent between config and prompt also fails."""
         with pytest.raises(SystemExit) as exc_info:
