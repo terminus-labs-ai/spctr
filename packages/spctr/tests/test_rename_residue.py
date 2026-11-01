@@ -29,6 +29,7 @@ ALLOW_LIST = frozenset(
         "scripts/rename_spctr.py",
         "packages/spctr/tests/test_entry_points.py",
         "packages/spctr/tests/test_rename_residue.py",
+        "packages/spctr/tests/test_rename_script.py",
     }
 )
 
