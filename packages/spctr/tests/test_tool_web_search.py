@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sr2_spectre.tools.registry import ToolRegistry
+from spctr.tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -12,7 +12,7 @@ from sr2_spectre.tools.registry import ToolRegistry
 # ---------------------------------------------------------------------------
 
 def test_web_search_class_attributes() -> None:
-    from sr2_spectre.tools.builtins.web_search import WebSearchTool
+    from spctr.tools.builtins.web_search import WebSearchTool
 
     assert isinstance(WebSearchTool.name, str) and WebSearchTool.name
     assert isinstance(WebSearchTool.description, str) and WebSearchTool.description
@@ -20,7 +20,7 @@ def test_web_search_class_attributes() -> None:
 
 
 def test_web_search_input_schema_requires_query() -> None:
-    from sr2_spectre.tools.builtins.web_search import WebSearchTool
+    from spctr.tools.builtins.web_search import WebSearchTool
 
     schema = WebSearchTool.input_schema
     assert "query" in schema.get("properties", {})
@@ -34,7 +34,7 @@ def test_web_search_input_schema_requires_query() -> None:
 def test_web_search_registers_via_class_path() -> None:
     reg = ToolRegistry()
     reg.register_from_class_path(
-        "sr2_spectre.tools.builtins.web_search.WebSearchTool",
+        "spctr.tools.builtins.web_search.WebSearchTool",
         config={"base_url": "http://localhost:8080"},
     )
     assert "web_search" in reg
@@ -69,7 +69,7 @@ def _mock_session(response: MagicMock) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_web_search_formats_single_result() -> None:
-    from sr2_spectre.tools.builtins.web_search import WebSearchTool
+    from spctr.tools.builtins.web_search import WebSearchTool
 
     results = [{"title": "Example", "url": "https://example.com", "content": "Some content"}]
     resp = _make_response(results)
@@ -87,7 +87,7 @@ async def test_web_search_formats_single_result() -> None:
 
 @pytest.mark.asyncio
 async def test_web_search_formats_multiple_results_with_indices() -> None:
-    from sr2_spectre.tools.builtins.web_search import WebSearchTool
+    from spctr.tools.builtins.web_search import WebSearchTool
 
     results = [
         {"title": "First", "url": "https://first.com", "content": "Content one"},
@@ -108,7 +108,7 @@ async def test_web_search_formats_multiple_results_with_indices() -> None:
 
 @pytest.mark.asyncio
 async def test_web_search_respects_max_results() -> None:
-    from sr2_spectre.tools.builtins.web_search import WebSearchTool
+    from spctr.tools.builtins.web_search import WebSearchTool
 
     results = [
         {"title": f"Result {i}", "url": f"https://r{i}.com", "content": f"Content {i}"}
@@ -131,7 +131,7 @@ async def test_web_search_respects_max_results() -> None:
 
 @pytest.mark.asyncio
 async def test_web_search_sends_correct_url() -> None:
-    from sr2_spectre.tools.builtins.web_search import WebSearchTool
+    from spctr.tools.builtins.web_search import WebSearchTool
 
     resp = _make_response([])
     session = _mock_session(resp)
@@ -153,7 +153,7 @@ async def test_web_search_sends_correct_url() -> None:
 
 @pytest.mark.asyncio
 async def test_web_search_no_results_returns_message() -> None:
-    from sr2_spectre.tools.builtins.web_search import WebSearchTool
+    from spctr.tools.builtins.web_search import WebSearchTool
 
     resp = _make_response([])
     session = _mock_session(resp)
@@ -171,7 +171,7 @@ async def test_web_search_no_results_returns_message() -> None:
 
 @pytest.mark.asyncio
 async def test_web_search_http_error_raises_runtime_error() -> None:
-    from sr2_spectre.tools.builtins.web_search import WebSearchTool
+    from spctr.tools.builtins.web_search import WebSearchTool
 
     resp = _make_response([], status=500)
     session = _mock_session(resp)
@@ -184,7 +184,7 @@ async def test_web_search_http_error_raises_runtime_error() -> None:
 
 @pytest.mark.asyncio
 async def test_web_search_http_error_message_contains_status_code() -> None:
-    from sr2_spectre.tools.builtins.web_search import WebSearchTool
+    from spctr.tools.builtins.web_search import WebSearchTool
 
     resp = _make_response([], status=503)
     session = _mock_session(resp)
@@ -202,7 +202,7 @@ async def test_web_search_http_error_message_contains_status_code() -> None:
 # ---------------------------------------------------------------------------
 
 def test_web_search_stores_base_url_and_max_results() -> None:
-    from sr2_spectre.tools.builtins.web_search import WebSearchTool
+    from spctr.tools.builtins.web_search import WebSearchTool
 
     tool = WebSearchTool(base_url="http://searx.local", max_results=10)
     assert tool.base_url == "http://searx.local"

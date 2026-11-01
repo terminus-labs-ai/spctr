@@ -3,11 +3,11 @@
 A proves ONLY the pure CLI/config entrypoint behaviour:
 
 - the actual argument parser accepts ``--interface zulip`` (frozen J1B form
-  ``python -m sr2_spectre.cli <isolated-config> --interface zulip --log-file …``),
+  ``python -m spctr.cli <isolated-config> --interface zulip --log-file …``),
 - the interface name ``zulip`` resolves through the CLI's own loading seam to
   the ``ZulipInterface`` class,
 - startup config resolution retains a validated ``zulip`` block on
-  ``SpectreConfig`` and fails explicitly when that block is missing or
+  ``SpctrConfig`` and fails explicitly when that block is missing or
   invalid — never silently dropping Zulip routing.
 
 Deliberately NOT here (E owns in tests/test_zulip_chat_e2e.py against the
@@ -24,8 +24,8 @@ from typing import Any
 import pytest
 import yaml
 
-from sr2_spectre.cli import _load_interface, _parse_args, resolve_config
-from sr2_spectre.interfaces.zulip import ZulipConfig
+from spctr.cli import _load_interface, _parse_args, resolve_config
+from spctr.interfaces.zulip import ZulipConfig
 
 DIEGO_ID = 8                                 # Diego (spec Dependencies)
 ZULIPRC = "/tmp/spc-125-unused.zuliprc"      # never read: no credential I/O here
@@ -49,7 +49,7 @@ def isolated(tmp_path, monkeypatch):
     sr2_home, cwd = tmp_path / "sr2home", tmp_path / "project"
     sr2_home.mkdir(), cwd.mkdir()
     monkeypatch.setenv("SR2_HOME", str(sr2_home))
-    monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
+    monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
     monkeypatch.delenv("SR2_AREA", raising=False)
     pos = tmp_path / "config.yaml"
     return cwd, {"SR2_HOME": str(sr2_home)}, pos
@@ -140,7 +140,7 @@ class TestStartupAcceptsMappedAreas:
         and the contract forbids replicating the interface-journey harness
         here. Today this is red because the temporary gate raises and names
         the mapped channel; it turns green when the lift lands."""
-        from sr2_spectre.interfaces.zulip import validate_no_area_only_routing
+        from spctr.interfaces.zulip import validate_no_area_only_routing
 
         cfg = ZulipConfig(
             zuliprc=ZULIPRC,
@@ -156,9 +156,9 @@ class TestStartupAcceptsMappedAreas:
         ALSO route (area carried, not lost) and admit an allowed human —
         deleting the gate while the facade still admits no-area channels
         only goes red here. Today red at the routing import/step."""
-        from sr2_spectre.cli import resolve_config
-        from sr2_spectre.interfaces.zulip import is_configured_no_area_channel
-        from sr2_spectre.interfaces.zulip.config import resolve_channel_area
+        from spctr.cli import resolve_config
+        from spctr.interfaces.zulip import is_configured_no_area_channel
+        from spctr.interfaces.zulip.config import resolve_channel_area
 
         cwd, env, pos = isolated
         _write_yaml(pos, {**VALID_TAIL, "zulip": {

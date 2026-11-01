@@ -10,7 +10,7 @@ no Discord connection for ~8 hours while systemd reported a healthy unit, so
 ``Restart=always`` never fired.
 
 Everything here runs the REAL user entry point — a subprocess running the real
-``sr2_spectre.cli`` — through journey J1:
+``spctr.cli`` — through journey J1:
 
   a process configured with an MCP server whose endpoint refuses/aborts
   connections must not hang; startup either logs 'MCP server failed to connect'
@@ -42,7 +42,7 @@ and that startup reaches the MCP path at all.
 
 Isolation: a temp ``SR2_HOME`` plus a temp cwd mean tiers 1-3 never read
 ``~/.sr2`` or a project file; the positional config is the only tier present.
-``SR2_ACTIVE_MODEL_FILE`` and ``SPECTRE_MEMORY_DSN`` are stripped from the child
+``SR2_ACTIVE_MODEL_FILE`` and ``SPCTR_MEMORY_DSN`` are stripped from the child
 environment. Nothing outside the temp dir is written.
 
 Run: PYTHONPATH=src .venv/bin/python -m pytest tests/test_cli_startup_exit_e2e.py -v
@@ -87,8 +87,8 @@ LLM_MODEL = "qwen3.8-flash"
 _WARNING_MARKER = "MCP server failed to connect"
 _FATAL_MARKERS = ("Fatal error", "Traceback (most recent call last)")
 _MCP_PATH_MARKERS = (
-    "sr2_spectre/mcp/client.py",
-    "sr2_spectre.mcp.client",
+    "spctr/mcp/client.py",
+    "spctr.mcp.client",
     "MCPConnectionError",
 )
 
@@ -237,13 +237,13 @@ def _child_env(sr2_home: Path) -> dict[str, str]:
     """Child environment: isolated SR2_HOME, worktree sources, no ambient config.
 
     ``PYTHONPATH`` must name the worktree's ``src``: the project venv resolves
-    ``sr2_spectre`` through a ``.pth`` pointing at the main checkout, so without
+    ``spctr`` through a ``.pth`` pointing at the main checkout, so without
     it the child would run that branch's code instead of this one's.
     """
     env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("SR2_HOME", "SR2_ACTIVE_MODEL_FILE", "SPECTRE_MEMORY_DSN")
+        if k not in ("SR2_HOME", "SR2_ACTIVE_MODEL_FILE", "SPCTR_MEMORY_DSN")
     }
     env["SR2_HOME"] = str(sr2_home)
     env["PYTHONPATH"] = str(REPO_ROOT / "src")
@@ -321,11 +321,11 @@ def _finish(result: BoundedRun, log_file: Path) -> BoundedRun:
     return result
 
 
-def _run_spectre(endpoint: FakeEndpoint, workdir: Path, log_file: Path) -> BoundedRun:
+def _run_spctr(endpoint: FakeEndpoint, workdir: Path, log_file: Path) -> BoundedRun:
     """Launch the real CLI module against ``endpoint`` in an isolated home/cwd."""
     sr2_home, config_path, run_dir = _write_isolated_config(workdir, endpoint.url)
     result = _run_bounded(
-        [sys.executable, "-m", "sr2_spectre.cli", *_cli_args(config_path, log_file)],
+        [sys.executable, "-m", "spctr.cli", *_cli_args(config_path, log_file)],
         env=_child_env(sr2_home),
         cwd=run_dir,
         timeout=JOURNEY_TIMEOUT_SECONDS,
@@ -336,7 +336,7 @@ def _run_spectre(endpoint: FakeEndpoint, workdir: Path, log_file: Path) -> Bound
 def _assert_terminated(result: BoundedRun) -> None:
     """The bead's invariant: the process went away, promptly, on its own status."""
     assert not result.timed_out, (
-        "spectre was still alive after "
+        "spctr was still alive after "
         f"{JOURNEY_TIMEOUT_SECONDS:.0f}s and had to be killed — the obsidian-c573 "
         "failure: a process sitting up with no Discord connection while systemd "
         f"reported it healthy for ~8h. {result.tail()}"
@@ -359,14 +359,14 @@ def _assert_mcp_startup_record(result: BoundedRun) -> None:
     )
     assert any(marker in text for marker in _MCP_PATH_MARKERS), (
         "the startup record must name the MCP connect path (the warning, or a "
-        "traceback through sr2_spectre/mcp/client.py); otherwise this test would "
+        "traceback through spctr/mcp/client.py); otherwise this test would "
         f"pass on any unrelated startup crash. {result.tail(2500)}"
     )
 
 
 @pytest.fixture
 def workdir() -> Iterator[Path]:
-    with tempfile.TemporaryDirectory(prefix="spectre-c573-e2e-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="spctr-c573-e2e-") as tmp:
         yield Path(tmp)
 
 
@@ -390,9 +390,9 @@ def test_j1_startup_with_dead_mcp_endpoint_terminates(
     fails fatally with a nonzero exit. What is never correct is staying alive.
     """
     endpoint = endpoint_factory()
-    log_file = workdir / "spectre.log"
+    log_file = workdir / "spctr.log"
     try:
-        result = _run_spectre(endpoint, workdir, log_file)
+        result = _run_spctr(endpoint, workdir, log_file)
     finally:
         endpoint.close()
 
@@ -422,14 +422,14 @@ def test_j1_fatal_startup_with_stray_non_daemon_thread_exits_nonzero(
     config, config resolution, Runtime MCP path and transport are the real ones.
     """
     endpoint = _endpoint_refuses()
-    log_file = workdir / "spectre.log"
+    log_file = workdir / "spctr.log"
     try:
         sr2_home, config_path, run_dir = _write_isolated_config(workdir, endpoint.url)
         bootstrap = (
             "import sys\n"
-            "sys.argv = ['sr2-spectre'] + sys.argv[1:]\n"
+            "sys.argv = ['spctr'] + sys.argv[1:]\n"
             + _STRAY_THREAD
-            + "from sr2_spectre.cli import main\n"
+            + "from spctr.cli import main\n"
             "main()\n"
         )
         result = _run_bounded(

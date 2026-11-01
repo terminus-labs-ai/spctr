@@ -1,10 +1,10 @@
-# SR2 Spectre — Interface Development Guide
+# SR2 spctr — Interface Development Guide
 
-How to build custom interfaces for SR2 Spectre. An interface is an I/O channel that receives user input, drives the agent loop, and renders the response.
+How to build custom interfaces for SR2 spctr. An interface is an I/O channel that receives user input, drives the agent loop, and renders the response.
 
 ## The Interface Protocol
 
-Every interface implements the `Interface` Protocol from `sr2_spectre.interfaces`:
+Every interface implements the `Interface` Protocol from `spctr.interfaces`:
 
 ```python
 from typing import Protocol, runtime_checkable
@@ -31,7 +31,7 @@ class Interface(Protocol):
 Call `agent.set_run_context()` in `start()` to tell the agent how it's being driven:
 
 ```python
-from sr2_spectre.core import RunContext, RunMode
+from spctr.core import RunContext, RunMode
 
 async def start(self, agent: "Agent") -> None:
     agent.set_run_context(RunContext(
@@ -67,7 +67,7 @@ The REPL is the exception: it stamps `area` once in `start()` from the
 semantics). There is no `CLAUDE.md` lookup, no `.git` walk, and no ancestor
 discovery — a REPL started in `/data/obsidian/projects/harbinger` is the
 `harbinger` area even though `/data/obsidian` contains `CLAUDE.md` and a git
-root, and one started in `~/git/sr2-spectre/src` is `src`. A non-empty
+root, and one started in `~/git/spctr/src` is `src`. A non-empty
 `SR2_AREA` environment variable is the only override.
 
 Only set it if your interface genuinely knows which area a message belongs to.
@@ -146,11 +146,11 @@ await session.handle_user_message(prompt)
 Zulip's frame identity shows the pattern for a multi-destination chat
 interface: include the agent name, the resolved server origin, the integer
 channel ID and the URL-escaped exact topic (`topic_frame_id()` in
-`sr2_spectre.interfaces.zulip`), so two topics can never collide on a bare
+`spctr.interfaces.zulip`), so two topics can never collide on a bare
 name. Set the per-Session run context with an explicit `area` (`""` for
 no-area channels; never `None`, which permits fallback) and drive the
 conversation with `session.handle_user_message()`. Derive a channel's area
-with the shared helpers in `sr2_spectre.interfaces.common`
+with the shared helpers in `spctr.interfaces.common`
 (`resolve_area`, `derive_area_name`), as Discord and Zulip both do, rather
 than a second copy of the rule.
 
@@ -174,10 +174,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from sr2_spectre.core import RunContext, RunMode
+from spctr.core import RunContext, RunMode
 
 if TYPE_CHECKING:
-    from sr2_spectre.agent import Agent
+    from spctr.agent import Agent
 
 
 class MyConsoleInterface:
@@ -213,7 +213,7 @@ class MyConsoleInterface:
 
 ## Registering Your Interface
 
-Spectre loads interfaces by class path. There are two approaches:
+spctr loads interfaces by class path. There are two approaches:
 
 ### Approach 1: CLI `--interface` flag (for built-in or pre-registered interfaces)
 
@@ -222,9 +222,9 @@ The CLI resolves interface names through the `_load_interface` function. Add you
 ```python
 # In cli.py, extend the interface resolution
 KNOWN_INTERFACES = {
-    "single_shot": "sr2_spectre.interfaces.single_shot:SingleShotInterface",
-    "tui": "sr2_spectre.interfaces.tui:TUIInterface",
-    "discord": "sr2_spectre.interfaces.discord:DiscordInterface",
+    "single_shot": "spctr.interfaces.single_shot:SingleShotInterface",
+    "tui": "spctr.interfaces.tui:TUIInterface",
+    "discord": "spctr.interfaces.discord:DiscordInterface",
     "myconsole": "my_package.interfaces:MyConsoleInterface",  # Add yours
 }
 ```
@@ -251,11 +251,11 @@ Opting in is two pieces: take a config **source** instead of a config object,
 and hand the reloaded config to the agent on each inbound message.
 
 ```python
-from sr2_spectre.config_source import SpectreConfigSource
+from spctr.config_source import SpctrConfigSource
 
 
 class MyBotInterface:
-    def __init__(self, config_source: SpectreConfigSource) -> None:
+    def __init__(self, config_source: SpctrConfigSource) -> None:
         self._source = config_source
         self._agent = None
 
@@ -277,10 +277,10 @@ class MyBotInterface:
             ...
 ```
 
-Build the source with `cli.build_spectre_config_source(config_path, cwd,
+Build the source with `cli.build_spctr_config_source(config_path, cwd,
 initial)`, which re-runs the same 4-tier resolution as startup. The Zulip
 front door does exactly that: `cli.run_async` hands the raw
-`build_spectre_config_source(...)` to `ZulipInterface` as `config_source`,
+`build_spctr_config_source(...)` to `ZulipInterface` as `config_source`,
 the interface wraps it in a `ZulipConfigView` itself, and reloads once per
 inbound event batch.
 
@@ -353,7 +353,7 @@ places retries, pipeline firings, and tools relative to each call. Text fields a
 `secret`, `cookie` are redacted.
 
 Retention: a sweep at Runtime startup and every 24 hours deletes logs whose last write is over 24
-hours old. A live writer holds an exclusive `flock`, so a log open in any Spectre process is never
+hours old. A live writer holds an exclusive `flock`, so a log open in any spctr process is never
 deleted. Logging failures warn and never abort a turn.
 
 ## Best Practices
@@ -380,7 +380,7 @@ Mock the agent and verify your interface routes messages correctly:
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
-from sr2_spectre.events import AgentDone, AgentTextDelta
+from spctr.events import AgentDone, AgentTextDelta
 from my_package.interfaces import MyConsoleInterface
 
 
@@ -388,7 +388,7 @@ from my_package.interfaces import MyConsoleInterface
 async def test_interface_runs_and_sends_prompt() -> None:
     """Interface sends user input to the agent and prints response."""
     agent = AsyncMock()
-    from sr2_spectre.core import TurnResult
+    from spctr.core import TurnResult
     agent.handle_user_message = AsyncMock(return_value=TurnResult(
         text="Hello!",
         tool_calls_executed=0,

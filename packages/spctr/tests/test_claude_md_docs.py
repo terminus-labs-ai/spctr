@@ -90,8 +90,8 @@ def test_architecture_overview_mentions_four_tier_config_resolution():
     assert "tier" in lower
     # The four tiers, lowest to highest priority.
     assert "config.yaml" in section
-    assert "spectre.yaml" in section
-    assert ".spectre.yaml" in section
+    assert "spctr.yaml" in section
+    assert ".spctr.yaml" in section
     assert "extends" in lower
 
 

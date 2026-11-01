@@ -27,9 +27,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from sr2.protocols.llm import StreamEvent
-from sr2_spectre.interfaces.discord.config import DiscordConfig
-from sr2_spectre.interfaces.discord.interface import DiscordInterface
-from sr2_spectre.run_log import SessionLogManager
+from spctr.interfaces.discord.config import DiscordConfig
+from spctr.interfaces.discord.interface import DiscordInterface
+from spctr.run_log import SessionLogManager
 from tests.test_session_run_log import _agent, _events
 
 CHANNEL_A = 1001
@@ -198,7 +198,7 @@ async def _started(llm: ContextEchoLLM) -> tuple[DiscordInterface, FakeAdapter]:
     iface = DiscordInterface(config=DiscordConfig(edit_stream_interval=0))
     agent = _agent(llm)
     with patch(
-        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter",
+        "spctr.interfaces.discord.interface.DiscordBotAdapter",
         return_value=adapter,
     ):
         await iface.start(agent)

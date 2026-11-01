@@ -23,8 +23,8 @@ from pathlib import Path
 
 import pytest
 
-from sr2_spectre import reminders
-from sr2_spectre.reminders.store import _COLUMNS, Reminder, ReminderStore
+from spctr import reminders
+from spctr.reminders.store import _COLUMNS, Reminder, ReminderStore
 
 UTC = timezone.utc
 
@@ -41,7 +41,7 @@ def _row(**overrides) -> Reminder:
         requester_mention="@8",
         origin_channel_id="42",
         dest_channel_id="42",
-        dest_channel_name="sr2-spectre",
+        dest_channel_name="spctr",
         dest_topic="reminders",
         text="look into https://example.com/x",
         due_at=NOW + timedelta(minutes=60),

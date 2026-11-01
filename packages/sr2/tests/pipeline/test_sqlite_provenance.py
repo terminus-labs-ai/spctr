@@ -76,8 +76,8 @@ def _make_scope():
     """Full-spectrum ContextScope exercising every subfield."""
     return ContextScope(
         owner_id="diego",
-        agent_id="spectre",
-        projects=("sr2", "spectre"),
+        agent_id="spctr",
+        projects=("sr2", "spctr"),
         frame_id="frame-001",
         topics=("provenance", "context"),
         sensitivity=("personal",),

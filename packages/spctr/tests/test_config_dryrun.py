@@ -3,7 +3,7 @@
 Covers:
 - load_config_with_provenance: provenance tracking at single and multi-tier
 - format_dry_run: output format (annotations, plain YAML, errors section)
-- CLI: `spectre config show` subcommand (exit codes, --no-provenance)
+- CLI: `spctr config show` subcommand (exit codes, --no-provenance)
 """
 from __future__ import annotations
 
@@ -41,13 +41,13 @@ def _make_cwd(tmp_path: Path) -> Path:
 
 class TestImports:
     def test_provenance_value_importable(self):
-        from sr2_spectre.config import ProvenanceValue  # noqa: F401
+        from spctr.config import ProvenanceValue  # noqa: F401
 
     def test_load_config_with_provenance_importable(self):
-        from sr2_spectre.config import load_config_with_provenance  # noqa: F401
+        from spctr.config import load_config_with_provenance  # noqa: F401
 
     def test_format_dry_run_importable(self):
-        from sr2_spectre.config import format_dry_run  # noqa: F401
+        from spctr.config import format_dry_run  # noqa: F401
 
 
 # ---------------------------------------------------------------------------
@@ -56,17 +56,17 @@ class TestImports:
 
 class TestProvenanceValue:
     def test_has_value_attribute(self):
-        from sr2_spectre.config import ProvenanceValue
+        from spctr.config import ProvenanceValue
         pv = ProvenanceValue(value="claude-3-opus", source="global/config.yaml (global)")
         assert pv.value == "claude-3-opus"
 
     def test_has_source_attribute(self):
-        from sr2_spectre.config import ProvenanceValue
-        pv = ProvenanceValue(value=42, source="project/.spectre.yaml (project)")
-        assert pv.source == "project/.spectre.yaml (project)"
+        from spctr.config import ProvenanceValue
+        pv = ProvenanceValue(value=42, source="project/.spctr.yaml (project)")
+        assert pv.source == "project/.spctr.yaml (project)"
 
     def test_value_can_be_any_type(self):
-        from sr2_spectre.config import ProvenanceValue
+        from spctr.config import ProvenanceValue
         pv_dict = ProvenanceValue(value={"nested": "dict"}, source="file.yaml (extends)")
         assert pv_dict.value == {"nested": "dict"}
 
@@ -77,7 +77,7 @@ class TestProvenanceValue:
 
 class TestLoadConfigWithProvenanceReturnShape:
     def test_returns_tuple_of_two(self, tmp_path):
-        from sr2_spectre.config import load_config_with_provenance
+        from spctr.config import load_config_with_provenance
         sr2_home = _make_sr2_home(tmp_path)
         cwd = _make_cwd(tmp_path)
         result = load_config_with_provenance(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
@@ -85,21 +85,21 @@ class TestLoadConfigWithProvenanceReturnShape:
         assert len(result) == 2
 
     def test_first_element_is_dict(self, tmp_path):
-        from sr2_spectre.config import load_config_with_provenance
+        from spctr.config import load_config_with_provenance
         sr2_home = _make_sr2_home(tmp_path)
         cwd = _make_cwd(tmp_path)
         config, _ = load_config_with_provenance(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
         assert isinstance(config, dict)
 
     def test_second_element_is_dict(self, tmp_path):
-        from sr2_spectre.config import load_config_with_provenance
+        from spctr.config import load_config_with_provenance
         sr2_home = _make_sr2_home(tmp_path)
         cwd = _make_cwd(tmp_path)
         _, provenance = load_config_with_provenance(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
         assert isinstance(provenance, dict)
 
     def test_empty_config_returns_empty_dicts(self, tmp_path):
-        from sr2_spectre.config import load_config_with_provenance
+        from spctr.config import load_config_with_provenance
         sr2_home = _make_sr2_home(tmp_path)
         cwd = _make_cwd(tmp_path)
         config, provenance = load_config_with_provenance(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
@@ -114,10 +114,10 @@ class TestLoadConfigWithProvenanceReturnShape:
 class TestSingleTierProvenance:
     def test_single_tier_key_has_provenance_value(self, tmp_path):
         """Top-level keys from a single file should have ProvenanceValue provenance."""
-        from sr2_spectre.config import ProvenanceValue, load_config_with_provenance
+        from spctr.config import ProvenanceValue, load_config_with_provenance
         sr2_home = _make_sr2_home(tmp_path)
         cwd = _make_cwd(tmp_path)
-        _write_yaml(cwd / ".spectre.yaml", {"agent": {"name": "spectre"}})
+        _write_yaml(cwd / ".spctr.yaml", {"agent": {"name": "spctr"}})
 
         _, provenance = load_config_with_provenance(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
 
@@ -127,20 +127,20 @@ class TestSingleTierProvenance:
 
     def test_single_tier_provenance_source_contains_filename(self, tmp_path):
         """The provenance source string should reference the contributing file."""
-        from sr2_spectre.config import load_config_with_provenance
+        from spctr.config import load_config_with_provenance
         sr2_home = _make_sr2_home(tmp_path)
         cwd = _make_cwd(tmp_path)
-        _write_yaml(cwd / ".spectre.yaml", {"agent": {"name": "spectre"}})
+        _write_yaml(cwd / ".spctr.yaml", {"agent": {"name": "spctr"}})
 
         _, provenance = load_config_with_provenance(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
 
         source = provenance["agent"].source
         # Should reference the actual file name (not just say "unknown")
-        assert ".spectre.yaml" in source or "spectre" in source.lower()
+        assert ".spctr.yaml" in source or "spctr" in source.lower()
 
     def test_global_tier_key_provenance_source_references_global_file(self, tmp_path):
         """A key set only in the global config.yaml should have provenance from that file."""
-        from sr2_spectre.config import load_config_with_provenance
+        from spctr.config import load_config_with_provenance
         sr2_home = _make_sr2_home(tmp_path)
         cwd = _make_cwd(tmp_path)
         _write_yaml(sr2_home / "config.yaml", {"agent": {"name": "global-agent"}})
@@ -158,14 +158,14 @@ class TestSingleTierProvenance:
 class TestMultiTierProvenance:
     def test_child_overrides_scalar_wins_child_provenance(self, tmp_path):
         """When child overrides parent's scalar, provenance points to child's file."""
-        from sr2_spectre.config import load_config_with_provenance
+        from spctr.config import load_config_with_provenance
         sr2_home = _make_sr2_home(tmp_path)
         cwd = _make_cwd(tmp_path)
 
         # Tier 1 (global): sets "agent"
         _write_yaml(sr2_home / "config.yaml", {"agent": {"name": "global-agent"}})
         # Tier 3 (project): overrides "agent"
-        _write_yaml(cwd / ".spectre.yaml", {"agent": {"name": "project-agent"}})
+        _write_yaml(cwd / ".spctr.yaml", {"agent": {"name": "project-agent"}})
 
         config, provenance = load_config_with_provenance(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
 
@@ -173,19 +173,19 @@ class TestMultiTierProvenance:
         assert config["agent"]["name"] == "project-agent"
         # The provenance source should reference the project file, not global
         source = provenance["agent"].source
-        # It should NOT be the global config; it should point to .spectre.yaml
-        assert ".spectre.yaml" in source or "project" in source.lower()
+        # It should NOT be the global config; it should point to .spctr.yaml
+        assert ".spctr.yaml" in source or "project" in source.lower()
 
     def test_parent_key_not_overridden_keeps_parent_provenance(self, tmp_path):
         """A key set in global but not overridden by project should have global provenance."""
-        from sr2_spectre.config import load_config_with_provenance
+        from spctr.config import load_config_with_provenance
         sr2_home = _make_sr2_home(tmp_path)
         cwd = _make_cwd(tmp_path)
 
         # Tier 1 (global): sets "heartbeat"
         _write_yaml(sr2_home / "config.yaml", {"heartbeat": {"interval_seconds": 30}})
         # Tier 3 (project): sets only "agent", does NOT override heartbeat
-        _write_yaml(cwd / ".spectre.yaml", {"agent": {"name": "my-agent"}})
+        _write_yaml(cwd / ".spctr.yaml", {"agent": {"name": "my-agent"}})
 
         _, provenance = load_config_with_provenance(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
 
@@ -193,15 +193,15 @@ class TestMultiTierProvenance:
         assert "heartbeat" in provenance
         source = provenance["heartbeat"].source
         assert "config.yaml" in source or "global" in source.lower()
-        assert ".spectre.yaml" not in source
+        assert ".spctr.yaml" not in source
 
     def test_provenance_map_has_same_top_level_keys_as_config(self, tmp_path):
         """The provenance map should have the same top-level keys as the merged config."""
-        from sr2_spectre.config import load_config_with_provenance
+        from spctr.config import load_config_with_provenance
         sr2_home = _make_sr2_home(tmp_path)
         cwd = _make_cwd(tmp_path)
-        _write_yaml(cwd / ".spectre.yaml", {
-            "agent": {"name": "spectre"},
+        _write_yaml(cwd / ".spctr.yaml", {
+            "agent": {"name": "spctr"},
             "models": {"default": {"model": "gpt-4o"}},
         })
 
@@ -219,7 +219,7 @@ class TestMultiTierProvenance:
 class TestExtendsProvenance:
     def test_value_from_base_file_has_extends_provenance(self, tmp_path):
         """A key inherited from an extends base should have provenance referencing that base."""
-        from sr2_spectre.config import load_config_with_provenance
+        from spctr.config import load_config_with_provenance
         sr2_home = _make_sr2_home(tmp_path)
         cwd = _make_cwd(tmp_path)
 
@@ -229,7 +229,7 @@ class TestExtendsProvenance:
         _write_yaml(base, {"heartbeat": {"interval_seconds": 60}})
 
         # Project file extends base, doesn't override heartbeat
-        _write_yaml(cwd / ".spectre.yaml", {
+        _write_yaml(cwd / ".spctr.yaml", {
             "extends": "agents/base.yaml",
             "agent": {"name": "derived-agent"},
         })
@@ -238,19 +238,19 @@ class TestExtendsProvenance:
 
         # heartbeat should be present (inherited from base)
         assert "heartbeat" in config
-        # Provenance should reference the base file (not .spectre.yaml)
+        # Provenance should reference the base file (not .spctr.yaml)
         source = provenance["heartbeat"].source
         assert "base.yaml" in source or "extends" in source.lower()
 
     def test_child_override_wins_over_extends_base(self, tmp_path):
         """A key in the extending file overrides the base — provenance points to extending file."""
-        from sr2_spectre.config import load_config_with_provenance
+        from spctr.config import load_config_with_provenance
         sr2_home = _make_sr2_home(tmp_path)
         cwd = _make_cwd(tmp_path)
 
         base = cwd / "base.yaml"
         _write_yaml(base, {"agent": {"name": "base-agent"}})
-        _write_yaml(cwd / ".spectre.yaml", {
+        _write_yaml(cwd / ".spctr.yaml", {
             "extends": "base.yaml",
             "agent": {"name": "override-agent"},
         })
@@ -258,9 +258,9 @@ class TestExtendsProvenance:
         config, provenance = load_config_with_provenance(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
 
         assert config["agent"]["name"] == "override-agent"
-        # Provenance should reference the overriding file (.spectre.yaml)
+        # Provenance should reference the overriding file (.spctr.yaml)
         source = provenance["agent"].source
-        assert ".spectre.yaml" in source
+        assert ".spctr.yaml" in source
 
 
 # ---------------------------------------------------------------------------
@@ -270,29 +270,29 @@ class TestExtendsProvenance:
 class TestFormatDryRunProvenance:
     def test_show_provenance_true_output_contains_source_annotation(self, tmp_path):
         """With show_provenance=True, the output should contain source annotations."""
-        from sr2_spectre.config import ProvenanceValue, format_dry_run
+        from spctr.config import ProvenanceValue, format_dry_run
 
-        config = {"agent": {"name": "spectre"}}
+        config = {"agent": {"name": "spctr"}}
         provenance = {
             "agent": ProvenanceValue(
-                value={"name": "spectre"},
-                source=".spectre.yaml (project)",
+                value={"name": "spctr"},
+                source=".spctr.yaml (project)",
             )
         }
         output = format_dry_run(config, provenance, errors=[], show_provenance=True)
 
         # The source string should appear somewhere in the output
-        assert ".spectre.yaml" in output or "project" in output
+        assert ".spctr.yaml" in output or "project" in output
 
     def test_show_provenance_true_uses_comment_style(self, tmp_path):
         """With show_provenance=True, annotations appear as YAML comments (# ←)."""
-        from sr2_spectre.config import ProvenanceValue, format_dry_run
+        from spctr.config import ProvenanceValue, format_dry_run
 
-        config = {"agent": {"name": "spectre"}}
+        config = {"agent": {"name": "spctr"}}
         provenance = {
             "agent": ProvenanceValue(
-                value={"name": "spectre"},
-                source=".spectre.yaml (project)",
+                value={"name": "spctr"},
+                source=".spctr.yaml (project)",
             )
         }
         output = format_dry_run(config, provenance, errors=[], show_provenance=True)
@@ -302,11 +302,11 @@ class TestFormatDryRunProvenance:
 
     def test_show_provenance_false_output_is_plain_yaml(self):
         """With show_provenance=False, output has no source annotations (← marker absent)."""
-        from sr2_spectre.config import ProvenanceValue, format_dry_run
+        from spctr.config import ProvenanceValue, format_dry_run
 
-        config = {"agent": {"name": "spectre"}, "models": {"default": {"model": "gpt-4o"}}}
+        config = {"agent": {"name": "spctr"}, "models": {"default": {"model": "gpt-4o"}}}
         provenance = {
-            "agent": ProvenanceValue(value={"name": "spectre"}, source="file.yaml (project)"),
+            "agent": ProvenanceValue(value={"name": "spctr"}, source="file.yaml (project)"),
             "models": ProvenanceValue(value={"default": {"model": "gpt-4o"}}, source="file.yaml (project)"),
         }
         output = format_dry_run(config, provenance, errors=[], show_provenance=False)
@@ -318,11 +318,11 @@ class TestFormatDryRunProvenance:
 
     def test_show_provenance_false_output_parses_as_valid_yaml(self):
         """Plain YAML output (show_provenance=False) should be parseable by yaml.safe_load."""
-        from sr2_spectre.config import ProvenanceValue, format_dry_run
+        from spctr.config import ProvenanceValue, format_dry_run
 
-        config = {"agent": {"name": "spectre"}, "timeout": 30}
+        config = {"agent": {"name": "spctr"}, "timeout": 30}
         provenance = {
-            "agent": ProvenanceValue(value={"name": "spectre"}, source="file.yaml (project)"),
+            "agent": ProvenanceValue(value={"name": "spctr"}, source="file.yaml (project)"),
             "timeout": ProvenanceValue(value=30, source="file.yaml (project)"),
         }
         output = format_dry_run(config, provenance, errors=[], show_provenance=False)
@@ -330,7 +330,7 @@ class TestFormatDryRunProvenance:
         # Extract the YAML part (before any errors section)
         parsed = yaml.safe_load(output)
         assert isinstance(parsed, dict)
-        assert parsed["agent"]["name"] == "spectre"
+        assert parsed["agent"]["name"] == "spctr"
         assert parsed["timeout"] == 30
 
 
@@ -341,11 +341,11 @@ class TestFormatDryRunProvenance:
 class TestFormatDryRunErrors:
     def test_no_errors_produces_no_error_section_or_empty(self):
         """With errors=[], the output should not have any error content."""
-        from sr2_spectre.config import ProvenanceValue, format_dry_run
+        from spctr.config import ProvenanceValue, format_dry_run
 
-        config = {"agent": {"name": "spectre"}}
+        config = {"agent": {"name": "spctr"}}
         provenance = {
-            "agent": ProvenanceValue(value={"name": "spectre"}, source="file.yaml (project)"),
+            "agent": ProvenanceValue(value={"name": "spctr"}, source="file.yaml (project)"),
         }
         output = format_dry_run(config, provenance, errors=[])
 
@@ -356,7 +356,7 @@ class TestFormatDryRunErrors:
 
     def test_errors_listed_in_output(self):
         """When errors are provided, they should appear in the output."""
-        from sr2_spectre.config import ProvenanceValue, format_dry_run
+        from spctr.config import ProvenanceValue, format_dry_run
 
         config = {"agent": {"name": ""}}
         provenance = {
@@ -370,7 +370,7 @@ class TestFormatDryRunErrors:
 
     def test_multiple_errors_all_present_in_output(self):
         """All errors in the list should appear in the output string."""
-        from sr2_spectre.config import ProvenanceValue, format_dry_run
+        from spctr.config import ProvenanceValue, format_dry_run
 
         config = {}
         provenance = {}
@@ -387,14 +387,14 @@ class TestFormatDryRunErrors:
 
 class TestFormatDryRunReturnType:
     def test_returns_string(self):
-        from sr2_spectre.config import format_dry_run
+        from spctr.config import format_dry_run
         output = format_dry_run({}, {}, errors=[])
         assert isinstance(output, str)
 
     def test_non_empty_string_for_non_empty_config(self):
-        from sr2_spectre.config import ProvenanceValue, format_dry_run
-        config = {"agent": {"name": "spectre"}}
-        provenance = {"agent": ProvenanceValue(value={"name": "spectre"}, source="f.yaml (project)")}
+        from spctr.config import ProvenanceValue, format_dry_run
+        config = {"agent": {"name": "spctr"}}
+        provenance = {"agent": ProvenanceValue(value={"name": "spctr"}, source="f.yaml (project)")}
         output = format_dry_run(config, provenance, errors=[])
         assert len(output) > 0
 
@@ -406,7 +406,7 @@ class TestFormatDryRunReturnType:
 class TestIncludeContentRemoved:
     def test_format_dry_run_no_include_content_parameter(self):
         """format_dry_run no longer accepts include_content (dead param removed)."""
-        from sr2_spectre.config import format_dry_run
+        from spctr.config import format_dry_run
         import inspect
 
         sig = inspect.signature(format_dry_run)
@@ -415,7 +415,7 @@ class TestIncludeContentRemoved:
 
     def test_format_dry_run_calling_with_include_content_raises(self):
         """Passing include_content to format_dry_run raises TypeError."""
-        from sr2_spectre.config import format_dry_run
+        from spctr.config import format_dry_run
         with pytest.raises(TypeError):
             format_dry_run({}, {}, errors=[], include_content=True)
 
@@ -432,7 +432,7 @@ class TestIncludeContentFlagRemoved:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {"agent": {"name": "spectre"}})
+        _write_yaml(cwd / ".spctr.yaml", {"agent": {"name": "spctr"}})
 
         result = _run_cli(
             ["config", "show", f"--sr2-home={sr2_home}", "--include-content"],
@@ -444,13 +444,13 @@ class TestIncludeContentFlagRemoved:
 
 
 # ---------------------------------------------------------------------------
-# CLI — spectre config show
+# CLI — spctr config show
 # ---------------------------------------------------------------------------
 
 def _run_cli(args: list[str], cwd: str | None = None) -> subprocess.CompletedProcess:
-    """Run the sr2-spectre CLI as a subprocess."""
+    """Run the spctr CLI as a subprocess."""
     return subprocess.run(
-        [sys.executable, "-m", "sr2_spectre.cli"] + args,
+        [sys.executable, "-m", "spctr.cli"] + args,
         capture_output=True,
         text=True,
         cwd=cwd,
@@ -465,8 +465,8 @@ class TestCliConfigShow:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {
-            "agent": {"name": "spectre"},
+        _write_yaml(cwd / ".spctr.yaml", {
+            "agent": {"name": "spctr"},
             "models": {"default": {"model": "gpt-4o"}},
             "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         })
@@ -484,8 +484,8 @@ class TestCliConfigShow:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {
-            "agent": {"name": "spectre"},
+        _write_yaml(cwd / ".spctr.yaml", {
+            "agent": {"name": "spctr"},
             "models": {"default": {"base_url": "https://example.com"}},  # missing required 'model' field
             "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         })
@@ -503,8 +503,8 @@ class TestCliConfigShow:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {
-            "agent": {"name": "spectre"},
+        _write_yaml(cwd / ".spctr.yaml", {
+            "agent": {"name": "spctr"},
         })
 
         result = _run_cli(
@@ -520,8 +520,8 @@ class TestCliConfigShow:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {
-            "agent": {"name": "spectre"},
+        _write_yaml(cwd / ".spctr.yaml", {
+            "agent": {"name": "spctr"},
             "models": {"default": {"model": "gpt-4o"}},
             "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         })
@@ -541,8 +541,8 @@ class TestCliConfigShow:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {
-            "agent": {"name": "spectre"},
+        _write_yaml(cwd / ".spctr.yaml", {
+            "agent": {"name": "spctr"},
             "models": {"default": {"model": "gpt-4o"}},
             "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         })
@@ -562,8 +562,8 @@ class TestCliConfigShow:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {
-            "agent": {"name": "spectre"},
+        _write_yaml(cwd / ".spctr.yaml", {
+            "agent": {"name": "spctr"},
             "models": {"default": {"base_url": "https://example.com"}},  # missing required 'model' field
             "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         })
@@ -585,8 +585,8 @@ class TestCliConfigShow:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {
-            "agent": {"name": "spectre"},
+        _write_yaml(cwd / ".spctr.yaml", {
+            "agent": {"name": "spctr"},
             "models": {"default": {"model": "gpt-4o"}},
             "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         })

@@ -15,7 +15,7 @@ model/scenario at INFO level.
 ## Prerequisites
 
 - Python 3.12+ with project deps installed (`uv sync` or `uv run`)
-- Working directory: project root (`sr2-spectre`)
+- Working directory: project root (`spctr`)
 
 ## Smoke Steps
 
@@ -31,12 +31,12 @@ PYTHONPATH=src pytest tests/test_scaffold_compiler.py -v
 
 ```bash
 PYTHONPATH=src python -c "
-from sr2_spectre.tools.image_scenarios import load_image_scenarios
-from sr2_spectre.tools.scaffold_compiler import compile_scaffold
+from spctr.tools.image_scenarios import load_image_scenarios
+from spctr.tools.scaffold_compiler import compile_scaffold
 from pathlib import Path
 
 registry = load_image_scenarios(
-    Path('src/sr2_spectre/resources/scenarios/image_scenarios.yaml')
+    Path('src/spctr/resources/scenarios/image_scenarios.yaml')
 )
 
 for name in registry.scenario_names():
@@ -69,14 +69,14 @@ selfie:
 ```bash
 PYTHONPATH=src python -c "
 import logging
-from sr2_spectre.tools.image_scenarios import load_image_scenarios
-from sr2_spectre.tools.scaffold_compiler import compile_scaffold
+from spctr.tools.image_scenarios import load_image_scenarios
+from spctr.tools.scaffold_compiler import compile_scaffold
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
 registry = load_image_scenarios(
-    Path('src/sr2_spectre/resources/scenarios/image_scenarios.yaml')
+    Path('src/spctr/resources/scenarios/image_scenarios.yaml')
 )
 scenario = registry.get('selfie')
 compile_scaffold(scenario, 'vexa grinning on a rooftop at night')
@@ -95,11 +95,11 @@ Scaffold compiled — scenario=selfie, model=SDXL/dreamshaperXL_alpha2Xl10.safet
 
 ```bash
 PYTHONPATH=src python -c "
-from sr2_spectre.tools.image_scenarios import (
+from spctr.tools.image_scenarios import (
     ResolvedScenario, ModelFragment, FrameFragment,
     ContentFragment, ModalityFragment,
 )
-from sr2_spectre.tools.scaffold_compiler import compile_scaffold
+from spctr.tools.scaffold_compiler import compile_scaffold
 
 # Minimal scenario — all optional fields empty
 bare = ResolvedScenario(
@@ -131,11 +131,11 @@ PASS: minimal scenario compiles to intent-only
 
 ```bash
 PYTHONPATH=src python -c "
-from sr2_spectre.tools.image_scenarios import (
+from spctr.tools.image_scenarios import (
     ResolvedScenario, ModelFragment, FrameFragment,
     ContentFragment, ModalityFragment, LoraFragment,
 )
-from sr2_spectre.tools.scaffold_compiler import compile_scaffold
+from spctr.tools.scaffold_compiler import compile_scaffold
 
 scenario = ResolvedScenario(
     name='multi_lora',
@@ -181,5 +181,5 @@ PASS: triggers injected in order, empty triggers skipped
 
 ## Files Changed
 
-- `src/sr2_spectre/tools/scaffold_compiler.py` — Zone-1 compiler + FR10 logging
+- `src/spctr/tools/scaffold_compiler.py` — Zone-1 compiler + FR10 logging
 - `tests/test_scaffold_compiler.py` — 24 tests

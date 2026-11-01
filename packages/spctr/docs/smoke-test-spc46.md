@@ -13,7 +13,7 @@ instead of the parent channel.
 ## Prerequisites
 
 ```bash
-cd /home/shepard/git/sr2-spectre
+cd /home/shepard/git/spctr
 git pull origin main
 ```
 
@@ -89,7 +89,7 @@ These require a live Discord bot running with the updated code.
 
 | File | Change |
 |------|--------|
-| `src/sr2_spectre/interfaces/discord/interface.py` | Merged tool-log into thinking message; fixed /ask thread routing |
+| `src/spctr/interfaces/discord/interface.py` | Merged tool-log into thinking message; fixed /ask thread routing |
 | `tests/test_discord_interface.py` | 7 new tests for tool-log merge + mention bypass + /ask routing |
 
 ## Rollback

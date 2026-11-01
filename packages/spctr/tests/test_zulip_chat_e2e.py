@@ -1,6 +1,6 @@
 """J1B (E2E) — spc-125: Connect Miranda's CLI to safe no-area Zulip chat.
 
-Runs the REAL user entry point (``python -m sr2_spectre.cli <config>
+Runs the REAL user entry point (``python -m spctr.cli <config>
 --interface zulip --log-file …``) against substituted loopback Zulip and
 model HTTP endpoints only.  Real: CLI, config resolution, Zulip interface,
 Agent/Runtime/Session, SR2 pipeline, topic_area/session/input resolvers,
@@ -852,7 +852,7 @@ def test_supported_area_starts_and_routes(tmp_path):
         # NOW.md are in the compiled request, each exactly once.
         text = "\n".join(_request_texts(run.model_messages()))
         assert f"{AREA_MARKER} AGENTS" in text and f"{AREA_MARKER} NOW" in text, (
-            _fail(run, f"mapped area sr2-spectre's documents missing from the "
+            _fail(run, f"mapped area spctr's documents missing from the "
                        f"compiled request"))
         assert text.count(f"{AREA_MARKER} AGENTS") == 1, (
             _fail(run, "mapped-area AGENTS injected more than once"))

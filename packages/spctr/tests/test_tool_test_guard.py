@@ -9,7 +9,7 @@ import pytest
 
 from tests.conftest import _surviving_pids
 
-from sr2_spectre.tools.builtins.test_guard import (
+from spctr.tools.builtins.test_guard import (
     GuardResult,
     GuardTool,
     _TEST_FUNC_RE,

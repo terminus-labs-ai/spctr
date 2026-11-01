@@ -1,7 +1,7 @@
 """Continuity baseline runner (sr2-91 / AC16).
 
 Executes the versioned corpus (``evals.continuity.scenarios.CORPUS``)
-against current full-history behavior — the SR2 pipeline shape Spectre
+against current full-history behavior — the SR2 pipeline shape spctr
 uses today (``seed_session`` + ``turn``: no trimming, no compaction) —
 with the deterministic extraction double in place of a live model. All
 nine AC16 metrics are computed per the spec's Benchmark Metric Contract
@@ -433,7 +433,7 @@ def _baseline_config():
     from sr2.config.models import (EventSubscriptionConfig, LayerConfig,
                                    PipelineConfig, ResolverConfig)
 
-    # The minimal shape Spectre compiles today: a static system scaffold
+    # The minimal shape spctr compiles today: a static system scaffold
     # layer plus a session (full-history) + current-input layer.
     return PipelineConfig(
         layers=[
@@ -649,7 +649,7 @@ def compile_turn(turn: ScenarioTurn, blocks: Sequence[Block],
     Restored blocks are delivered flat — one line each, in observation
     order, the declared ``observed_at`` travelling as an ``[observed …]``
     stamp line because the product ``TextBlock`` has no meta — and seeded
-    into the transcript (Spectre's full-history pattern: ``seed_session``
+    into the transcript (spctr's full-history pattern: ``seed_session``
     + ``turn``); the pipeline compiles the FULL history — nothing trimmed,
     nothing compacted — into the request the double reads. Duplicate value
     lines carry no fresh copy: the value travels once and the recency map

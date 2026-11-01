@@ -22,7 +22,7 @@ from sr2.pipeline.events import Event, EventPhase
 from sr2.pipeline.models import TransformationResult
 from sr2.pipeline.provenance import EntryOrigin
 
-from sr2_spectre.planning.transformer import StepCompactionTransformer
+from spctr.planning.transformer import StepCompactionTransformer
 
 # ---------------------------------------------------------------------------
 # Helpers

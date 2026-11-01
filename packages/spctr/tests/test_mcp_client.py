@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sr2_spectre.mcp.tool_bridge import MCPToolBridge
+from spctr.mcp.tool_bridge import MCPToolBridge
 
 
 # ---------------------------------------------------------------------------
@@ -94,10 +94,10 @@ async def test_stdio_connect_returns_bridge_per_tool() -> None:
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["my_server"], args=[], env={})
         bridges = await client.connect()
@@ -113,10 +113,10 @@ async def test_stdio_connect_bridge_names_match_tools() -> None:
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         bridges = await client.connect()
@@ -135,10 +135,10 @@ async def test_http_connect_returns_bridge_per_tool() -> None:
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.sse_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.sse_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("http", url="http://localhost:8080/sse")
         bridges = await client.connect()
@@ -159,10 +159,10 @@ async def test_streamable_http_connect_returns_bridge_per_tool() -> None:
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.streamablehttp_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.streamablehttp_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("streamable-http", url="http://localhost:8080/mcp")
         bridges = await client.connect()
@@ -173,13 +173,13 @@ async def test_streamable_http_connect_returns_bridge_per_tool() -> None:
 
 
 async def test_streamable_http_connect_raises_mcp_connection_error_on_transport_failure() -> None:
-    from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
+    from spctr.mcp.client import MCPClient, MCPConnectionError
 
     failing_ctx = AsyncMock()
     failing_ctx.__aenter__ = AsyncMock(side_effect=ConnectionRefusedError("refused"))
     failing_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("sr2_spectre.mcp.client.streamablehttp_client", return_value=failing_ctx):
+    with patch("spctr.mcp.client.streamablehttp_client", return_value=failing_ctx):
         client = MCPClient("streamable-http", url="http://dead-host/mcp")
         with pytest.raises(MCPConnectionError):
             await client.connect()
@@ -197,10 +197,10 @@ async def test_bridge_attributes_match_tool_definition() -> None:
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         bridges = await client.connect()
@@ -218,10 +218,10 @@ async def test_bridge_description_is_empty_string_when_tool_description_is_none(
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         bridges = await client.connect()
@@ -240,10 +240,10 @@ async def test_bridge_call_delegates_to_session_call_tool() -> None:
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         bridges = await client.connect()
@@ -262,10 +262,10 @@ async def test_connect_returns_empty_list_when_server_has_no_tools() -> None:
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         bridges = await client.connect()
@@ -278,13 +278,13 @@ async def test_connect_returns_empty_list_when_server_has_no_tools() -> None:
 # ---------------------------------------------------------------------------
 
 async def test_stdio_connect_raises_mcp_connection_error_on_transport_failure() -> None:
-    from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
+    from spctr.mcp.client import MCPClient, MCPConnectionError
 
     failing_ctx = AsyncMock()
     failing_ctx.__aenter__ = AsyncMock(side_effect=OSError("spawn failed"))
     failing_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("sr2_spectre.mcp.client.stdio_client", return_value=failing_ctx):
+    with patch("spctr.mcp.client.stdio_client", return_value=failing_ctx):
         client = MCPClient("stdio", command=["no_such_binary"])
         with pytest.raises(MCPConnectionError):
             await client.connect()
@@ -295,13 +295,13 @@ async def test_stdio_connect_raises_mcp_connection_error_on_transport_failure() 
 # ---------------------------------------------------------------------------
 
 async def test_http_connect_raises_mcp_connection_error_on_transport_failure() -> None:
-    from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
+    from spctr.mcp.client import MCPClient, MCPConnectionError
 
     failing_ctx = AsyncMock()
     failing_ctx.__aenter__ = AsyncMock(side_effect=ConnectionRefusedError("refused"))
     failing_ctx.__aexit__ = AsyncMock(return_value=None)
 
-    with patch("sr2_spectre.mcp.client.sse_client", return_value=failing_ctx):
+    with patch("spctr.mcp.client.sse_client", return_value=failing_ctx):
         client = MCPClient("http", url="http://dead-host/sse")
         with pytest.raises(MCPConnectionError):
             await client.connect()
@@ -312,7 +312,7 @@ async def test_http_connect_raises_mcp_connection_error_on_transport_failure() -
 # ---------------------------------------------------------------------------
 
 async def test_connect_raises_mcp_connection_error_on_initialize_failure() -> None:
-    from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
+    from spctr.mcp.client import MCPClient, MCPConnectionError
 
     mock_session = AsyncMock()
     mock_session.initialize = AsyncMock(side_effect=RuntimeError("protocol error"))
@@ -322,8 +322,8 @@ async def test_connect_raises_mcp_connection_error_on_initialize_failure() -> No
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
         client = MCPClient("stdio", command=["srv"])
         with pytest.raises(MCPConnectionError):
@@ -335,7 +335,7 @@ async def test_connect_raises_mcp_connection_error_on_initialize_failure() -> No
 # ---------------------------------------------------------------------------
 
 async def test_connect_raises_mcp_connection_error_on_list_tools_failure() -> None:
-    from sr2_spectre.mcp.client import MCPClient, MCPConnectionError
+    from spctr.mcp.client import MCPClient, MCPConnectionError
 
     mock_session = AsyncMock()
     mock_session.initialize = AsyncMock(return_value=None)
@@ -345,8 +345,8 @@ async def test_connect_raises_mcp_connection_error_on_list_tools_failure() -> No
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
         client = MCPClient("stdio", command=["srv"])
         with pytest.raises(MCPConnectionError):
@@ -358,7 +358,7 @@ async def test_connect_raises_mcp_connection_error_on_list_tools_failure() -> No
 # ---------------------------------------------------------------------------
 
 async def test_close_before_connect_does_not_raise() -> None:
-    from sr2_spectre.mcp.client import MCPClient
+    from spctr.mcp.client import MCPClient
 
     client = MCPClient("stdio", command=["srv"])
     await client.close()  # must not raise
@@ -374,10 +374,10 @@ async def test_close_after_connect_exits_session_context() -> None:
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         await client.connect()
@@ -411,10 +411,10 @@ async def test_close_suppresses_runtime_error_on_session_aexit() -> None:
     )
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         await client.connect()
@@ -439,10 +439,10 @@ async def test_close_suppresses_runtime_error_on_transport_aexit() -> None:
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         await client.connect()
@@ -465,10 +465,10 @@ async def test_close_suppresses_generator_exit_on_session_aexit() -> None:
     session_ctx.__aexit__ = AsyncMock(side_effect=GeneratorExit())
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         await client.connect()
@@ -488,10 +488,10 @@ async def test_close_clears_internal_state() -> None:
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         await client.connect()
@@ -515,10 +515,10 @@ async def test_close_is_idempotent() -> None:
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         await client.connect()
@@ -544,10 +544,10 @@ async def test_close_suppresses_spurious_cancel_on_session_aexit() -> None:
     session_ctx.__aexit__ = AsyncMock(side_effect=asyncio.CancelledError())
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         await client.connect()
@@ -567,10 +567,10 @@ async def test_close_suppresses_spurious_cancel_on_transport_aexit() -> None:
     session_ctx = _make_session_ctx(mock_session)
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         await client.connect()
@@ -593,11 +593,11 @@ async def test_close_reraises_genuine_cancellation() -> None:
     fake_task.cancelling.return_value = 1  # genuine external cancellation pending
 
     with (
-        patch("sr2_spectre.mcp.client.stdio_client", return_value=transport_ctx),
-        patch("sr2_spectre.mcp.client.ClientSession", return_value=session_ctx),
-        patch("sr2_spectre.mcp.client.asyncio.current_task", return_value=fake_task),
+        patch("spctr.mcp.client.stdio_client", return_value=transport_ctx),
+        patch("spctr.mcp.client.ClientSession", return_value=session_ctx),
+        patch("spctr.mcp.client.asyncio.current_task", return_value=fake_task),
     ):
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         client = MCPClient("stdio", command=["srv"])
         await client.connect()

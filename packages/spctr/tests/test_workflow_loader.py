@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from sr2_spectre.tools.builtins.workflow_loader import (
+from spctr.tools.builtins.workflow_loader import (
     PatchMap,
     apply_patches,
     build_workflow,
@@ -137,7 +137,7 @@ def test_build_workflow_unknown_modality():
 
 def test_template_matches_built_workflow():
     """The seeded template + patches should match _build_text2img_workflow output."""
-    from sr2_spectre.tools.builtins.generate_image import GenerateImageTool
+    from spctr.tools.builtins.generate_image import GenerateImageTool
 
     tool = GenerateImageTool(
         checkpoint="SDXL\\dreamshaperXL_alpha2Xl10.safetensors",
@@ -170,7 +170,7 @@ def test_template_matches_built_workflow():
 
 def test_template_matches_custom_checkpoint():
     """Template with checkpoint patch matches built workflow with custom checkpoint."""
-    from sr2_spectre.tools.builtins.generate_image import GenerateImageTool
+    from spctr.tools.builtins.generate_image import GenerateImageTool
 
     tool = GenerateImageTool(
         checkpoint="custom_model.safetensors",

@@ -19,7 +19,7 @@ with fakes at the same seams spc-139's tests use:
 A ``FakeAgent`` facade mirrors the attributes the interface reads off a
 real ``Agent`` (``config``, ``reminders``, ``reminders_seq``,
 ``_runtime``); the Runtime under test is real, built with the documented
-``sr2_spectre.live_llm.LiteLLMCallable`` seam patched.
+``spctr.live_llm.LiteLLMCallable`` seam patched.
 """
 from __future__ import annotations
 
@@ -32,12 +32,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from sr2_spectre.config import (
+from spctr.config import (
     AgentConfig,
     ModelConfig,
-    SpectreConfig,
+    SpctrConfig,
 )
-from sr2_spectre.reminders import Reminder, ReminderStore
+from spctr.reminders import Reminder, ReminderStore
 
 UTC = ZoneInfo("UTC")
 
@@ -55,12 +55,12 @@ def _clock_at(moment: datetime):
 # ---------------------------------------------------------------------------
 
 
-def _config(store: Path, **reminders: Any) -> SpectreConfig:
-    """A minimal real SpectreConfig with one reminders block."""
+def _config(store: Path, **reminders: Any) -> SpctrConfig:
+    """A minimal real SpctrConfig with one reminders block."""
     agent: dict[str, Any] = {"name": "miranda", "default_skills": False}
     if reminders:
         agent["reminders"] = dict(reminders)
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(**agent),
         models={"default": ModelConfig(model="test-model")},
         pipeline={"layers": []},
@@ -69,7 +69,7 @@ def _config(store: Path, **reminders: Any) -> SpectreConfig:
     )
 
 
-def _enabled(store: Path, **overrides: Any) -> SpectreConfig:
+def _enabled(store: Path, **overrides: Any) -> SpctrConfig:
     block: dict[str, Any] = {
         "enabled": True,
         "timezone": "America/Phoenix",
@@ -80,11 +80,11 @@ def _enabled(store: Path, **overrides: Any) -> SpectreConfig:
     return _config(store, **block)
 
 
-def _runtime(config: SpectreConfig):
+def _runtime(config: SpctrConfig):
     """A real Runtime with the documented LLM seam patched (no model)."""
-    from sr2_spectre.runtime import Runtime
+    from spctr.runtime import Runtime
 
-    with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+    with patch("spctr.live_llm.LiteLLMCallable"):
         return Runtime(config=config)
 
 
@@ -126,9 +126,9 @@ def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
     interval (tiny — injected clocks mean no reminder timing depends on
     it), so loop churn between tests stays cheap.
     """
-    import sr2_spectre.interfaces.zulip.interface as iface_mod
-    from sr2_spectre.interfaces.zulip.client import ZulipCredentials
-    from sr2_spectre.interfaces.zulip.config import ZulipConfig
+    import spctr.interfaces.zulip.interface as iface_mod
+    from spctr.interfaces.zulip.client import ZulipCredentials
+    from spctr.interfaces.zulip.config import ZulipConfig
 
     config = ZulipConfig(
         zuliprc=str(store_dir / "zuliprc"),
@@ -571,7 +571,7 @@ class TestRuntimeSurfacing:
         # the exact broken state an operator's edit produces.
         broken = _enabled(store_file, poll_seconds=30).model_dump()
         broken["agent"]["reminders"] = {"enabled": True}
-        broken = SpectreConfig(**broken)
+        broken = SpctrConfig(**broken)
         with pytest.raises(ValueError, match="timezone"):
             runtime.apply_config(broken)
 

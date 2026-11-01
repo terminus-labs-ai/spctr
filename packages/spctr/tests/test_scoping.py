@@ -1,4 +1,4 @@
-"""Tests for sr2_spectre.scoping — per-session systemd scope entry.
+"""Tests for spctr.scoping — per-session systemd scope entry.
 
 Covers obsidian-y10f acceptance criteria:
 - Re-exec under systemd-run when not already scoped.
@@ -21,7 +21,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sr2_spectre.scoping import (
+from spctr.scoping import (
     _DEFAULT_MEMORY_MAX,
     _DEFAULT_MEMORY_SWAP_MAX,
     _memory_max,
@@ -34,16 +34,16 @@ from sr2_spectre.scoping import (
 class TestUnitName:
     def test_uses_session_id_flag(self):
         argv = ["config.yaml", "hello", "--session-id", "my-bead-42"]
-        assert _unit_name(argv) == "spectre-my-bead-42"
+        assert _unit_name(argv) == "spctr-my-bead-42"
 
     def test_uses_session_id_equals_form(self):
         argv = ["--session-id=role-C-001", "--agent", "edi"]
-        assert _unit_name(argv) == "spectre-role-C-001"
+        assert _unit_name(argv) == "spctr-role-C-001"
 
     def test_falls_back_to_pid(self, monkeypatch):
         monkeypatch.setattr(os, "getpid", lambda: 99999)
         argv = ["config.yaml", "--interface", "repl"]
-        assert _unit_name(argv) == "spectre-99999"
+        assert _unit_name(argv) == "spctr-99999"
 
     def test_sanitizes_unsafe_chars(self):
         argv = ["--session-id", "foo/bar baz!"]
@@ -51,11 +51,11 @@ class TestUnitName:
         assert "/" not in result
         assert " " not in result
         assert "!" not in result
-        assert result.startswith("spectre-")
+        assert result.startswith("spctr-")
 
     def test_preserves_safe_chars(self):
         argv = ["--session-id", "abc.def:ghi_jkl-mno"]
-        assert _unit_name(argv) == "spectre-abc.def:ghi_jkl-mno"
+        assert _unit_name(argv) == "spctr-abc.def:ghi_jkl-mno"
 
 
 class TestConfigDefaults:
@@ -79,14 +79,14 @@ class TestConfigDefaults:
 class TestSkipConditions:
     def test_skips_when_sr2_scope_unit_set(self, monkeypatch):
         monkeypatch.setenv("SR2_SCOPE_UNIT", "gmap-existing.scope")
-        with patch("sr2_spectre.scoping.os.execvp") as mock_exec:
+        with patch("spctr.scoping.os.execvp") as mock_exec:
             maybe_enter_scope(["config.yaml"])
             mock_exec.assert_not_called()
 
     def test_skips_when_invocation_id_set(self, monkeypatch):
         monkeypatch.delenv("SR2_SCOPE_UNIT", raising=False)
         monkeypatch.setenv("INVOCATION_ID", "abc123def456")
-        with patch("sr2_spectre.scoping.os.execvp") as mock_exec:
+        with patch("spctr.scoping.os.execvp") as mock_exec:
             maybe_enter_scope(["config.yaml"])
             mock_exec.assert_not_called()
 
@@ -94,7 +94,7 @@ class TestSkipConditions:
         monkeypatch.delenv("SR2_SCOPE_UNIT", raising=False)
         monkeypatch.delenv("INVOCATION_ID", raising=False)
         monkeypatch.setenv("SR2_NO_SCOPE", "1")
-        with patch("sr2_spectre.scoping.os.execvp") as mock_exec:
+        with patch("spctr.scoping.os.execvp") as mock_exec:
             maybe_enter_scope(["config.yaml"])
             mock_exec.assert_not_called()
 
@@ -103,8 +103,8 @@ class TestSkipConditions:
         monkeypatch.delenv("INVOCATION_ID", raising=False)
         monkeypatch.delenv("SR2_NO_SCOPE", raising=False)
         with (
-            patch("sr2_spectre.scoping._systemd_run_available", return_value=False),
-            patch("sr2_spectre.scoping.os.execvp") as mock_exec,
+            patch("spctr.scoping._systemd_run_available", return_value=False),
+            patch("spctr.scoping.os.execvp") as mock_exec,
         ):
             maybe_enter_scope(["config.yaml"])
             mock_exec.assert_not_called()
@@ -116,9 +116,9 @@ class TestSkipConditions:
         monkeypatch.delenv("INVOCATION_ID", raising=False)
         monkeypatch.delenv("SR2_NO_SCOPE", raising=False)
         with (
-            patch("sr2_spectre.scoping._systemd_run_available", return_value=True),
-            patch("sr2_spectre.scoping._systemd_user_running", return_value=False),
-            patch("sr2_spectre.scoping.os.execvp") as mock_exec,
+            patch("spctr.scoping._systemd_run_available", return_value=True),
+            patch("spctr.scoping._systemd_user_running", return_value=False),
+            patch("spctr.scoping.os.execvp") as mock_exec,
         ):
             maybe_enter_scope(["config.yaml"])
             mock_exec.assert_not_called()
@@ -135,13 +135,13 @@ class TestReExec:
         monkeypatch.setenv("SR2_SCOPE_MEMORY_SWAP_MAX", "1G")
         monkeypatch.setattr(os, "getpid", lambda: 12345)
 
-        fake_argv = ["/usr/bin/sr2-spectre", "config.yaml", "hello"]
+        fake_argv = ["/usr/bin/spctr", "config.yaml", "hello"]
         monkeypatch.setattr(sys, "argv", fake_argv)
 
         with (
-            patch("sr2_spectre.scoping._systemd_run_available", return_value=True),
-            patch("sr2_spectre.scoping._systemd_user_running", return_value=True),
-            patch("sr2_spectre.scoping.os.execvp") as mock_exec,
+            patch("spctr.scoping._systemd_run_available", return_value=True),
+            patch("spctr.scoping._systemd_user_running", return_value=True),
+            patch("spctr.scoping.os.execvp") as mock_exec,
         ):
             maybe_enter_scope(["config.yaml", "hello"])
 
@@ -152,7 +152,7 @@ class TestReExec:
         assert "--user" in cmd
         assert "--scope" in cmd
         assert "--quiet" in cmd
-        assert "--unit=spectre-12345" in cmd
+        assert "--unit=spctr-12345" in cmd
         assert "-p" in cmd
         assert "MemoryMax=8G" in cmd
         assert "MemorySwapMax=1G" in cmd
@@ -164,7 +164,7 @@ class TestReExec:
         monkeypatch.delenv("INVOCATION_ID", raising=False)
         monkeypatch.delenv("SR2_NO_SCOPE", raising=False)
         monkeypatch.setattr(os, "getpid", lambda: 42)
-        monkeypatch.setattr(sys, "argv", ["/usr/bin/sr2-spectre"])
+        monkeypatch.setattr(sys, "argv", ["/usr/bin/spctr"])
 
         env_snapshot: dict[str, str] = {}
 
@@ -172,29 +172,29 @@ class TestReExec:
             env_snapshot.update(os.environ)
 
         with (
-            patch("sr2_spectre.scoping._systemd_run_available", return_value=True),
-            patch("sr2_spectre.scoping._systemd_user_running", return_value=True),
-            patch("sr2_spectre.scoping.os.execvp", side_effect=capture_exec),
+            patch("spctr.scoping._systemd_run_available", return_value=True),
+            patch("spctr.scoping._systemd_user_running", return_value=True),
+            patch("spctr.scoping.os.execvp", side_effect=capture_exec),
         ):
             maybe_enter_scope([])
 
-        assert env_snapshot.get("SR2_SCOPE_UNIT") == "spectre-42"
+        assert env_snapshot.get("SR2_SCOPE_UNIT") == "spctr-42"
 
     def test_uses_session_id_in_unit_name(self, monkeypatch):
         monkeypatch.delenv("SR2_SCOPE_UNIT", raising=False)
         monkeypatch.delenv("INVOCATION_ID", raising=False)
         monkeypatch.delenv("SR2_NO_SCOPE", raising=False)
-        monkeypatch.setattr(sys, "argv", ["/usr/bin/sr2-spectre", "--session-id", "bead-7"])
+        monkeypatch.setattr(sys, "argv", ["/usr/bin/spctr", "--session-id", "bead-7"])
 
         with (
-            patch("sr2_spectre.scoping._systemd_run_available", return_value=True),
-            patch("sr2_spectre.scoping._systemd_user_running", return_value=True),
-            patch("sr2_spectre.scoping.os.execvp") as mock_exec,
+            patch("spctr.scoping._systemd_run_available", return_value=True),
+            patch("spctr.scoping._systemd_user_running", return_value=True),
+            patch("spctr.scoping.os.execvp") as mock_exec,
         ):
             maybe_enter_scope(["--session-id", "bead-7"])
 
         cmd = mock_exec.call_args[0][1]
-        assert "--unit=spectre-bead-7" in cmd
+        assert "--unit=spctr-bead-7" in cmd
 
 
 class TestOOMToolErrorSurfacing:
@@ -205,7 +205,7 @@ class TestOOMToolErrorSurfacing:
     async def test_oom_killed_child_surfaces_as_tool_output(self, tmp_path):
         """A subprocess killed by SIGKILL (simulating cgroup OOM) returns its
         partial output with 'Killed' rather than crashing the session."""
-        from sr2_spectre.tools.builtins.terminal import TerminalTool
+        from spctr.tools.builtins.terminal import TerminalTool
 
         tool = TerminalTool(timeout=10)
         # Allocate past RLIMIT_AS (64MB); kernel sends SIGKILL.
@@ -223,7 +223,7 @@ class TestOOMToolErrorSurfacing:
     @pytest.mark.asyncio
     async def test_sibling_call_survives_oom_sibling(self):
         """Concurrent tool calls: one OOM'd, the other completes normally."""
-        from sr2_spectre.tools.builtins.terminal import TerminalTool
+        from spctr.tools.builtins.terminal import TerminalTool
 
         tool = TerminalTool(timeout=10)
         oom_cmd = (
@@ -254,25 +254,25 @@ class TestSystemdUserRunning:
         with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 0
             mock_run.return_value.stdout = b"running\n"
-            from sr2_spectre.scoping import _systemd_user_running
+            from spctr.scoping import _systemd_user_running
             assert _systemd_user_running() is True
 
     def test_returns_true_for_degraded(self):
         with patch("subprocess.run") as mock_run:
             mock_run.return_value.returncode = 1
             mock_run.return_value.stdout = b"degraded\n"
-            from sr2_spectre.scoping import _systemd_user_running
+            from spctr.scoping import _systemd_user_running
             assert _systemd_user_running() is True
 
     def test_returns_false_on_oserror(self):
         with patch("subprocess.run", side_effect=OSError("not found")):
-            from sr2_spectre.scoping import _systemd_user_running
+            from spctr.scoping import _systemd_user_running
             assert _systemd_user_running() is False
 
     def test_returns_false_on_timeout(self):
         import subprocess
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("x", 5)):
-            from sr2_spectre.scoping import _systemd_user_running
+            from spctr.scoping import _systemd_user_running
             assert _systemd_user_running() is False
 
 
@@ -289,12 +289,12 @@ ENTRYPOINT_TIMEOUT_SECONDS = 120.0
 
 
 class TestEntrypointIntegration:
-    """The real ``sr2-spectre`` entry point must actually enter the scope.
+    """The real ``spctr`` entry point must actually enter the scope.
 
     Discrimination (obsidian-qhuv): every other test in this file calls
     ``maybe_enter_scope`` directly, so the whole suite stayed green with the
     two-line integration deleted from ``cli.main()`` — nothing proved a real
-    launch re-execs. This test runs the real ``python -m sr2_spectre.cli`` in a
+    launch re-execs. This test runs the real ``python -m spctr.cli`` in a
     subprocess with the scope env vars unset, with ``systemd-run`` and
     ``systemctl`` resolved through a PATH shim that records its argv and exits.
     Deleting the ``maybe_enter_scope(args)`` call from ``main()`` makes the
@@ -341,7 +341,7 @@ class TestEntrypointIntegration:
                 "SR2_SCOPE_MEMORY_SWAP_MAX",
             )
         }
-        # PYTHONPATH must name this tree: the venv resolves sr2_spectre through
+        # PYTHONPATH must name this tree: the venv resolves spctr through
         # a .pth at the main checkout, which would shadow the branch under test.
         env["PYTHONPATH"] = str(REPO_ROOT / "src")
         env["PATH"] = f"{tmp_path / 'bin'}{os.pathsep}{env.get('PATH', '')}"
@@ -352,7 +352,7 @@ class TestEntrypointIntegration:
             [
                 sys.executable,
                 "-m",
-                "sr2_spectre.cli",
+                "spctr.cli",
                 str(tmp_path / "does-not-exist.yaml"),
                 "--session-id",
                 "qhuv-probe",
@@ -373,13 +373,13 @@ class TestEntrypointIntegration:
 
         # A memory-capped scope unit named after the session id, and the child
         # command carried across the re-exec.
-        assert argv[:4] == ["--user", "--scope", "--quiet", "--unit=spectre-qhuv-probe"]
+        assert argv[:4] == ["--user", "--scope", "--quiet", "--unit=spctr-qhuv-probe"]
         assert "-p" in argv
         assert "MemoryMax=7G" in argv
         assert "MemorySwapMax=0" in argv
         assert "--" in argv
         reexeced = argv[argv.index("--") + 1 :]
-        assert reexeced[0].endswith("sr2_spectre/cli.py")
+        assert reexeced[0].endswith("spctr/cli.py")
         assert reexeced[1:] == [
             str(tmp_path / "does-not-exist.yaml"),
             "--session-id",

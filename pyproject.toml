@@ -1,18 +1,18 @@
 [project]
 name = "sr2-monorepo"
 version = "0.1.0"
-description = "SR2 monorepo workspace: sr2 core and sr2-spectre"
+description = "SR2 monorepo workspace: sr2 core and spctr"
 requires-python = ">=3.12"
 # The workspace root installs both members so a single venv at the root can
 # run every package's tests.
-dependencies = ["sr2", "sr2-spectre"]
+dependencies = ["sr2", "spctr"]
 
 [tool.uv.workspace]
 members = ["packages/sr2", "packages/spctr"]
 
 [tool.uv.sources]
 sr2 = { workspace = true }
-sr2-spectre = { workspace = true }
+spctr = { workspace = true }
 
 # Deliberately no [build-system]: the root is a virtual workspace root that
 # owns no Python code. It pins no modules and builds nothing; the members

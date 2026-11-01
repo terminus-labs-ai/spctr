@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sr2_spectre.tools.builtins.glyph import GlyphError, GlyphSearchTool, _truncate
+from spctr.tools.builtins.glyph import GlyphError, GlyphSearchTool, _truncate
 
 BASE = "http://192.168.50.117:8432"
 

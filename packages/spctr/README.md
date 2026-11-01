@@ -1,4 +1,4 @@
-# SR2 Spectre
+# SR2 spctr
 
 A full agent runtime powered by [SR2](https://github.com/terminus-labs-ai/sr2) — streaming responses, tool execution, and a polished TUI out of the box.
 
@@ -14,12 +14,12 @@ A full agent runtime powered by [SR2](https://github.com/terminus-labs-ai/sr2) �
 Requires Python 3.12+ and [uv](https://github.com/astral-sh/uv).
 
 ```bash
-git clone https://github.com/terminus-labs-ai/sr2-spectre
-cd sr2-spectre
+git clone https://github.com/terminus-labs-ai/spctr
+cd spctr
 uv sync
 ```
 
-Spectre depends on [SR2](https://github.com/terminus-labs-ai/sr2). Clone it alongside and `uv` will pick it up via the path dependency in `pyproject.toml`.
+spctr depends on [SR2](https://github.com/terminus-labs-ai/sr2). Clone it alongside and `uv` will pick it up via the path dependency in `pyproject.toml`.
 
 ```bash
 git clone https://github.com/terminus-labs-ai/sr2 ../sr2
@@ -35,7 +35,7 @@ cp config.example.yaml my-config.yaml
 
 Edit `my-config.yaml` — at minimum set `models.default.model` and `models.default.base_url`.
 
-Spectre works with any OpenAI-compatible API (Ollama, LM Studio, vLLM) and hosted providers (OpenAI, Anthropic via LiteLLM).
+spctr works with any OpenAI-compatible API (Ollama, LM Studio, vLLM) and hosted providers (OpenAI, Anthropic via LiteLLM).
 
 Long-running interfaces (the Discord bot) re-read the whole config on every
 inbound message, so fixing a model or endpoint applies to the next message
@@ -46,18 +46,18 @@ without a restart. A few fields still need one — see
 
 **Interactive TUI:**
 ```bash
-sr2-spectre my-config.yaml --interface tui
+spctr my-config.yaml --interface tui
 ```
 
 **Single-shot (pipe-friendly):**
 ```bash
-sr2-spectre my-config.yaml "summarise this file"
-echo "what is 2+2" | sr2-spectre my-config.yaml
+spctr my-config.yaml "summarise this file"
+echo "what is 2+2" | spctr my-config.yaml
 ```
 
 **Debug pipeline with trace:**
 ```bash
-sr2-spectre my-config.yaml --trace "list files in /tmp"
+spctr my-config.yaml --trace "list files in /tmp"
 ```
 
 ### TUI commands
@@ -87,13 +87,13 @@ Custom tools follow the same interface — point `class_path` at your class and 
 ## Architecture
 
 ```
-sr2-spectre/
-  src/sr2_spectre/
+spctr/
+  src/spctr/
     agent.py            # Agent — owns history, tool loop, stream_message()
     cli.py              # CLI entry point
-    config.py           # SpectreConfig (Pydantic)
+    config.py           # SpctrConfig (Pydantic)
     events.py           # AgentEvent types (TextDelta, ToolStart, ToolResult, Done)
-    providers.py        # SpectreToolProvider — bridges tool registry into SR2 pipeline
+    providers.py        # SpctrToolProvider — bridges tool registry into SR2 pipeline
     interfaces/
       single_shot.py    # Non-interactive single-turn interface
       tui.py            # Interactive streaming TUI
@@ -102,7 +102,7 @@ sr2-spectre/
       builtins/         # Built-in tool implementations
 ```
 
-Spectre owns conversation history, the tool registry, and event translation. SR2 owns the tool execution loop, context compilation, token budgets, and LLM calls. The boundary is `agent.stream_message()` → `sr2.turn()` — SR2 loops internally on tool use, and Spectre renders the resulting stream events.
+spctr owns conversation history, the tool registry, and event translation. SR2 owns the tool execution loop, context compilation, token budgets, and LLM calls. The boundary is `agent.stream_message()` → `sr2.turn()` — SR2 loops internally on tool use, and spctr renders the resulting stream events.
 
 ## Development
 

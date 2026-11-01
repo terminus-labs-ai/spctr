@@ -10,8 +10,8 @@ import logging
 
 import pytest
 
-from sr2_spectre.interfaces.discord.config import DiscordConfig
-from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
+from spctr.interfaces.discord.config import DiscordConfig
+from spctr.interfaces.discord.config_source import DiscordConfigSource
 
 
 def test_current_starts_at_the_initial_config() -> None:
@@ -64,7 +64,7 @@ def test_repeated_failures_log_once(caplog: pytest.LogCaptureFixture) -> None:
 
     source = DiscordConfigSource(loader=_boom, initial=DiscordConfig())
 
-    with caplog.at_level(logging.WARNING, logger="sr2_spectre.interfaces.discord.config_source"):
+    with caplog.at_level(logging.WARNING, logger="spctr.interfaces.discord.config_source"):
         for _ in range(5):
             source.reload()
 
@@ -119,7 +119,7 @@ def test_pinned_token_change_warns_once(caplog: pytest.LogCaptureFixture) -> Non
         initial=DiscordConfig(token="original"),
     )
 
-    with caplog.at_level(logging.WARNING, logger="sr2_spectre.interfaces.discord.config_source"):
+    with caplog.at_level(logging.WARNING, logger="spctr.interfaces.discord.config_source"):
         for _ in range(3):
             source.reload()
 
@@ -133,7 +133,7 @@ def test_reload_does_not_log_secret_values(caplog: pytest.LogCaptureFixture) -> 
         initial=DiscordConfig(token="super-secret"),
     )
 
-    with caplog.at_level(logging.INFO, logger="sr2_spectre.interfaces.discord.config_source"):
+    with caplog.at_level(logging.INFO, logger="spctr.interfaces.discord.config_source"):
         source.reload()
 
     assert "super-secret" not in caplog.text

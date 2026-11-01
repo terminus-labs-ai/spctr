@@ -29,11 +29,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.events import AgentDone, AgentTextDelta
-from sr2_spectre.interfaces.discord.config import DiscordConfig
-from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
-from sr2_spectre.interfaces.discord.interface import DiscordInterface
+from spctr.core import RunContext, RunMode
+from spctr.events import AgentDone, AgentTextDelta
+from spctr.interfaces.discord.config import DiscordConfig
+from spctr.interfaces.discord.config_source import DiscordConfigSource
+from spctr.interfaces.discord.interface import DiscordInterface
 
 PARENT_ID = 555
 THREAD_ID = 999
@@ -54,7 +54,7 @@ class TestDeriveAreaName:
             ("🔥fractured-roots🔥", "fractured-roots"),
             ("  general  ", "general"),
             ("--general--", "general"),
-            ("sr2_spectre", "sr2_spectre"),
+            ("spctr", "spctr"),
             ("area-2", "area-2"),
             # Nothing alphanumeric survives the strip: no name, so no area.
             # "" must not leak downstream — resolve_area is spec'd never to
@@ -65,12 +65,12 @@ class TestDeriveAreaName:
         ],
     )
     def test_derivation(self, channel_name: str, expected: str | None) -> None:
-        from sr2_spectre.interfaces.discord.handler import derive_area_name
+        from spctr.interfaces.discord.handler import derive_area_name
 
         assert derive_area_name(channel_name) == expected
 
     def test_none_stays_none(self) -> None:
-        from sr2_spectre.interfaces.discord.handler import derive_area_name
+        from spctr.interfaces.discord.handler import derive_area_name
 
         assert derive_area_name(None) is None
 
@@ -113,7 +113,7 @@ class TestResolveArea:
         Provenance names a winning override or usable derived name. It is
         None when neither source produces an area.
         """
-        from sr2_spectre.interfaces.discord.handler import resolve_area
+        from spctr.interfaces.discord.handler import resolve_area
 
         assert resolve_area(channel_id, channel_name, channel_areas) == expected
 
@@ -137,7 +137,7 @@ class TestChannelAreasConfig:
 
 class TestAreaChannel:
     def _adapter(self):
-        from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
+        from spctr.interfaces.discord.adapter import DiscordBotAdapter
 
         return DiscordBotAdapter(DiscordConfig(token="fake"))
 
@@ -267,7 +267,7 @@ async def _started(
     )
     agent = _make_recording_agent()
     with patch(
-        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter",
+        "spctr.interfaces.discord.interface.DiscordBotAdapter",
         return_value=adapter,
     ):
         await interface.start(agent)
@@ -476,9 +476,9 @@ class TestAreaLogging:
 # ---------------------------------------------------------------------------
 
 def _real_agent_config():
-    from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
+    from spctr.config import AgentConfig, ModelConfig, SpctrConfig
 
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="test"),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline={
@@ -507,9 +507,9 @@ def _channel_session(session_id: str = "discord-parent-555") -> MagicMock:
 
 class TestRunContextSurvivesSessionRebuild:
     def test_named_area_survives_session_rebuild(self) -> None:
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
-        with patch("sr2_spectre.session.SR2") as mock_sr2:
+        with patch("spctr.session.SR2") as mock_sr2:
             mock_sr2.return_value = MagicMock()
             agent = Agent(config=_real_agent_config())
             agent.set_run_context(
@@ -531,9 +531,9 @@ class TestRunContextSurvivesSessionRebuild:
             assert provider()["area"] == FRACTURED
 
     def test_explicit_no_area_survives_session_rebuild(self) -> None:
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
-        with patch("sr2_spectre.session.SR2") as mock_sr2:
+        with patch("spctr.session.SR2") as mock_sr2:
             mock_sr2.return_value = MagicMock()
             agent = Agent(config=_real_agent_config())
             agent.set_run_context(
@@ -555,9 +555,9 @@ class TestRunContextSurvivesSessionRebuild:
             assert provider()["area"] == ""
 
     def test_absent_context_remains_absent_after_session_rebuild(self) -> None:
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
-        with patch("sr2_spectre.session.SR2") as mock_sr2:
+        with patch("spctr.session.SR2") as mock_sr2:
             mock_sr2.return_value = MagicMock()
             agent = Agent(config=_real_agent_config())
             interface = DiscordInterface(config=DiscordConfig())

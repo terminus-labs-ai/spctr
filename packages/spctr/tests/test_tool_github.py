@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sr2_spectre.tools.builtins.github import (
+from spctr.tools.builtins.github import (
     GitHubCommentTool,
     GitHubError,
     GitHubListFilesTool,
@@ -341,7 +341,7 @@ async def test_large_file_is_trimmed_to_max_bytes() -> None:
 # its whole tool budget hunting for one. These cover the missing half.
 # ---------------------------------------------------------------------------
 
-from sr2_spectre.tools.builtins.github import (  # noqa: E402
+from spctr.tools.builtins.github import (  # noqa: E402
     GitHubCreateBranchTool,
     GitHubCreatePullRequestTool,
     GitHubWriteFileTool,

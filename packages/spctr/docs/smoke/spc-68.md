@@ -7,7 +7,7 @@
 ## Setup
 
 ```bash
-cd ~/git/sr2-spectre
+cd ~/git/spctr
 ```
 
 ## Scenarios
@@ -32,7 +32,7 @@ uv run pytest tests/test_generate_image.py -q
 
 ```bash
 uv run python -c "
-from sr2_spectre.tools.builtins.workflow_loader import build_workflow
+from spctr.tools.builtins.workflow_loader import build_workflow
 wf = build_workflow('txt2img', {('3', 'seed'): 42, ('6', 'text'): 'a cat', ('7', 'text'): 'blurry'})
 print('seed:', wf['3']['inputs']['seed'])
 print('positive:', wf['6']['inputs']['text'])
@@ -53,8 +53,8 @@ nodes: ['3', '4', '5', '6', '7', '8', '9']
 
 ```bash
 uv run python -c "
-from sr2_spectre.tools.builtins.generate_image import GenerateImageTool
-from sr2_spectre.tools.builtins.workflow_loader import build_workflow
+from spctr.tools.builtins.generate_image import GenerateImageTool
+from spctr.tools.builtins.workflow_loader import build_workflow
 
 tool = GenerateImageTool()
 built = tool._build_text2img_workflow('hello', 'world', 123)

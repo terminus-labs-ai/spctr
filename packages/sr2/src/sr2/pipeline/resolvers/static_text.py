@@ -60,7 +60,7 @@ class StaticTextResolver:
         if "text" not in config.config:
             raise ValueError("StaticTextResolver requires config['text'] to be set.")
 
-        # FR1 (sr2-spectre clock): optional IANA timezone.  An invalid name
+        # FR1 (spctr clock): optional IANA timezone.  An invalid name
         # fails at build time, not at resolve time.
         timezone_name = config.config.get("timezone")
         self._timezone: ZoneInfo | None = None

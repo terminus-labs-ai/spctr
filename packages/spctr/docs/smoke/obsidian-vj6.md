@@ -23,7 +23,7 @@ mkdir -p "$OTHER_DIR"
 ```bash
 cd "$OTHER_DIR" && python3 -c "
 import asyncio, sys, os
-from sr2_spectre.tools.builtins.edit import EditTool
+from spctr.tools.builtins.edit import EditTool
 
 # cwd is OTHER_DIR — NOT the workspace
 assert os.getcwd() != '$WORKSPACE', 'cwd should NOT be workspace'
@@ -31,7 +31,7 @@ assert os.getcwd() != '$WORKSPACE', 'cwd should NOT be workspace'
 tool = EditTool(workspace_root='$WORKSPACE')
 
 async def run():
-    result = await tool(path='src/file.txt', old_string='world', new_string='spectre')
+    result = await tool(path='src/file.txt', old_string='world', new_string='spctr')
     print(result)
 
 asyncio.run(run())
@@ -41,7 +41,7 @@ print(open('$WORKSPACE/src/file.txt').read().strip())
 
 **Expect:**
 - Prints `Made 1 replacement(s) in .../src/file.txt`
-- File content is `hello spectre`
+- File content is `hello spctr`
 - No `FileNotFoundError` (the key regression: before the fix this would fail
   because `os.path.exists("src/file.txt")` resolves relative to OTHER_DIR)
 
@@ -50,10 +50,10 @@ print(open('$WORKSPACE/src/file.txt').read().strip())
 ```bash
 cd "$WORKSPACE" && python3 -c "
 import asyncio
-from sr2_spectre.tools.builtins.edit import EditTool
+from spctr.tools.builtins.edit import EditTool
 
 tool = EditTool()  # no workspace_root
-asyncio.run(tool(path='src/file.txt', old_string='spectre', new_string='world'))
+asyncio.run(tool(path='src/file.txt', old_string='spctr', new_string='world'))
 print(open('src/file.txt').read().strip())
 "
 ```
@@ -65,15 +65,15 @@ print(open('src/file.txt').read().strip())
 ```bash
 cd "$OTHER_DIR" && python3 -c "
 import asyncio
-from sr2_spectre.tools.builtins.edit import EditTool
+from spctr.tools.builtins.edit import EditTool
 
 tool = EditTool(workspace_root='$WORKSPACE')
-asyncio.run(tool(path='$WORKSPACE/src/file.txt', old_string='world', new_string='spectre'))
+asyncio.run(tool(path='$WORKSPACE/src/file.txt', old_string='world', new_string='spctr'))
 print(open('$WORKSPACE/src/file.txt').read().strip())
 "
 ```
 
-**Expect:** Prints `hello spectre`
+**Expect:** Prints `hello spctr`
 
 ## Teardown
 

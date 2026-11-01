@@ -17,7 +17,7 @@ from pathlib import Path
 
 from sr2.config.models import ResolverConfig
 from sr2.pipeline.events import Event, EventPhase
-from sr2_spectre.planning.resolver import (
+from spctr.planning.resolver import (
     PlanResolver,
 )
 
@@ -440,7 +440,7 @@ class TestBudgetEdgeCases:
 class TestLayerPriorityOrdering:
     def test_layer_priority_values(self):
         """Verify layer priority constants are ordered correctly."""
-        from sr2_spectre.planning.resolver import (
+        from spctr.planning.resolver import (
             _LAYER1_HEADER,
             _LAYER2_HEADER,
             _LAYER3_HEADER,

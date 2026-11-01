@@ -1,7 +1,7 @@
 """Tests for spc-5: unified pydantic validation — dry-run and startup agree.
 
 validate_config, load_and_validate, and StartupConfigError have been deleted.
-SpectreConfig (pydantic) is the single source of truth for config validation.
+SpctrConfig (pydantic) is the single source of truth for config validation.
 """
 from __future__ import annotations
 
@@ -11,14 +11,14 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from sr2_spectre.config import (
+from spctr.config import (
     CircularExtendsError,
-    SpectreConfig,
+    SpctrConfig,
     load_config_with_provenance,
     load_merged_config,
     load_resolved_config,
 )
-from sr2_spectre.path_resolution import ConfigPathError
+from spctr.path_resolution import ConfigPathError
 
 
 # ---------------------------------------------------------------------------
@@ -30,16 +30,16 @@ def _write_yaml(path: Path, data: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
-# SpectreConfig — pydantic is the single validation source
+# SpctrConfig — pydantic is the single validation source
 # ---------------------------------------------------------------------------
 
-class TestSpectreConfigValidation:
-    """SpectreConfig rejects configs that validate_config used to catch."""
+class TestSpctrConfigValidation:
+    """SpctrConfig rejects configs that validate_config used to catch."""
 
     def test_valid_config_accepted(self):
         """A complete valid config builds successfully."""
         config = {
-            "agent": {"name": "spectre"},
+            "agent": {"name": "spctr"},
             "models": {"default": {"model": "gpt-4o"}},
             "pipeline": {
                 "layers": [
@@ -51,8 +51,8 @@ class TestSpectreConfigValidation:
                 ]
             },
         }
-        result = SpectreConfig(**config)
-        assert result.agent.name == "spectre"
+        result = SpctrConfig(**config)
+        assert result.agent.name == "spctr"
 
     def test_empty_agent_name_allowed(self):
         """agent.name = '' is allowed by pydantic (str type, no min_length constraint).
@@ -65,7 +65,7 @@ class TestSpectreConfigValidation:
             "models": {"default": {"model": "gpt-4o"}},
             "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         }
-        result = SpectreConfig(**config)
+        result = SpctrConfig(**config)
         assert result.agent.name == ""
 
     def test_models_missing_model_field_rejected(self):
@@ -76,7 +76,7 @@ class TestSpectreConfigValidation:
             "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         }
         with pytest.raises(ValidationError):
-            SpectreConfig(**config)
+            SpctrConfig(**config)
 
     def test_models_empty_model_field_allowed(self):
         """A model entry with model='' is allowed by pydantic (no min_length constraint)."""
@@ -85,7 +85,7 @@ class TestSpectreConfigValidation:
             "models": {"default": {"model": ""}},
             "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         }
-        result = SpectreConfig(**config)
+        result = SpctrConfig(**config)
         assert result.models["default"].model == ""
 
     def test_models_must_be_dict(self):
@@ -96,7 +96,7 @@ class TestSpectreConfigValidation:
             "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         }
         with pytest.raises(ValidationError):
-            SpectreConfig(**config)
+            SpctrConfig(**config)
 
     def test_pipeline_layer_missing_name_rejected(self):
         """A layer without a 'name' field must raise ValidationError."""
@@ -106,7 +106,7 @@ class TestSpectreConfigValidation:
             "pipeline": {"layers": [{}]},
         }
         with pytest.raises(ValidationError):
-            SpectreConfig(**config)
+            SpctrConfig(**config)
 
     def test_pipeline_layer_empty_name_allowed(self):
         """A layer with name='' is allowed by pydantic (no min_length constraint)."""
@@ -115,7 +115,7 @@ class TestSpectreConfigValidation:
             "models": {"default": {"model": "gpt-4o"}},
             "pipeline": {"layers": [{"name": "", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         }
-        result = SpectreConfig(**config)
+        result = SpctrConfig(**config)
         assert result.pipeline.layers[0].name == ""
 
     def test_missing_pipeline_rejected(self):
@@ -125,7 +125,7 @@ class TestSpectreConfigValidation:
             "models": {"default": {"model": "gpt-4o"}},
         }
         with pytest.raises(ValidationError):
-            SpectreConfig(**config)
+            SpctrConfig(**config)
 
     def test_missing_models_rejected(self):
         """Missing models (required field) must raise ValidationError."""
@@ -134,7 +134,7 @@ class TestSpectreConfigValidation:
             "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         }
         with pytest.raises(ValidationError):
-            SpectreConfig(**config)
+            SpctrConfig(**config)
 
     def test_missing_agent_rejected(self):
         """Missing agent (required field) must raise ValidationError."""
@@ -143,7 +143,7 @@ class TestSpectreConfigValidation:
             "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         }
         with pytest.raises(ValidationError):
-            SpectreConfig(**config)
+            SpctrConfig(**config)
 
     def test_multiple_errors_aggregated(self):
         """Multiple validation errors are all reported in a single ValidationError."""
@@ -153,19 +153,19 @@ class TestSpectreConfigValidation:
             "pipeline": {"layers": [{}]},
         }
         with pytest.raises(ValidationError) as exc_info:
-            SpectreConfig(**config)
+            SpctrConfig(**config)
         # Pydantic reports multiple errors in a single exception
         assert len(exc_info.value.errors()) >= 2
 
     def test_config_without_agent_name_is_valid(self):
-        """Agent section without a 'name' field is valid (name defaults to 'spectre')."""
+        """Agent section without a 'name' field is valid (name defaults to 'spctr')."""
         config = {
             "agent": {"tools": []},
             "models": {"default": {"model": "gpt-4o"}},
             "pipeline": {"layers": [{"name": "l1", "resolvers": [{"type": "prompt"}], "target": "default"}]},
         }
-        result = SpectreConfig(**config)
-        assert result.agent.name == "spectre"  # default value
+        result = SpctrConfig(**config)
+        assert result.agent.name == "spctr"  # default value
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +175,7 @@ class TestSpectreConfigValidation:
 class TestDryRunAgreesWithStartup:
     """Dry-run and startup must agree on the same config for valid and invalid cases.
 
-    Both paths now build SpectreConfig(**merged), so they use the identical
+    Both paths now build SpctrConfig(**merged), so they use the identical
     pydantic validation logic.
     """
 
@@ -186,8 +186,8 @@ class TestDryRunAgreesWithStartup:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {
-            "agent": {"name": "spectre"},
+        _write_yaml(cwd / ".spctr.yaml", {
+            "agent": {"name": "spctr"},
             "models": {"default": {"model": "gpt-4o"}},
             "pipeline": {
                 "layers": [
@@ -198,18 +198,18 @@ class TestDryRunAgreesWithStartup:
 
         env = {"SR2_HOME": str(sr2_home)}
 
-        # Path 1: dry-run (config show) — load config + SpectreConfig build
+        # Path 1: dry-run (config show) — load config + SpctrConfig build
         config, _ = load_config_with_provenance(cwd=cwd, env=env)
         try:
-            SpectreConfig(**config)
+            SpctrConfig(**config)
             dry_run_ok = True
         except ValidationError:
             dry_run_ok = False
 
-        # Path 2: startup — load_resolved_config (returns merged dict) + SpectreConfig
-        merged = load_resolved_config(cwd / ".spectre.yaml", cwd=cwd, env=env)
+        # Path 2: startup — load_resolved_config (returns merged dict) + SpctrConfig
+        merged = load_resolved_config(cwd / ".spctr.yaml", cwd=cwd, env=env)
         try:
-            SpectreConfig(**merged)
+            SpctrConfig(**merged)
             startup_ok = True
         except ValidationError:
             startup_ok = False
@@ -225,8 +225,8 @@ class TestDryRunAgreesWithStartup:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {
-            "agent": {"name": "spectre"},
+        _write_yaml(cwd / ".spctr.yaml", {
+            "agent": {"name": "spctr"},
             "models": {"default": {"base_url": "https://example.com"}},  # missing required 'model'
             "pipeline": {
                 "layers": [
@@ -237,18 +237,18 @@ class TestDryRunAgreesWithStartup:
 
         env = {"SR2_HOME": str(sr2_home)}
 
-        # Path 1: dry-run (config show) — load config + SpectreConfig build
+        # Path 1: dry-run (config show) — load config + SpctrConfig build
         config, _ = load_config_with_provenance(cwd=cwd, env=env)
         try:
-            SpectreConfig(**config)
+            SpctrConfig(**config)
             dry_run_ok = True
         except ValidationError:
             dry_run_ok = False
 
-        # Path 2: startup — load_resolved_config (returns merged dict) + SpectreConfig
-        merged = load_resolved_config(cwd / ".spectre.yaml", cwd=cwd, env=env)
+        # Path 2: startup — load_resolved_config (returns merged dict) + SpctrConfig
+        merged = load_resolved_config(cwd / ".spctr.yaml", cwd=cwd, env=env)
         try:
-            SpectreConfig(**merged)
+            SpctrConfig(**merged)
             startup_ok = True
         except ValidationError:
             startup_ok = False
@@ -258,10 +258,10 @@ class TestDryRunAgreesWithStartup:
         assert dry_run_ok == startup_ok
 
     def test_both_paths_use_same_validation_mechanism(self):
-        """Both paths construct SpectreConfig(**dict) — same pydantic validation.
+        """Both paths construct SpctrConfig(**dict) — same pydantic validation.
 
         The dry-run path (_run_config_show) and the startup path (cli.resolve_config)
-        both call SpectreConfig(**merged_config). There is only one validation source.
+        both call SpctrConfig(**merged_config). There is only one validation source.
         """
         config = {
             "agent": {"name": "test"},
@@ -272,8 +272,8 @@ class TestDryRunAgreesWithStartup:
         }
 
         # Build once — if this works, both paths succeed
-        result1 = SpectreConfig(**config)
-        result2 = SpectreConfig(**config)
+        result1 = SpctrConfig(**config)
+        result2 = SpctrConfig(**config)
         assert result1.agent.name == result2.agent.name
         assert result1.models == result2.models
 
@@ -292,7 +292,7 @@ class TestStructuralErrorsPropagate:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {"extends": ".spectre.yaml", "key": "value"})
+        _write_yaml(cwd / ".spctr.yaml", {"extends": ".spctr.yaml", "key": "value"})
 
         with pytest.raises(CircularExtendsError):
             load_merged_config(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
@@ -304,8 +304,8 @@ class TestStructuralErrorsPropagate:
         cwd = tmp_path / "project"
         cwd.mkdir()
 
-        _write_yaml(cwd / ".spectre.yaml", {
-            "extends": "${UNSET_SPECTRE_VAR}/base.yaml",
+        _write_yaml(cwd / ".spctr.yaml", {
+            "extends": "${UNSET_SPCTR_VAR}/base.yaml",
             "key": "value",
         })
 
@@ -321,13 +321,13 @@ class TestDeletedSymbols:
     """validate_config, load_and_validate, and StartupConfigError are removed."""
 
     def test_validate_config_not_exported(self):
-        import sr2_spectre.config as config_module
+        import spctr.config as config_module
         assert not hasattr(config_module, "validate_config")
 
     def test_load_and_validate_not_exported(self):
-        import sr2_spectre.config as config_module
+        import spctr.config as config_module
         assert not hasattr(config_module, "load_and_validate")
 
     def test_startup_config_error_not_exported(self):
-        import sr2_spectre.config as config_module
+        import spctr.config as config_module
         assert not hasattr(config_module, "StartupConfigError")

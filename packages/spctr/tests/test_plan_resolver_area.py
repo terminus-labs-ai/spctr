@@ -22,7 +22,7 @@ import pytest
 from sr2.config.models import ResolverConfig
 from sr2.pipeline.dependencies import Dependencies
 from sr2.pipeline.events import Event, EventPhase
-from sr2_spectre.planning.resolver import PlanResolver
+from spctr.planning.resolver import PlanResolver
 
 ALPHA = "ALPHA-KNOWLEDGE"
 ENV = "ENV-KNOWLEDGE"

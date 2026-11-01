@@ -6,7 +6,7 @@ cannot tell "absent" from "unsupported syntax".
 """
 import pytest
 
-from sr2_spectre.tools.builtins.read_symbol import ReadSymbolTool, find_symbol
+from spctr.tools.builtins.read_symbol import ReadSymbolTool, find_symbol
 
 SOURCE = '''extends CharacterBody2D
 class_name Player

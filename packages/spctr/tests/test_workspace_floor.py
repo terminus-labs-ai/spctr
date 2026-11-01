@@ -8,11 +8,11 @@ import os
 
 import pytest
 
-from sr2_spectre.tools.builtins.file_read import FileReadTool
-from sr2_spectre.tools.builtins.glob import GlobTool
-from sr2_spectre.tools.builtins.grep import GrepTool
-from sr2_spectre.tools.builtins.read_symbol import ReadSymbolTool
-from sr2_spectre.tools.workspace_floor import WorkspaceFloor
+from spctr.tools.builtins.file_read import FileReadTool
+from spctr.tools.builtins.glob import GlobTool
+from spctr.tools.builtins.grep import GrepTool
+from spctr.tools.builtins.read_symbol import ReadSymbolTool
+from spctr.tools.workspace_floor import WorkspaceFloor
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def test_tool_accepts_workspace_root(cls, tmp_path):
 
 @pytest.mark.parametrize("cls", [FileReadTool, GrepTool, GlobTool, ReadSymbolTool])
 def test_runtime_detects_the_kwarg(cls):
-    from sr2_spectre.runtime import _tool_accepts_workspace_root
+    from spctr.runtime import _tool_accepts_workspace_root
     path = f"{cls.__module__}.{cls.__name__}"
     assert _tool_accepts_workspace_root(path)
 

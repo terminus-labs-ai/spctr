@@ -4,7 +4,7 @@ Public seams this cage pins (names declared so C's first commit matches; no
 signature or class discovery happens in this file):
 
 - ``resolve_channel_area(*, channel_id, config)`` — the pure channel→area
-  routing decision in ``sr2_spectre.interfaces.zulip.config`` (mirrors the
+  routing decision in ``spctr.interfaces.zulip.config`` (mirrors the
   accepted ``is_configured_no_area_channel`` keyword style): a configured
   channel gets its mapped area, a configured empty string stays the explicit
   no-area, and an unconfigured channel answers ``None`` — a positive
@@ -12,7 +12,7 @@ signature or class discovery happens in this file):
   and an ``SR2_AREA`` trap (AC2, spec Interfaces: "No implicit channel-name
   or launch-directory fallback").
 - ``ZulipConfigView`` — the view class in
-  ``sr2_spectre.interfaces.zulip.config_source`` (mirrors the accepted
+  ``spctr.interfaces.zulip.config_source`` (mirrors the accepted
   ``DiscordConfigView``): one whole-config ``reload()`` feeds the routing
   slice AND ``Agent.apply_config``'s same single read; last-good retained on
   a malformed reload (AC6, spec FR6).
@@ -36,9 +36,9 @@ from typing import Any
 import pytest
 import yaml
 
-from sr2_spectre.config import SpectreConfig
-from sr2_spectre.config_source import SpectreConfigSource
-from sr2_spectre.interfaces.zulip import ZulipConfig, is_configured_no_area_channel
+from spctr.config import SpctrConfig
+from spctr.config_source import SpctrConfigSource
+from spctr.interfaces.zulip import ZulipConfig, is_configured_no_area_channel
 
 DIEGO_ID = 8                     # Diego (spec Dependencies)
 NO_AREA_CHANNEL = 42             # explicit no-area channel (area "")
@@ -91,8 +91,8 @@ def _zulip_block(**over: Any) -> dict[str, Any]:
     return block
 
 
-def _spectre(zulip: ZulipConfig | None, model: str = "synthetic-model") -> SpectreConfig:
-    return SpectreConfig(
+def _spctr(zulip: ZulipConfig | None, model: str = "synthetic-model") -> SpctrConfig:
+    return SpctrConfig(
         agent={"name": "miranda"},
         models={"default": {"model": model}},
         pipeline={"layers": []},
@@ -107,7 +107,7 @@ def isolated_dirs(tmp_path, monkeypatch):
     sr2_home.mkdir()
     cwd.mkdir()
     monkeypatch.setenv("SR2_HOME", str(sr2_home))
-    monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
+    monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
     monkeypatch.delenv("SR2_AREA", raising=False)
     return cwd, sr2_home
 
@@ -126,7 +126,7 @@ def isolated_dirs(tmp_path, monkeypatch):
 
 class TestAreaRoutingDecision:
     def test_mapped_channel_reaches_resolvers_with_its_area(self):
-        from sr2_spectre.interfaces.zulip.config import resolve_channel_area
+        from spctr.interfaces.zulip.config import resolve_channel_area
 
         route = resolve_channel_area
         cfg = ZulipConfig(
@@ -139,7 +139,7 @@ class TestAreaRoutingDecision:
     def test_explicit_no_area_channel_stays_empty_string(self):
         """RunContext.area="" is the explicit no-area contract — the routing
         answer must be "", never None (None permits consumer fallback)."""
-        from sr2_spectre.interfaces.zulip.config import resolve_channel_area
+        from spctr.interfaces.zulip.config import resolve_channel_area
 
         route = resolve_channel_area
         cfg = ZulipConfig(
@@ -167,7 +167,7 @@ class TestAreaRoutingDecision:
         monkeypatch.chdir(trap_dir)
         monkeypatch.setenv("SR2_AREA", trap_area)
 
-        from sr2_spectre.interfaces.zulip.config import resolve_channel_area
+        from spctr.interfaces.zulip.config import resolve_channel_area
 
         route = resolve_channel_area
         cfg = ZulipConfig(
@@ -191,7 +191,7 @@ class TestAreaRoutingDecision:
         is pinned by ``test_zulip_config_credentials.py::TestChannelAdmission::
         test_mapped_area_channel_admits_allowed_human`` and by E's
         ``test_area_routing_and_isolation``."""
-        from sr2_spectre.interfaces.zulip.config import resolve_channel_area
+        from spctr.interfaces.zulip.config import resolve_channel_area
 
         route = resolve_channel_area
         cfg = ZulipConfig(
@@ -210,7 +210,7 @@ class TestAreaRoutingDecision:
     def test_routing_reads_the_mapping_not_the_configured_channel_count(self):
         """Each configured channel routes to ITS OWN area; two channels with
         different areas never merge into one answer."""
-        from sr2_spectre.interfaces.zulip.config import resolve_channel_area
+        from spctr.interfaces.zulip.config import resolve_channel_area
 
         route = resolve_channel_area
         cfg = ZulipConfig(
@@ -229,26 +229,26 @@ class TestAreaRoutingDecision:
 
 class TestWholeConfigReloadSlice:
     def test_current_starts_at_the_resolved_zulip_block(self):
-        initial = _spectre(
+        initial = _spctr(
             ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                         **_routing({NO_AREA_CHANNEL: ""}))
         )
-        from sr2_spectre.interfaces.zulip.config_source import ZulipConfigView
+        from spctr.interfaces.zulip.config_source import ZulipConfigView
 
-        view = ZulipConfigView(SpectreConfigSource.static(initial))
+        view = ZulipConfigView(SpctrConfigSource.static(initial))
         assert view.current.channel_areas == _areas({NO_AREA_CHANNEL: ""})
 
     def test_view_reload_picks_up_routing_and_allowlist_changes(self):
         """One reload per inbound message refreshes the Zulip routing slice —
         a channel added/moved on disk routes differently on the next read."""
         configs = [
-            _spectre(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
+            _spctr(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                                  **_routing({NO_AREA_CHANNEL: ""}))),
-            _spectre(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
+            _spctr(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                                  **_routing({ALPHA_CHANNEL: AREA_OBSIDIAN}))),
         ]
-        source = SpectreConfigSource(loader=lambda: configs[1], initial=configs[0])
-        from sr2_spectre.interfaces.zulip.config_source import ZulipConfigView
+        source = SpctrConfigSource(loader=lambda: configs[1], initial=configs[0])
+        from spctr.interfaces.zulip.config_source import ZulipConfigView
 
         view = ZulipConfigView(source)
 
@@ -269,15 +269,15 @@ class TestWholeConfigReloadSlice:
         contract, contradicting item 1's shipped contract. The arm is
         inverted in place; the bot arm stays unadmitted."""
         configs = [
-            _spectre(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
+            _spctr(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                                  **_routing({NO_AREA_CHANNEL: ""}))),
-            _spectre(ZulipConfig(zuliprc=ZULIPRC,
+            _spctr(ZulipConfig(zuliprc=ZULIPRC,
                                  users=[DIEGO_ID, 11],
                                  **_routing({ALPHA_CHANNEL: AREA_OBSIDIAN,
                                              NO_AREA_CHANNEL: ""}))),
         ]
-        source = SpectreConfigSource(loader=lambda: configs[1], initial=configs[0])
-        from sr2_spectre.interfaces.zulip.config_source import ZulipConfigView
+        source = SpctrConfigSource(loader=lambda: configs[1], initial=configs[0])
+        from spctr.interfaces.zulip.config_source import ZulipConfigView
 
         view = ZulipConfigView(source)
 
@@ -310,7 +310,7 @@ class TestWholeConfigReloadSlice:
         assert view.current is after
         # The reloaded slice is the routing input of record: the edit decides
         # the area answer through the same object the interface reads.
-        from sr2_spectre.interfaces.zulip.config import resolve_channel_area
+        from spctr.interfaces.zulip.config import resolve_channel_area
 
         route = resolve_channel_area
         assert route(channel_id=ALPHA_CHANNEL, config=after) == AREA_OBSIDIAN
@@ -319,10 +319,10 @@ class TestWholeConfigReloadSlice:
         """A whole-config load without a zulip block yields a slice of
         schema defaults, never an error at read time and never an implicit
         routing population."""
-        from sr2_spectre.interfaces.zulip.config_source import ZulipConfigView
+        from spctr.interfaces.zulip.config_source import ZulipConfigView
 
         view = ZulipConfigView(
-            SpectreConfigSource.static(_spectre(None))
+            SpctrConfigSource.static(_spctr(None))
         )
         assert view.current.users == []
         assert view.current.channels == []
@@ -334,17 +334,17 @@ class TestWholeConfigReloadSlice:
         (models/endpoint) of the same load is refreshed too, so
         ``Agent.apply_config`` can consume it without a second parse."""
         configs = [
-            _spectre(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
+            _spctr(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                                  **_routing({NO_AREA_CHANNEL: ""}))),
-            # Built through normal SpectreConfig construction (not
+            # Built through normal SpctrConfig construction (not
             # model_copy): the entry is a validated ModelConfig, exactly as
             # the disk loader would hand it over.
-            _spectre(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
+            _spctr(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                                  **_routing({ALPHA_CHANNEL: AREA_OBSIDIAN})),
                      model="edited-model"),
         ]
-        source = SpectreConfigSource(loader=lambda: configs[1], initial=configs[0])
-        from sr2_spectre.interfaces.zulip.config_source import ZulipConfigView
+        source = SpctrConfigSource(loader=lambda: configs[1], initial=configs[0])
+        from spctr.interfaces.zulip.config_source import ZulipConfigView
 
         view = ZulipConfigView(source)
 
@@ -357,15 +357,15 @@ class TestWholeConfigReloadSlice:
     def test_malformed_reload_keeps_the_last_good_zulip_slice(self):
         """FR6: a broken file never takes the process down — routing stays
         on the last known-good mapping."""
-        good = _spectre(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
+        good = _spctr(ZulipConfig(zuliprc=ZULIPRC, users=[DIEGO_ID],
                                     **_routing({NO_AREA_CHANNEL: "",
                                                 ALPHA_CHANNEL: AREA_OBSIDIAN})))
 
-        def _loader() -> SpectreConfig:
+        def _loader() -> SpctrConfig:
             raise ValueError("bad yaml")
 
-        source = SpectreConfigSource(loader=_loader, initial=good)
-        from sr2_spectre.interfaces.zulip.config_source import ZulipConfigView
+        source = SpctrConfigSource(loader=_loader, initial=good)
+        from spctr.interfaces.zulip.config_source import ZulipConfigView
 
         view = ZulipConfigView(source)
 
@@ -376,22 +376,22 @@ class TestWholeConfigReloadSlice:
     def test_recovery_after_a_malformed_reload(self):
         """After the file parses again, the next reload applies the new
         routing; the last-good state is not sticky past recovery."""
-        good_before = _spectre(ZulipConfig(zuliprc=ZULIPRC,
+        good_before = _spctr(ZulipConfig(zuliprc=ZULIPRC,
                                            users=[DIEGO_ID],
                                            **_routing({NO_AREA_CHANNEL: ""})))
-        good_after = _spectre(ZulipConfig(zuliprc=ZULIPRC,
+        good_after = _spctr(ZulipConfig(zuliprc=ZULIPRC,
                                           users=[DIEGO_ID],
                                           **_routing({BETA_CHANNEL: AREA_OBSIDIAN})))
         state: list[Any] = [ValueError("mid-save"), good_after]
 
-        def _loader() -> SpectreConfig:
+        def _loader() -> SpctrConfig:
             item = state.pop(0)
             if isinstance(item, Exception):
                 raise item
             return item
 
-        source = SpectreConfigSource(loader=_loader, initial=good_before)
-        from sr2_spectre.interfaces.zulip.config_source import ZulipConfigView
+        source = SpctrConfigSource(loader=_loader, initial=good_before)
+        from spctr.interfaces.zulip.config_source import ZulipConfigView
 
         view = ZulipConfigView(source)
 
@@ -403,13 +403,13 @@ class TestWholeConfigReloadSlice:
     ):
         """NFR: reload logs field names, never config values."""
         marker = "SECRET-MARKER-spc120-9f3a"
-        good = _spectre(ZulipConfig(zuliprc=marker, users=[DIEGO_ID],
+        good = _spctr(ZulipConfig(zuliprc=marker, users=[DIEGO_ID],
                                     **_routing({NO_AREA_CHANNEL: ""})))
-        source = SpectreConfigSource(
+        source = SpctrConfigSource(
             loader=lambda: (_ for _ in ()).throw(ValueError("bad yaml")),
             initial=good,
         )
-        from sr2_spectre.interfaces.zulip.config_source import ZulipConfigView
+        from spctr.interfaces.zulip.config_source import ZulipConfigView
 
         view = ZulipConfigView(source)
         with caplog.at_level(logging.WARNING):
@@ -424,17 +424,17 @@ class TestWholeConfigReloadSlice:
 
 class TestZulipWholeConfigSourceWiring:
     def test_source_loader_reloads_edited_block_from_disk(self, isolated_dirs):
-        """build_spectre_config_source (the CLI's whole-config source
+        """build_spctr_config_source (the CLI's whole-config source
         builder) re-runs full resolution, so an edit to the zulip block —
         including a mapped area that the frozen startup block could not
         carry — is picked up on the next reload()."""
-        from sr2_spectre.cli import build_spectre_config_source, resolve_config
+        from spctr.cli import build_spctr_config_source, resolve_config
 
         cwd, _home = isolated_dirs
         pos = cwd / "config.yaml"
         _write_yaml(pos, {**VALID_TAIL, "zulip": _zulip_block()})
         initial = resolve_config(pos, cwd=cwd, env={})
-        source = build_spectre_config_source(pos, cwd, initial)
+        source = build_spctr_config_source(pos, cwd, initial)
 
         _write_yaml(pos, {**VALID_TAIL,
                           "zulip": _zulip_block(**_routing({ALPHA_CHANNEL: AREA_OBSIDIAN}))})
@@ -448,13 +448,13 @@ class TestZulipWholeConfigSourceWiring:
         assert reloaded.zulip.channel_areas == _areas({ALPHA_CHANNEL: AREA_OBSIDIAN})
 
     def test_broken_edit_on_disk_keeps_last_good_block(self, isolated_dirs):
-        from sr2_spectre.cli import build_spectre_config_source, resolve_config
+        from spctr.cli import build_spctr_config_source, resolve_config
 
         cwd, _home = isolated_dirs
         pos = cwd / "config.yaml"
         _write_yaml(pos, {**VALID_TAIL, "zulip": _zulip_block()})
         initial = resolve_config(pos, cwd=cwd, env={})
-        source = build_spectre_config_source(pos, cwd, initial)
+        source = build_spctr_config_source(pos, cwd, initial)
 
         pos.write_text("zulip:\n  channels: {42: \"\",,,\n")
 
@@ -478,7 +478,7 @@ class TestStartupAcceptsMappedAreas:
         """A valid routing map — named areas plus the explicit "" channel —
         resolves without error. Red today because the startup gate rejects
         any nonempty area (spc-119 intermediate contract)."""
-        from sr2_spectre.cli import resolve_config
+        from spctr.cli import resolve_config
 
         cwd, _home = isolated_dirs
         pos = cwd / "config.yaml"
@@ -496,7 +496,7 @@ class TestStartupAcceptsMappedAreas:
         created area identity resolves fine — resolution opens no vault.
         (Pin: green before and after the lift — the gate never lived in
         resolve_config; it stays as the mapping-shape guard.)"""
-        from sr2_spectre.cli import resolve_config
+        from spctr.cli import resolve_config
 
         cwd, _home = isolated_dirs
         pos = cwd / "config.yaml"

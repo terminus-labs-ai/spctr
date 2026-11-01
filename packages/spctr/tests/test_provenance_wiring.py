@@ -1,7 +1,7 @@
 """Tests for spc-50: Persistent SQLiteProvenanceStore wiring.
 
 Covers:
-  A. SpectreConfig.provenance_store_path field
+  A. SpctrConfig.provenance_store_path field
   B. Runtime._resolve_provenance_path() — default, custom, disabled
   C. Runtime.initialize() connects SQLiteProvenanceStore
   D. Runtime.aclose() closes the store
@@ -20,11 +20,11 @@ import pytest
 
 from sr2.models import TextBlock
 from sr2.pipeline.provenance import Entry, EntryOrigin
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
 
 
-def _make_config(**kwargs) -> SpectreConfig:
-    """Build a minimal SpectreConfig, allowing overrides."""
+def _make_config(**kwargs) -> SpctrConfig:
+    """Build a minimal SpctrConfig, allowing overrides."""
     overrides = dict(
         agent=AgentConfig(name="test"),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
@@ -35,7 +35,7 @@ def _make_config(**kwargs) -> SpectreConfig:
         ]},
     )
     overrides.update(kwargs)
-    return SpectreConfig(**overrides)
+    return SpctrConfig(**overrides)
 
 
 # ---------------------------------------------------------------------------
@@ -56,8 +56,8 @@ class TestConfigProvenanceStorePath:
         assert config.provenance_store_path == ""
 
     def test_accepts_tilde_path(self):
-        config = _make_config(provenance_store_path="~/.my-spectre/provenance.db")
-        assert config.provenance_store_path == "~/.my-spectre/provenance.db"
+        config = _make_config(provenance_store_path="~/.my-spctr/provenance.db")
+        assert config.provenance_store_path == "~/.my-spctr/provenance.db"
 
 
 # ---------------------------------------------------------------------------
@@ -65,31 +65,31 @@ class TestConfigProvenanceStorePath:
 # ---------------------------------------------------------------------------
 
 class TestResolveProvenancePath:
-    def test_default_returns_sr2_spectre_path(self):
-        from sr2_spectre.runtime import Runtime
+    def test_default_returns_sr2_spctr_path(self):
+        from spctr.runtime import Runtime
 
         config = _make_config()
         path = Runtime._resolve_provenance_path(config)
         assert path is not None
         assert "provenance.db" in path
-        assert ".sr2-spectre" in path
+        assert ".spctr" in path
 
     def test_custom_path_is_resolved(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         config = _make_config(provenance_store_path="/tmp/test-provenance.db")
         path = Runtime._resolve_provenance_path(config)
         assert path == "/tmp/test-provenance.db"
 
     def test_empty_string_returns_none(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         config = _make_config(provenance_store_path="")
         path = Runtime._resolve_provenance_path(config)
         assert path is None
 
     def test_tilde_expanded(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         config = _make_config(provenance_store_path="~/custom.db")
         path = Runtime._resolve_provenance_path(config)
@@ -104,10 +104,10 @@ class TestResolveProvenancePath:
 class TestRuntimeInitializeProvenance:
     @pytest.mark.asyncio
     async def test_initialize_connects_store(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         config = _make_config()
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=config)
 
         assert runtime._provenance_store is None
@@ -127,10 +127,10 @@ class TestRuntimeInitializeProvenance:
 
     @pytest.mark.asyncio
     async def test_initialize_skips_when_disabled(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         config = _make_config(provenance_store_path="")
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=config)
 
         assert runtime._provenance_store_path is None
@@ -151,10 +151,10 @@ class TestRuntimeInitializeProvenance:
 class TestRuntimeACloseProvenance:
     @pytest.mark.asyncio
     async def test_aclose_closes_store(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         config = _make_config()
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=config)
 
         mock_store = AsyncMock()
@@ -167,10 +167,10 @@ class TestRuntimeACloseProvenance:
 
     @pytest.mark.asyncio
     async def test_aclose_noop_when_no_store(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         config = _make_config(provenance_store_path="")
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=config)
 
         await runtime.aclose()  # must not raise
@@ -182,12 +182,12 @@ class TestRuntimeACloseProvenance:
 
 class TestProvenanceStoreThreading:
     def test_new_session_passes_store_to_session(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         mock_store = MagicMock()
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
-            with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            with patch("spctr.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=_make_config())
                 runtime._provenance_store = mock_store
@@ -197,10 +197,10 @@ class TestProvenanceStoreThreading:
         assert call_kwargs["provenance_store"] is mock_store
 
     def test_new_session_passes_none_when_not_initialized(self):
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
-            with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            with patch("spctr.session.SR2") as MockSR2:
                 MockSR2.return_value = MagicMock()
                 runtime = Runtime(config=_make_config())
                 # _provenance_store is None before initialize()
@@ -211,12 +211,12 @@ class TestProvenanceStoreThreading:
 
     def test_session_accepts_provenance_store_param(self):
         """Session.__init__ accepts provenance_store and passes it to SR2."""
-        from sr2_spectre.session import Session
+        from spctr.session import Session
 
         mock_store = MagicMock()
         mock_llm = MagicMock()
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             Session(
                 frame_id="f1",
@@ -330,7 +330,7 @@ class TestPersistenceAcrossRestart:
     @pytest.mark.asyncio
     async def test_runtime_full_lifecycle(self):
         """End-to-end: Runtime constructs store, initialize connects, aclose closes."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
             db_path = f.name
@@ -338,7 +338,7 @@ class TestPersistenceAcrossRestart:
         try:
             config = _make_config(provenance_store_path=db_path)
 
-            with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+            with patch("spctr.live_llm.LiteLLMCallable"):
                 runtime = Runtime(config=config)
 
             # Before initialize: store not connected
@@ -377,8 +377,8 @@ class TestProvenanceWritesLandOnTurns:
         """A single turn through the real pipeline writes entries to the store."""
         from sr2.pipeline.stores.sqlite import SQLiteProvenanceStore
         from sr2.protocols.llm import StreamEvent
-        from sr2_spectre.session import Session
-        from sr2_spectre.tools.registry import ToolRegistry
+        from spctr.session import Session
+        from spctr.tools.registry import ToolRegistry
 
         db_path = str(tmp_path / "prov.db")
         store = SQLiteProvenanceStore(db_path=db_path)
@@ -423,8 +423,8 @@ class TestProvenanceWritesLandOnTurns:
         """Multiple turns each add entries to the store (row count grows)."""
         from sr2.pipeline.stores.sqlite import SQLiteProvenanceStore
         from sr2.protocols.llm import StreamEvent
-        from sr2_spectre.session import Session
-        from sr2_spectre.tools.registry import ToolRegistry
+        from spctr.session import Session
+        from spctr.tools.registry import ToolRegistry
 
         db_path = str(tmp_path / "prov.db")
         store = SQLiteProvenanceStore(db_path=db_path)

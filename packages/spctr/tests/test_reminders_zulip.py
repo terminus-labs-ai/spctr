@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from sr2_spectre.reminders import (
+from spctr.reminders import (
     DeliveryLoop,
     Reminder,
     ReminderOrigin,
@@ -83,7 +83,7 @@ def _origin(**overrides) -> ReminderOrigin:
         requester_id="8",
         requester_mention="@8",
         channel_id="42",
-        channel_name="sr2-spectre",
+        channel_name="spctr",
         topic="plan",
     )
     base.update(overrides)
@@ -147,13 +147,13 @@ async def _settle(loop: DeliveryLoop, polls: int = 3) -> None:
 
 
 def _agent_config(reminders: dict | None) -> Any:
-    """A minimal real SpectreConfig for Runtime/Agent construction."""
-    from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
+    """A minimal real SpctrConfig for Runtime/Agent construction."""
+    from spctr.config import AgentConfig, ModelConfig, SpctrConfig
 
     agent: dict[str, Any] = {"name": "miranda", "default_skills": False}
     if reminders is not None:
         agent["reminders"] = reminders
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(**agent),
         models={"default": ModelConfig(model="test-model")},
         pipeline={"layers": []},
@@ -164,10 +164,10 @@ def _agent_config(reminders: dict | None) -> Any:
 
 def _make_agent(config: Any) -> Any:
     """A real Agent with the documented LLM seam patched (no model call)."""
-    from sr2_spectre.agent import Agent
+    from spctr.agent import Agent
 
     llm = object.__new__(type("FakeLLM", (), {}))
-    with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=llm):
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=llm):
         return Agent(config=config)
 
 
@@ -179,9 +179,9 @@ def _make_interface(tmp_path: Path) -> Any:
     event loop is the single loop, so the patch's exit is a no-op re-entry
     guard (same object swapped back in).
     """
-    from sr2_spectre.interfaces.zulip.client import ZulipCredentials
-    import sr2_spectre.interfaces.zulip.interface as iface_mod
-    from sr2_spectre.interfaces.zulip.config import ZulipConfig
+    from spctr.interfaces.zulip.client import ZulipCredentials
+    import spctr.interfaces.zulip.interface as iface_mod
+    from spctr.interfaces.zulip.config import ZulipConfig
 
     config = ZulipConfig(
         zuliprc=str(tmp_path / "zuliprc"),
@@ -201,7 +201,7 @@ def _make_interface(tmp_path: Path) -> Any:
                 "realm_users": [{"user_id": 9, "is_bot": True}],
                 "realm_bots": [],
                 "streams": [
-                    {"stream_id": 42, "name": "sr2-spectre"},
+                    {"stream_id": 42, "name": "spctr"},
                     {"stream_id": 7, "name": "general"},
                 ],
             }
@@ -212,7 +212,7 @@ def _make_interface(tmp_path: Path) -> Any:
         async def get_streams(self):
             return {
                 "streams": [
-                    {"stream_id": 42, "name": "sr2-spectre", "can_send": True},
+                    {"stream_id": 42, "name": "spctr", "can_send": True},
                     {"stream_id": 7, "name": "general", "can_send": True},
                     {"stream_id": 8, "name": "read-only", "can_send": False},
                 ]
@@ -394,7 +394,7 @@ class TestAC5CreateDefaultDestination:
         assert store.count_by_status() == {"pending": 1}
         row = store.due(now=NOW + timedelta(hours=4))[0]
         assert row.dest_channel_id == "42"
-        assert row.dest_channel_name == "sr2-spectre"
+        assert row.dest_channel_name == "spctr"
         # FR9: the Zulip destination topic is reminders.zulip_topic
         # (default 'reminders'), NOT the origin topic.
         assert row.dest_topic == "reminders"
@@ -419,7 +419,7 @@ class TestAC5CreateDefaultDestination:
         tool = _tool(store, origin=_origin())
         result = await tool(action="create", text="t", in_minutes=180)
         # 15:00 MST now + 3h = Thu 18:00 MST.
-        assert result == "Reminder r1 set for Thu 2026-10-15 18:00 MST in #sr2-spectre"
+        assert result == "Reminder r1 set for Thu 2026-10-15 18:00 MST in #spctr"
 
     async def test_id_format_r_n_increasing(self, store):
         """AC5: IDs are r<N>, unique per store and increasing."""
@@ -681,7 +681,7 @@ class TestAC6NamedChannel:
         interface = _make_interface(tmp_path)
         await interface.start(object())  # start() only reads .reminders
         try:
-            assert interface._channel_display_name(42) == "sr2-spectre"
+            assert interface._channel_display_name(42) == "spctr"
             assert interface._channel_display_name(99) == "99"
             assert interface._channel_display_name(7) == "general"
 
@@ -743,7 +743,7 @@ class TestAC6NamedChannel:
     async def test_malformed_resolver_result_is_a_tool_error(self, store):
         """A resolver yielding raw dicts returns the guard error, stores
         nothing, raises nothing."""
-        from sr2_spectre.reminders.tool import MALFORMED_RESOLVER_ERROR
+        from spctr.reminders.tool import MALFORMED_RESOLVER_ERROR
 
         async def bad_resolver(platform, name):
             return [{"stream_id": 7, "name": "general"}]
@@ -782,7 +782,7 @@ class TestAC9RetryPolicy:
 
         original_due, original_next = stored_due()
         dues = []
-        with caplog.at_level(logging.INFO, logger="sr2_spectre.reminders.loop"):
+        with caplog.at_level(logging.INFO, logger="spctr.reminders.loop"):
             for offset in range(14):  # NOW .. NOW + 6.5 min
                 loop = _loop(store, sender, now=NOW + timedelta(seconds=30 * offset + 2))
                 await loop.start()
@@ -874,7 +874,7 @@ def _seed(store: ReminderStore, text: str, due_at: datetime,
             id="r0", agent=agent, platform="zulip",
             requester_id="8", requester_mention="@8",
             origin_channel_id="42", dest_channel_id="42",
-            dest_channel_name="sr2-spectre", dest_topic="reminders",
+            dest_channel_name="spctr", dest_topic="reminders",
             text=text, due_at=due_at,
             created_at=created_at if created_at is not None else NOW,
             delivered_at=None, status="pending", attempts=0, last_error=None,
@@ -933,7 +933,7 @@ class TestAC10ListCancel:
         ]
         # ID, local due, destination, status, text — the first line in full.
         assert lines[0] == (
-            f"{r_old} Fri 2026-10-09 15:00 MST #sr2-spectre failed old failed"
+            f"{r_old} Fri 2026-10-09 15:00 MST #spctr failed old failed"
         )
         # 100 chars of text render as 79 + the ellipsis marker.
         long_line = next(line for line in lines if line.startswith(r_long))

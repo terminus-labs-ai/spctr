@@ -10,7 +10,7 @@ import asyncio
 
 import pytest
 
-from sr2_spectre.tools.registry import ToolRegistry
+from spctr.tools.registry import ToolRegistry
 from tests.conftest import _surviving_pids
 
 
@@ -19,7 +19,7 @@ from tests.conftest import _surviving_pids
 # ---------------------------------------------------------------------------
 
 def test_terminal_class_attributes() -> None:
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
     assert isinstance(TerminalTool.name, str) and TerminalTool.name
     assert isinstance(TerminalTool.description, str) and TerminalTool.description
@@ -27,7 +27,7 @@ def test_terminal_class_attributes() -> None:
 
 
 def test_terminal_input_schema_requires_command() -> None:
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
     schema = TerminalTool.input_schema
     assert "command" in schema.get("properties", {})
@@ -40,7 +40,7 @@ def test_terminal_input_schema_requires_command() -> None:
 
 def test_terminal_registers_via_class_path() -> None:
     reg = ToolRegistry()
-    reg.register_from_class_path("sr2_spectre.tools.builtins.terminal.TerminalTool")
+    reg.register_from_class_path("spctr.tools.builtins.terminal.TerminalTool")
     assert "terminal" in reg
 
 
@@ -50,7 +50,7 @@ def test_terminal_registers_via_class_path() -> None:
 
 @pytest.mark.asyncio
 async def test_terminal_returns_stdout() -> None:
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
     tool = TerminalTool()
     result = await tool(command="echo hello world")
@@ -60,7 +60,7 @@ async def test_terminal_returns_stdout() -> None:
 
 @pytest.mark.asyncio
 async def test_terminal_combines_stdout_and_stderr() -> None:
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
     tool = TerminalTool()
     result = await tool(command="printf 'out\\n'; printf 'err\\n' >&2")
@@ -71,7 +71,7 @@ async def test_terminal_combines_stdout_and_stderr() -> None:
 
 @pytest.mark.asyncio
 async def test_terminal_empty_output_returns_empty_string() -> None:
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
     tool = TerminalTool()
     result = await tool(command="true")
@@ -85,7 +85,7 @@ async def test_terminal_empty_output_returns_empty_string() -> None:
 
 @pytest.mark.asyncio
 async def test_terminal_nonzero_exit_returns_output_not_raises() -> None:
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
     tool = TerminalTool()
     result = await tool(command="printf 'command not found\\n' >&2; exit 127")
@@ -99,7 +99,7 @@ async def test_terminal_nonzero_exit_returns_output_not_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_terminal_timeout_raises_timeout_error() -> None:
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
     tool = TerminalTool(timeout=1)
     with pytest.raises(TimeoutError, match="sleep 999"):
@@ -108,7 +108,7 @@ async def test_terminal_timeout_raises_timeout_error() -> None:
 
 @pytest.mark.asyncio
 async def test_terminal_timeout_message_contains_command() -> None:
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
     cmd = "sleep 999 # some_long_running_command --flag"
     tool = TerminalTool(timeout=1)
@@ -133,7 +133,7 @@ async def test_terminal_timeout_includes_partial_output() -> None:
     passes because output was captured, not because the command string is
     echoed back in the error message.
     """
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
     tool = TerminalTool(timeout=1)
     with pytest.raises(TimeoutError) as exc_info:
@@ -149,7 +149,7 @@ async def test_terminal_timeout_includes_partial_output() -> None:
 # ---------------------------------------------------------------------------
 
 def test_terminal_custom_timeout_stored() -> None:
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
     tool = TerminalTool(timeout=60)
     assert tool.timeout == 60
@@ -166,7 +166,7 @@ async def test_terminal_timeout_kills_child_processes() -> None:
     `sh -c 'sleep 31.3'` spawns a child sleep; killing only the shell
     (the pre-fix behavior) left it running until it finished on its own.
     """
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
     tool = TerminalTool(timeout=1)
     with pytest.raises(TimeoutError):
@@ -183,7 +183,7 @@ async def test_terminal_cancel_kills_child_processes() -> None:
     pre-fix code only killed the shell on TimeoutError, so a cancelled turn
     orphaned the child (e.g. role C's pytest outliving its dispatch).
     """
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
     tool = TerminalTool(timeout=60)
     task = asyncio.create_task(tool(command="sh -c 'sleep 32.9'"))
@@ -196,7 +196,7 @@ async def test_terminal_cancel_kills_child_processes() -> None:
 
 
 # ---------------------------------------------------------------------------
-# SPECTRE_SESSION_ID injection (spc-137): per-turn session identity for
+# SPCTR_SESSION_ID injection (spc-137): per-turn session identity for
 # subprocesses, via the current_session_id ContextVar.
 # ---------------------------------------------------------------------------
 
@@ -204,15 +204,15 @@ async def test_terminal_cancel_kills_child_processes() -> None:
 async def test_terminal_exports_session_id_when_context_set(
     monkeypatch,
 ) -> None:
-    """With current_session_id set, the command sees it in $SPECTRE_SESSION_ID."""
-    from sr2_spectre.session_identity import current_session_id
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    """With current_session_id set, the command sees it in $SPCTR_SESSION_ID."""
+    from spctr.session_identity import current_session_id
+    from spctr.tools.builtins.terminal import TerminalTool
 
     monkeypatch.setenv("SPC137_INHERIT_PROBE", "inherited-ok")
     token = current_session_id.set("20261014T142141Z-role-g-default-f83b786d")
     try:
         out = await TerminalTool()(
-            command='echo "$SPECTRE_SESSION_ID"; echo "$SPC137_INHERIT_PROBE"'
+            command='echo "$SPCTR_SESSION_ID"; echo "$SPC137_INHERIT_PROBE"'
         )
     finally:
         current_session_id.reset(token)
@@ -226,19 +226,19 @@ async def test_terminal_exports_session_id_when_context_set(
 async def test_terminal_no_session_id_outside_turn_env_inherited(
     monkeypatch,
 ) -> None:
-    """Unset context and unset parent var: SPECTRE_SESSION_ID is absent.
+    """Unset context and unset parent var: SPCTR_SESSION_ID is absent.
 
-    The test isolates SPECTRE_SESSION_ID so the assertion holds regardless
+    The test isolates SPCTR_SESSION_ID so the assertion holds regardless
     of the parent environment (spc-1005: once bots export the variable,
     pytest runs through the terminal tool inherit it, and an unisolated
     "absent" assertion fails while production behaves correctly).
     """
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
-    monkeypatch.delenv("SPECTRE_SESSION_ID", raising=False)
+    monkeypatch.delenv("SPCTR_SESSION_ID", raising=False)
     monkeypatch.setenv("SPC137_INHERIT_PROBE", "inherited-ok")
     probe = (
-        '[ -n "${SPECTRE_SESSION_ID+x}" ] && echo present || echo absent; '
+        '[ -n "${SPCTR_SESSION_ID+x}" ] && echo present || echo absent; '
         'echo "$SPC137_INHERIT_PROBE"'
     )
     out = await TerminalTool()(command=probe)
@@ -255,12 +255,12 @@ async def test_terminal_inherited_session_id_passes_through(
     """Unset context, exported parent value: the command sees it unchanged.
 
     spc-137 AC3: outside a turn the tool passes no env override, so an
-    inherited SPECTRE_SESSION_ID from the parent environment reaches the
+    inherited SPCTR_SESSION_ID from the parent environment reaches the
     command verbatim (the behavior spc-1005's "absent" assertion was
     breaking when the parent exported the variable).
     """
-    from sr2_spectre.tools.builtins.terminal import TerminalTool
+    from spctr.tools.builtins.terminal import TerminalTool
 
-    monkeypatch.setenv("SPECTRE_SESSION_ID", "parent-x")
-    out = await TerminalTool()(command='echo "$SPECTRE_SESSION_ID"')
+    monkeypatch.setenv("SPCTR_SESSION_ID", "parent-x")
+    out = await TerminalTool()(command='echo "$SPCTR_SESSION_ID"')
     assert out.splitlines()[0] == "parent-x"

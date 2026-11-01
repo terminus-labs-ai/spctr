@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from sr2_spectre.interfaces.discord.config import DiscordConfig
+from spctr.interfaces.discord.config import DiscordConfig
 
 
 class TestDiscordConfig:

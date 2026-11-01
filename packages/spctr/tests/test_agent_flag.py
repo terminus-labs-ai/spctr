@@ -20,7 +20,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from sr2_spectre.cli import _parse_args, resolve_agent_config_path
+from spctr.cli import _parse_args, resolve_agent_config_path
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +123,7 @@ class TestRunAsyncWithAgent:
     async def test_agent_flag_resolves_config_path(self, tmp_path: Path) -> None:
         """When --agent is set, resolve_config receives the resolved YAML path."""
         from unittest.mock import AsyncMock, MagicMock
-        from sr2_spectre.core import TurnResult
+        from spctr.core import TurnResult
 
         # Create the agent config file
         agents_dir = tmp_path / "agents"
@@ -166,10 +166,10 @@ class TestRunAsyncWithAgent:
         mock_agent = AsyncMock()
 
         with (
-            patch("sr2_spectre.cli.resolve_config", side_effect=capture_resolve_config),
-            patch("sr2_spectre.cli._configure_logging"),
-            patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(mock_interface)),
-            patch("sr2_spectre.cli.Agent", return_value=mock_agent),
+            patch("spctr.cli.resolve_config", side_effect=capture_resolve_config),
+            patch("spctr.cli._configure_logging"),
+            patch("spctr.cli._load_interface", return_value=_fake_interface_cls(mock_interface)),
+            patch("spctr.cli.Agent", return_value=mock_agent),
         ):
             await run_async([
                 "--agent", "edi",
@@ -184,7 +184,7 @@ class TestRunAsyncWithAgent:
     async def test_agent_flag_with_default_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """--agent without --agents-dir uses the default agents dir ($SR2_HOME/agents/)."""
         from unittest.mock import AsyncMock, MagicMock
-        from sr2_spectre.core import TurnResult
+        from spctr.core import TurnResult
 
         # Fake home directory; SR2_HOME points at its .sr2 so the default
         # agents dir is the one below (not conftest's per-test temp dir).
@@ -231,10 +231,10 @@ class TestRunAsyncWithAgent:
         mock_agent = AsyncMock()
 
         with (
-            patch("sr2_spectre.cli.resolve_config", side_effect=capture_resolve_config),
-            patch("sr2_spectre.cli._configure_logging"),
-            patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(mock_interface)),
-            patch("sr2_spectre.cli.Agent", return_value=mock_agent),
+            patch("spctr.cli.resolve_config", side_effect=capture_resolve_config),
+            patch("spctr.cli._configure_logging"),
+            patch("spctr.cli._load_interface", return_value=_fake_interface_cls(mock_interface)),
+            patch("spctr.cli.Agent", return_value=mock_agent),
             patch("pathlib.Path.home", return_value=fake_home),
         ):
             await run_async([
@@ -288,10 +288,10 @@ class TestRunAsyncWithAgent:
         mock_agent = AsyncMock()
 
         with (
-            patch("sr2_spectre.cli.resolve_config", side_effect=capture_resolve_config),
-            patch("sr2_spectre.cli._configure_logging"),
-            patch("sr2_spectre.cli._load_interface", return_value=_fake_interface_cls(mock_interface)),
-            patch("sr2_spectre.cli.Agent", return_value=mock_agent),
+            patch("spctr.cli.resolve_config", side_effect=capture_resolve_config),
+            patch("spctr.cli._configure_logging"),
+            patch("spctr.cli._load_interface", return_value=_fake_interface_cls(mock_interface)),
+            patch("spctr.cli.Agent", return_value=mock_agent),
         ):
             await run_async([str(config_yaml)])
 
@@ -304,7 +304,7 @@ class TestRunAsyncWithAgent:
 # 4: run_async exported for tests
 # ---------------------------------------------------------------------------
 
-from sr2_spectre.cli import run_async
+from spctr.cli import run_async
 
 
 # ---------------------------------------------------------------------------
@@ -370,12 +370,12 @@ class TestRunAsyncPassesInterfaceKwargs:
         sentinel_source = object()
 
         with (
-            patch("sr2_spectre.cli.resolve_config", return_value=mock_config),
-            patch("sr2_spectre.cli._configure_logging"),
-            patch("sr2_spectre.cli._load_interface", return_value=_CapturingInterface),
-            patch("sr2_spectre.cli.Agent", return_value=AsyncMock()),
-            patch("sr2_spectre.cli.build_spectre_config_source", return_value=MagicMock()),
-            patch("sr2_spectre.cli.DiscordConfigView", return_value=sentinel_source),
+            patch("spctr.cli.resolve_config", return_value=mock_config),
+            patch("spctr.cli._configure_logging"),
+            patch("spctr.cli._load_interface", return_value=_CapturingInterface),
+            patch("spctr.cli.Agent", return_value=AsyncMock()),
+            patch("spctr.cli.build_spctr_config_source", return_value=MagicMock()),
+            patch("spctr.cli.DiscordConfigView", return_value=sentinel_source),
         ):
             await run_async([
                 "--agent", "edi",

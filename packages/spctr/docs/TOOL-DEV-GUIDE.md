@@ -1,6 +1,6 @@
-# SR2 Spectre — Tool Development Guide
+# SR2 spctr — Tool Development Guide
 
-How to build custom tools for SR2 Spectre. A tool is a Python class with a name, description, input schema, and a callable that executes it.
+How to build custom tools for SR2 spctr. A tool is a Python class with a name, description, input schema, and a callable that executes it.
 
 ## Tool Anatomy
 
@@ -212,7 +212,7 @@ def test_dice_invalid_notation() -> None:
 @pytest.mark.asyncio
 async def test_tool_registered() -> None:
     """Tool can be registered via class_path."""
-    from sr2_spectre.tools.registry import ToolRegistry
+    from spctr.tools.registry import ToolRegistry
 
     registry = ToolRegistry()
     registry.register_from_class_path(
@@ -306,7 +306,7 @@ The `input_schema` uses standard JSON Schema. Common patterns:
 
 ## Reference: Built-in Tools
 
-All built-in tools live in `src/sr2_spectre/tools/builtins/`:
+All built-in tools live in `src/spctr/tools/builtins/`:
 
 | Tool | File | Async? | Highlights |
 |------|------|--------|------------|

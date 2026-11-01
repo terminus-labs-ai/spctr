@@ -24,7 +24,7 @@ from pathlib import Path
 import pytest
 
 from sr2.protocols.llm import StreamEvent
-from sr2_spectre.run_log import SessionLogManager
+from spctr.run_log import SessionLogManager
 from tests.test_session_reset_log import _files, _new_files, _repl_ctx
 from tests.test_session_run_log import (
     ScriptedLLM,
@@ -169,7 +169,7 @@ class TestSessionIdSetterClosesPreviousLog:
         _assert_released(first)
 
     async def test_discord_channel_switch_releases_previous_log(self, log_dir):
-        from sr2_spectre.interfaces.discord.session_map import ChannelSession
+        from spctr.interfaces.discord.session_map import ChannelSession
         from tests.test_session_reset_log import _start_discord
 
         agent = _agent()

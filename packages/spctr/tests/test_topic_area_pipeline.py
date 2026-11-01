@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 from sr2.protocols.llm import StreamEvent
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.session import Session
-from sr2_spectre.tools.registry import ToolRegistry
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.core import RunContext, RunMode
+from spctr.session import Session
+from spctr.tools.registry import ToolRegistry
 
 
 def _topic(root: Path, folder: str, area: str, marker: str, mode="source",
@@ -43,15 +43,15 @@ class _CaptureLLM:
 @pytest.mark.asyncio
 async def test_topic_context_compiles_and_refreshes_through_real_session(tmp_path):
     root = tmp_path / "topics"
-    selected = _topic(root, "sr2/runtime-hub", "sr2-spectre", "INTENDED")
-    _topic(root, "family/sr2-spectre", "sr2-spectre", "VIEW", mode="view")
-    _topic(root, "characters/archive/sr2-spectre", "character-decoy", "DECOY")
+    selected = _topic(root, "sr2/runtime-hub", "spctr", "INTENDED")
+    _topic(root, "family/spctr", "spctr", "VIEW", mode="view")
+    _topic(root, "characters/archive/spctr", "character-decoy", "DECOY")
     _topic(root, "family/henrique (pai)", "henrique", "HENRIQUE")
     # Packaging discovery must work without registering or constructing a resolver.
     assert len([
         ep for ep in entry_points(group="sr2.resolvers") if ep.name == "topic_area"
     ]) == 1
-    config = SpectreConfig(
+    config = SpctrConfig(
         agent=AgentConfig(name="topic-journey"),
         models={"default": ModelConfig(model="fixture", base_url="http://unused")},
         pipeline={"layers": [
@@ -83,7 +83,7 @@ async def test_topic_context_compiles_and_refreshes_through_real_session(tmp_pat
         return "\n".join(block.text for block in llm.requests[-1].system or [])
 
     try:
-        system = await turn("sr2-spectre")
+        system = await turn("spctr")
         assert "INTENDED AGENTS" in system and "INTENDED NOW" in system
         assert all(marker not in system for marker in ("VIEW", "DECOY", "HENRIQUE"))
 
@@ -91,7 +91,7 @@ async def test_topic_context_compiles_and_refreshes_through_real_session(tmp_pat
         now = selected / "NOW.md"
         now.write_text(now.read_text(encoding="utf-8").replace(
             "INTENDED NOW", "UPDATED NOW"), encoding="utf-8")
-        system = await turn("sr2-spectre")
+        system = await turn("spctr")
         assert "UPDATED AGENTS" in system and "UPDATED NOW" in system
         assert all(marker not in system for marker in ("INTENDED", "VIEW", "DECOY"))
 
@@ -109,11 +109,11 @@ async def test_topic_context_compiles_and_refreshes_through_real_session(tmp_pat
 async def test_readme_context_compiles_and_refreshes_through_real_session(tmp_path):
     """J1/AC1: README selection compiles, refreshes on edit and survives a move."""
     root = tmp_path / "topics"
-    selected = _topic(root, "sr2/runtime-hub", "sr2-spectre", "INTENDED",
+    selected = _topic(root, "sr2/runtime-hub", "spctr", "INTENDED",
                       readme_body="INTENDED README")
-    _topic(root, "family/sr2-spectre", "sr2-spectre", "VIEW", mode="view",
+    _topic(root, "family/spctr", "spctr", "VIEW", mode="view",
            readme_body="VIEW README")
-    _topic(root, "characters/archive/sr2-spectre", "character-decoy", "DECOY",
+    _topic(root, "characters/archive/spctr", "character-decoy", "DECOY",
            readme_body="DECOY README")
     _topic(root, "family/henrique (pai)", "henrique", "HENRIQUE",
            readme_body="HENRIQUE README")
@@ -121,7 +121,7 @@ async def test_readme_context_compiles_and_refreshes_through_real_session(tmp_pa
     assert len([
         ep for ep in entry_points(group="sr2.resolvers") if ep.name == "topic_area"
     ]) == 1
-    config = SpectreConfig(
+    config = SpctrConfig(
         agent=AgentConfig(name="readme-journey"),
         models={"default": ModelConfig(model="fixture", base_url="http://unused")},
         pipeline={"layers": [
@@ -156,7 +156,7 @@ async def test_readme_context_compiles_and_refreshes_through_real_session(tmp_pa
         # Intended README and paired source NOW compile; decoys and views stay out.
         # Fails if README is not selectable, if AGENTS leaks instead, or if the
         # duplicate-basename/family-view topics win the identity gate.
-        system = await turn("sr2-spectre")
+        system = await turn("spctr")
         assert "INTENDED README" in system and "INTENDED NOW" in system
         assert "INTENDED AGENTS" not in system and "AGENTS" not in system
         assert all(marker not in system for marker in ("VIEW", "DECOY", "HENRIQUE"))
@@ -169,7 +169,7 @@ async def test_readme_context_compiles_and_refreshes_through_real_session(tmp_pa
         now = selected / "NOW.md"
         now.write_text(now.read_text(encoding="utf-8").replace(
             "INTENDED NOW", "UPDATED NOW"), encoding="utf-8")
-        system = await turn("sr2-spectre")
+        system = await turn("spctr")
         assert "UPDATED README" in system and "UPDATED NOW" in system
         assert "INTENDED" not in system
         assert all(marker not in system for marker in ("VIEW", "DECOY", "HENRIQUE"))
@@ -179,7 +179,7 @@ async def test_readme_context_compiles_and_refreshes_through_real_session(tmp_pa
         relocated = root / "family/moved-runtime-hub"
         selected.rename(relocated)
         assert not (root / "sr2/runtime-hub").exists()
-        system = await turn("sr2-spectre")
+        system = await turn("spctr")
         assert "UPDATED README" in system and "UPDATED NOW" in system
         assert all(marker not in system for marker in ("VIEW", "DECOY", "HENRIQUE"))
 

@@ -7,8 +7,8 @@ from __future__ import annotations
 
 import pytest
 
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.interfaces.tui import SpectreTUI, TUIInterface
+from spctr.core import RunContext, RunMode
+from spctr.interfaces.tui import SpctrTUI, TUIInterface
 
 
 # ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@ async def test_run_launches_textual_app_headless(mock_agent) -> None:
     """run(agent) must launch the Textual app via run_async in headless mode."""
     interface = TUIInterface()
     await interface.start(mock_agent)
-    app = SpectreTUI(mock_agent)
+    app = SpctrTUI(mock_agent)
     async with app.run_test(headless=True) as pilot:
         await pilot.pause()
     await interface.stop()
@@ -56,7 +56,7 @@ async def test_run_launches_textual_app_headless(mock_agent) -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_layout_composes_header(tui_app: SpectreTUI) -> None:
+async def test_layout_composes_header(tui_app: SpctrTUI) -> None:
     """App must compose a Header widget."""
     async with tui_app.run_test(headless=True) as pilot:
         from textual.widgets import Header
@@ -64,7 +64,7 @@ async def test_layout_composes_header(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_layout_composes_richlog_output(tui_app: SpectreTUI) -> None:
+async def test_layout_composes_richlog_output(tui_app: SpctrTUI) -> None:
     """App must compose a RichLog with id='output'."""
     async with tui_app.run_test(headless=True) as pilot:
         from textual.widgets import RichLog
@@ -74,7 +74,7 @@ async def test_layout_composes_richlog_output(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_layout_composes_input_prompt(tui_app: SpectreTUI) -> None:
+async def test_layout_composes_input_prompt(tui_app: SpctrTUI) -> None:
     """App must compose an Input with id='prompt'."""
     async with tui_app.run_test(headless=True) as pilot:
         from textual.widgets import Input
@@ -83,7 +83,7 @@ async def test_layout_composes_input_prompt(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_layout_composes_status_bar(tui_app: SpectreTUI) -> None:
+async def test_layout_composes_status_bar(tui_app: SpctrTUI) -> None:
     """App must compose a Static status bar with id='status'."""
     async with tui_app.run_test(headless=True) as pilot:
         from textual.widgets import Static
@@ -91,7 +91,7 @@ async def test_layout_composes_status_bar(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_layout_composes_footer(tui_app: SpectreTUI) -> None:
+async def test_layout_composes_footer(tui_app: SpctrTUI) -> None:
     """App must compose a Footer widget."""
     async with tui_app.run_test(headless=True) as pilot:
         from textual.widgets import Footer
@@ -99,7 +99,7 @@ async def test_layout_composes_footer(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_input_focused_on_mount(tui_app: SpectreTUI) -> None:
+async def test_input_focused_on_mount(tui_app: SpctrTUI) -> None:
     """Input widget must be focused when the app mounts."""
     async with tui_app.run_test(headless=True) as pilot:
         from textual.widgets import Input
@@ -111,7 +111,7 @@ async def test_input_focused_on_mount(tui_app: SpectreTUI) -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_update_status_sets_text(tui_app: SpectreTUI) -> None:
+async def test_update_status_sets_text(tui_app: SpctrTUI) -> None:
     """update_status() must set the status bar text with session info."""
     async with tui_app.run_test(headless=True) as pilot:
         from textual.widgets import Static
@@ -128,7 +128,7 @@ async def test_update_status_sets_text(tui_app: SpectreTUI) -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_richlog_has_mouse_enabled(tui_app: SpectreTUI) -> None:
+async def test_richlog_has_mouse_enabled(tui_app: SpctrTUI) -> None:
     """RichLog output pane must have mouse support enabled."""
     async with tui_app.run_test(headless=True) as pilot:
         from textual.widgets import RichLog
@@ -141,7 +141,7 @@ async def test_richlog_has_mouse_enabled(tui_app: SpectreTUI) -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_input_submitted_echoes_to_log(tui_app: SpectreTUI) -> None:
+async def test_input_submitted_echoes_to_log(tui_app: SpctrTUI) -> None:
     """Submitting input must echo the text to the RichLog."""
     async with tui_app.run_test(headless=True) as pilot:
         from textual.widgets import Input, RichLog
@@ -154,7 +154,7 @@ async def test_input_submitted_echoes_to_log(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_empty_input_is_ignored(tui_app: SpectreTUI) -> None:
+async def test_empty_input_is_ignored(tui_app: SpctrTUI) -> None:
     """Empty/whitespace input must not echo to the log."""
     async with tui_app.run_test(headless=True) as pilot:
         from textual.widgets import Input, RichLog
@@ -175,7 +175,7 @@ async def test_headless_run_does_not_crash(mock_agent) -> None:
     """The app must not crash when run in headless mode."""
     interface = TUIInterface()
     await interface.start(mock_agent)
-    app = SpectreTUI(mock_agent)
+    app = SpctrTUI(mock_agent)
     async with app.run_test(headless=True) as pilot:
         await pilot.pause()
     await interface.stop()

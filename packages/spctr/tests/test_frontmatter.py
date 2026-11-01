@@ -18,7 +18,7 @@ import yaml as _yaml
 from pathlib import Path
 from textwrap import dedent
 
-from sr2_spectre.planning.frontmatter import (
+from spctr.planning.frontmatter import (
     _FRONTMATTER_PARSERS,
     _build_frontmatter,
     _coerce_str,
@@ -30,7 +30,7 @@ from sr2_spectre.planning.frontmatter import (
     parse_frontmatter,
     split_frontmatter,
 )
-from sr2_spectre.planning.models import (
+from spctr.planning.models import (
     KnowledgeFrontmatter,
     PlanFrontmatter,
     PlanStatus,
@@ -217,7 +217,7 @@ class TestSplitFrontmatter:
 
     def test_exported_from_planning_package(self):
         """split_frontmatter is importable from the planning package."""
-        from sr2_spectre.planning import split_frontmatter as pkg_split
+        from spctr.planning import split_frontmatter as pkg_split
         assert pkg_split is split_frontmatter
 
 
@@ -349,10 +349,10 @@ class TestParseKnowledgeFrontmatter:
 
     def test_full_knowledge(self):
         text = self._knowledge_text(
-            "kind: project-knowledge\nproject: sr2-spectre"
+            "kind: project-knowledge\nproject: spctr"
         )
         result = parse_frontmatter(text)
-        assert result.project == "sr2-spectre"
+        assert result.project == "spctr"
 
     def test_knowledge_matches_project(self):
         """Knowledge project field is used for matching in resolver."""
@@ -521,7 +521,7 @@ class TestModels:
 class TestLoggingOnSkip:
     def test_warning_on_unrecognized_kind(self, caplog):
         """A warning is logged when kind is unrecognized."""
-        caplog.set_level(logging.WARNING, logger="sr2_spectre.planning.frontmatter")
+        caplog.set_level(logging.WARNING, logger="spctr.planning.frontmatter")
         text = "---\nkind: recipe\n---\n"
         result = parse_frontmatter(text, file_path=Path("/test.md"))
         assert result is None
@@ -529,7 +529,7 @@ class TestLoggingOnSkip:
 
     def test_warning_on_missing_kind(self, caplog):
         """A warning is logged when kind is missing."""
-        caplog.set_level(logging.WARNING, logger="sr2_spectre.planning.frontmatter")
+        caplog.set_level(logging.WARNING, logger="spctr.planning.frontmatter")
         text = "---\norder: 1\n---\n"
         result = parse_frontmatter(text, file_path=Path("/test.md"))
         assert result is None
@@ -537,7 +537,7 @@ class TestLoggingOnSkip:
 
     def test_warning_on_yaml_error(self, caplog):
         """A warning is logged on YAML parse errors."""
-        caplog.set_level(logging.WARNING, logger="sr2_spectre.planning.frontmatter")
+        caplog.set_level(logging.WARNING, logger="spctr.planning.frontmatter")
         text = "---\nkind: [broken yaml\n---\n"
         result = parse_frontmatter(text, file_path=Path("/test.md"))
         assert result is None
@@ -545,7 +545,7 @@ class TestLoggingOnSkip:
 
     def test_debug_on_no_frontmatter(self, caplog):
         """Debug-level log when no frontmatter found."""
-        caplog.set_level(logging.DEBUG, logger="sr2_spectre.planning.frontmatter")
+        caplog.set_level(logging.DEBUG, logger="spctr.planning.frontmatter")
         text = "# Just a heading\n"
         result = parse_frontmatter(text, file_path=Path("/test.md"))
         assert result is None
@@ -560,7 +560,7 @@ class TestLoggingOnSkip:
 class TestPyYAMLReuse:
     def test_uses_builtin_yaml(self):
         """The frontmatter module uses yaml from the existing PyYAML dep."""
-        from sr2_spectre.planning import frontmatter
+        from spctr.planning import frontmatter
         # Verify yaml module is the standard PyYAML
         assert frontmatter.yaml is not None
         # Verify it can parse (smoke test)
@@ -573,7 +573,7 @@ class TestPyYAMLReuse:
         import inspect
 
         source = inspect.getsource(
-            __import__("sr2_spectre.planning.frontmatter", fromlist=[""])
+            __import__("spctr.planning.frontmatter", fromlist=[""])
         )
         tree = ast.parse(source)
         imports = []
@@ -584,8 +584,8 @@ class TestPyYAMLReuse:
             elif isinstance(node, ast.ImportFrom):
                 if node.module:
                     imports.append(node.module)
-        # The only external (non-sr2_spectre) import should be yaml
-        external = [i for i in imports if not i.startswith("sr2_spectre.") and i not in (
+        # The only external (non-spctr) import should be yaml
+        external = [i for i in imports if not i.startswith("spctr.") and i not in (
             "__future__", "logging", "pathlib", "typing"
         )]
         assert external == ["yaml"], f"Unexpected external deps: {external}"
@@ -649,7 +649,7 @@ class TestFrontmatterDispatch:
 
     def test_build_frontmatter_delegates_to_parser(self):
         """_build_frontmatter dispatches through the table, not if/elif."""
-        from sr2_spectre.planning.models import TaskFrontmatter
+        from spctr.planning.models import TaskFrontmatter
         result = _build_frontmatter(
             TaskFrontmatter,
             {"plan": "test", "order": 1, "status": "pending"},
@@ -663,7 +663,7 @@ class TestFrontmatterDispatch:
     def test_build_frontmatter_unknown_kind_raises(self):
         """Unknown kind raises ValueError (shouldn't reach here in normal flow
         because parse_frontmatter filters via RECOGNIZED_KINDS first)."""
-        from sr2_spectre.planning.models import TaskFrontmatter
+        from spctr.planning.models import TaskFrontmatter
         with pytest.raises(ValueError, match="Unknown kind"):
             _build_frontmatter(
                 TaskFrontmatter,
@@ -673,7 +673,7 @@ class TestFrontmatterDispatch:
             )
 
     def test_build_frontmatter_plan_kind(self):
-        from sr2_spectre.planning.models import PlanFrontmatter
+        from spctr.planning.models import PlanFrontmatter
         result = _build_frontmatter(
             PlanFrontmatter,
             {"slug": "my-plan", "status": "open", "goal": "test"},
@@ -684,7 +684,7 @@ class TestFrontmatterDispatch:
         assert result.slug == "my-plan"
 
     def test_build_frontmatter_knowledge_kind(self):
-        from sr2_spectre.planning.models import KnowledgeFrontmatter
+        from spctr.planning.models import KnowledgeFrontmatter
         result = _build_frontmatter(
             KnowledgeFrontmatter,
             {"project": "my-project"},

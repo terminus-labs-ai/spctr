@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from sr2_spectre.planning.budget import LayerBudget
+from spctr.planning.budget import LayerBudget
 
 
 # ---------------------------------------------------------------------------

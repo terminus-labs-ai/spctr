@@ -1,9 +1,9 @@
-"""Runtime guard on Spectre's single LLM call path (obsidian-5a9o).
+"""Runtime guard on spctr's single LLM call path (obsidian-5a9o).
 
 Covers the default output-token cap injected into ``LiteLLMCallable``, the
 ``call_timeout_seconds`` / ``stall_timeout_seconds`` model fields, and the
 duration/stall aborts raised as ``ModelCallGuardError`` by ``LiveLLM``.
-The only mocked boundary is ``sr2_spectre.live_llm.LiteLLMCallable``.
+The only mocked boundary is ``spctr.live_llm.LiteLLMCallable``.
 """
 from __future__ import annotations
 
@@ -17,8 +17,8 @@ import yaml
 from pydantic import ValidationError
 from sr2.protocols.llm import CompletionRequest, StreamEvent
 
-from sr2_spectre.config import ModelConfig, load_config, load_resolved_config
-from sr2_spectre.live_llm import (
+from spctr.config import ModelConfig, load_config, load_resolved_config
+from spctr.live_llm import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     LiveLLM,
     LoggedLLM,
@@ -64,7 +64,7 @@ def _cfg(call=None, stall=None, **extra) -> ModelConfig:
 
 def _live(cfg: ModelConfig, *fakes: FakeInner) -> LiveLLM:
     """LiveLLM whose successive LiteLLMCallable constructions return *fakes*."""
-    with patch("sr2_spectre.live_llm.LiteLLMCallable", side_effect=list(fakes)):
+    with patch("spctr.live_llm.LiteLLMCallable", side_effect=list(fakes)):
         return LiveLLM(cfg)
 
 
@@ -87,7 +87,7 @@ async def _expect_guard(coro, kind: str, limit: float) -> ModelCallGuardError:
 # --- AC1: default output-token cap --------------------------------------------
 
 def _built_kwargs(cfg: ModelConfig) -> dict:
-    with patch("sr2_spectre.live_llm.LiteLLMCallable") as mock:
+    with patch("spctr.live_llm.LiteLLMCallable") as mock:
         LiveLLM(cfg)
     return mock.call_args.kwargs
 
@@ -114,7 +114,7 @@ class TestDefaultMaxTokens:
         assert kwargs == {"model": MODEL, "base_url": None, **params}
 
     def test_retarget_injects_default(self):
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as mock:
+        with patch("spctr.live_llm.LiteLLMCallable") as mock:
             llm = LiveLLM(ModelConfig(model=MODEL, params={"max_tokens": 10}))
             assert llm.retarget(ModelConfig(model="openai/other"))
         assert mock.call_args.kwargs == {"model": "openai/other", "base_url": None, "max_tokens": 32768}
@@ -162,7 +162,7 @@ class TestGuardFields:
         (home / "config.yaml").write_text(yaml.dump(
             {"models": {"default": {"model": MODEL, "call_timeout_seconds": 300,
                                     "stall_timeout_seconds": 200}}}))
-        (cwd / ".spectre.yaml").write_text(yaml.dump(
+        (cwd / ".spctr.yaml").write_text(yaml.dump(
             {"models": {"default": {"stall_timeout_seconds": 50}}}))
         top = tmp_path / "agent.yaml"
         top.write_text(yaml.dump({"agent": {"name": "t"}, "pipeline": _PIPELINE,
@@ -271,11 +271,11 @@ class TestErrorSurface:
     ])
     async def test_one_warning_logged(self, caplog, kind, call, stall, streamed):
         llm = _live(_cfg(call=call, stall=stall), FakeInner(gaps=[SLOW], complete_delay=SLOW))
-        caplog.set_level(logging.WARNING, logger="sr2_spectre.live_llm")
+        caplog.set_level(logging.WARNING, logger="spctr.live_llm")
         with pytest.raises(ModelCallGuardError):
             await (_drain(llm.stream(REQUEST), []) if streamed else llm.complete(REQUEST))
         warnings = [r for r in caplog.records
-                    if r.name == "sr2_spectre.live_llm" and r.levelno == logging.WARNING]
+                    if r.name == "spctr.live_llm" and r.levelno == logging.WARNING]
         assert len(warnings) == 1
         msg = warnings[0].getMessage()
         assert kind in msg and "0.2" in msg and "guard-test-model" in msg
@@ -305,7 +305,7 @@ class TestErrorSurface:
 def fakes(monkeypatch) -> list:
     """Queue of fakes handed out by every LiteLLMCallable build, retargets included."""
     queue: list = []
-    monkeypatch.setattr("sr2_spectre.live_llm.LiteLLMCallable", lambda **kw: queue.pop(0))
+    monkeypatch.setattr("spctr.live_llm.LiteLLMCallable", lambda **kw: queue.pop(0))
     return queue
 
 

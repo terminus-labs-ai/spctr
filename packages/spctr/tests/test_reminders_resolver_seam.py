@@ -28,18 +28,18 @@ from typing import Any
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
-from sr2_spectre.config import (
+from spctr.config import (
     AgentConfig,
     ModelConfig,
-    SpectreConfig,
+    SpctrConfig,
 )
-from sr2_spectre.reminders import (
+from spctr.reminders import (
     ChannelMatch,
     ReminderOrigin,
     ReminderStore,
     ReminderTool,
 )
-from sr2_spectre.reminders.tool import (
+from spctr.reminders.tool import (
     NO_INTERFACE_ERROR,
     _match_has_channels,
     format_local_due,
@@ -61,12 +61,12 @@ def _clock_at(moment: datetime):
 # ---------------------------------------------------------------------------
 
 
-def _config(store: Path, **reminders: Any) -> SpectreConfig:
-    """A minimal real SpectreConfig with one reminders block."""
+def _config(store: Path, **reminders: Any) -> SpctrConfig:
+    """A minimal real SpctrConfig with one reminders block."""
     agent: dict[str, Any] = {"name": "miranda", "default_skills": False}
     if reminders:
         agent["reminders"] = dict(reminders)
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(**agent),
         models={"default": ModelConfig(model="test-model")},
         pipeline={"layers": []},
@@ -75,7 +75,7 @@ def _config(store: Path, **reminders: Any) -> SpectreConfig:
     )
 
 
-def _enabled(store: Path, **overrides: Any) -> SpectreConfig:
+def _enabled(store: Path, **overrides: Any) -> SpctrConfig:
     block: dict[str, Any] = {
         "enabled": True,
         "timezone": "America/Phoenix",
@@ -86,11 +86,11 @@ def _enabled(store: Path, **overrides: Any) -> SpectreConfig:
     return _config(store, **block)
 
 
-def _runtime(config: SpectreConfig):
+def _runtime(config: SpctrConfig):
     """A real Runtime with the documented LLM seam patched (no model)."""
-    from sr2_spectre.runtime import Runtime
+    from spctr.runtime import Runtime
 
-    with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+    with patch("spctr.live_llm.LiteLLMCallable"):
         return Runtime(config=config)
 
 
@@ -132,9 +132,9 @@ def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
     ``poll_seconds`` overrides each built delivery loop's real sleep
     interval (tiny) so loop churn between tests stays cheap.
     """
-    import sr2_spectre.interfaces.zulip.interface as iface_mod
-    from sr2_spectre.interfaces.zulip.client import ZulipCredentials
-    from sr2_spectre.interfaces.zulip.config import ZulipConfig
+    import spctr.interfaces.zulip.interface as iface_mod
+    from spctr.interfaces.zulip.client import ZulipCredentials
+    from spctr.interfaces.zulip.config import ZulipConfig
 
     config = ZulipConfig(
         zuliprc=str(store_dir / "zuliprc"),
@@ -154,7 +154,7 @@ def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
                 "realm_users": [{"user_id": 9, "is_bot": True}],
                 "realm_bots": [],
                 "streams": [
-                    {"stream_id": 42, "name": "sr2-spectre"},
+                    {"stream_id": 42, "name": "spctr"},
                     {"stream_id": 7, "name": "general"},
                 ],
             }
@@ -165,7 +165,7 @@ def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
         async def get_streams(self):
             return {
                 "streams": [
-                    {"stream_id": 42, "name": "sr2-spectre", "can_send": True},
+                    {"stream_id": 42, "name": "spctr", "can_send": True},
                     {"stream_id": 7, "name": "general", "can_send": True},
                     {"stream_id": 8, "name": "read-only", "can_send": False},
                 ]
@@ -207,7 +207,7 @@ def _origin(**overrides) -> ReminderOrigin:
         requester_id="8",
         requester_mention="@8",
         channel_id="42",
-        channel_name="sr2-spectre",
+        channel_name="spctr",
         topic="plan",
     )
     base.update(overrides)
@@ -246,7 +246,7 @@ def _resolver(match_lists: dict, platform: str = "zulip"):
         )
         return matches
 
-    resolve.spectre_platform = platform
+    resolve.spctr_platform = platform
     return resolve
 
 
@@ -299,12 +299,12 @@ class TestR1SingleConstructionPath:
         ReminderTool attribute outside reminders/, except the seam's own
         ends (the setter, its delegation, the ctor-kwarg hand-off)."""
         repo_root = Path(__file__).resolve().parents[1]
-        src_root = repo_root / "src" / "sr2_spectre"
+        src_root = repo_root / "src" / "spctr"
         reminders_dir = src_root / "reminders"
         # The tool's private attribute names, harvested from its ctor.
         import inspect
 
-        import sr2_spectre.reminders.tool as tool_mod
+        import spctr.reminders.tool as tool_mod
 
         tool_privates = {
             m.group(1)

@@ -25,7 +25,7 @@ import os
 
 import pytest
 
-from sr2_spectre import cli
+from spctr import cli
 
 
 def _minimal_args() -> list[str]:

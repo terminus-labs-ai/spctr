@@ -13,12 +13,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sr2_spectre.tools.builtins.file_write import FileWriteTool
-from sr2_spectre.tools.builtins.edit import EditTool
-from sr2_spectre.tools.builtins.terminal import TerminalTool
-from sr2_spectre.planning.resolver import PlanResolver
-from sr2_spectre.runtime import Runtime
-from sr2_spectre.config import SpectreConfig
+from spctr.tools.builtins.file_write import FileWriteTool
+from spctr.tools.builtins.edit import EditTool
+from spctr.tools.builtins.terminal import TerminalTool
+from spctr.planning.resolver import PlanResolver
+from spctr.runtime import Runtime
+from spctr.config import SpctrConfig
 from sr2.config.models import ResolverConfig
 
 
@@ -36,7 +36,7 @@ class TestWorkspaceRootResolution:
         workspace.mkdir()
         monkeypatch.setenv("SR2_WORKSPACE", str(workspace))
 
-        from sr2_spectre.workspace import resolve_workspace_root
+        from spctr.workspace import resolve_workspace_root
         root = resolve_workspace_root()
         assert str(root) == str(Path(workspace).resolve())
 
@@ -45,7 +45,7 @@ class TestWorkspaceRootResolution:
         monkeypatch.delenv("SR2_WORKSPACE", raising=False)
         monkeypatch.chdir(str(tmp_path))
 
-        from sr2_spectre.workspace import resolve_workspace_root
+        from spctr.workspace import resolve_workspace_root
         root = resolve_workspace_root()
         assert str(root) == str(tmp_path.resolve())
 
@@ -57,7 +57,7 @@ class TestWorkspaceRootResolution:
         link.symlink_to(workspace)
         monkeypatch.setenv("SR2_WORKSPACE", str(link))
 
-        from sr2_spectre.workspace import resolve_workspace_root
+        from spctr.workspace import resolve_workspace_root
         root = resolve_workspace_root()
         assert str(root) == str(workspace.resolve())
 
@@ -165,8 +165,8 @@ class TestEditWorkspaceFloor:
         target = tmp_path / "file.txt"
         target.write_text("hello world")
         tool = self._make_tool(tmp_path)
-        await tool(path=str(target), old_string="world", new_string="spectre")
-        assert target.read_text() == "hello spectre"
+        await tool(path=str(target), old_string="world", new_string="spctr")
+        assert target.read_text() == "hello spctr"
 
     @pytest.mark.asyncio
     async def test_reject_absolute_path_outside_root(self, tmp_path):
@@ -279,8 +279,8 @@ class TestResolverWorktreeRegression:
 
     @pytest.mark.asyncio
     async def test_sr2_project_env_overrides_worktree_name(self, tmp_path, monkeypatch):
-        """When cwd is a worktree named 'spc-47', SR2_PROJECT=sr2-spectre
-        makes _resolve_project() return 'sr2-spectre'."""
+        """When cwd is a worktree named 'spc-47', SR2_PROJECT=spctr
+        makes _resolve_project() return 'spctr'."""
         # Create a fake worktree directory named "spc-47"
         worktree = tmp_path / "spc-47"
         worktree.mkdir()
@@ -295,13 +295,13 @@ class TestResolverWorktreeRegression:
         knowledge_dir = tmp_path / "knowledge"
         knowledge_dir.mkdir()
         (knowledge_dir / "arch.md").write_text(
-            "---\nkind: project-knowledge\nproject: sr2-spectre\n---\n\nSpectre knowledge.\n"
+            "---\nkind: project-knowledge\nproject: spctr\n---\n\nspctr knowledge.\n"
         )
         (knowledge_dir / "noise.md").write_text(
             "---\nkind: project-knowledge\nproject: spc-47\n---\n\nNoise.\n"
         )
 
-        monkeypatch.setenv("SR2_PROJECT", "sr2-spectre")
+        monkeypatch.setenv("SR2_PROJECT", "spctr")
         monkeypatch.chdir(str(worktree))
 
         resolver = PlanResolver(
@@ -315,17 +315,17 @@ class TestResolverWorktreeRegression:
             )
         )
 
-        # The resolver should derive "sr2-spectre" from SR2_PROJECT,
+        # The resolver should derive "spctr" from SR2_PROJECT,
         # NOT "spc-47" from the cwd walk
         project = resolver._resolve_project()
-        assert project == "sr2-spectre"
+        assert project == "spctr"
 
         # Resolve to verify L1 picks up the right knowledge
         from sr2.pipeline.events import Event, EventPhase
         event = Event(name="turn_start", phase=EventPhase.STARTING, source_layer="core")
         result = await resolver.resolve([event])
         text = result.content[0].text
-        assert "Spectre knowledge." in text
+        assert "spctr knowledge." in text
         assert "Noise." not in text
 
     @pytest.mark.asyncio
@@ -379,8 +379,8 @@ class TestRuntimeWorkspaceWiring:
 
     def _build_runtime(self, config_dict: dict) -> "Runtime":
         """Build a Runtime from a raw config dict."""
-        spectre_config = SpectreConfig(**config_dict)
-        return Runtime(spectre_config)
+        spctr_config = SpctrConfig(**config_dict)
+        return Runtime(spctr_config)
 
     def test_runtime_sets_workspace_root_from_env(self, tmp_path, monkeypatch):
         """Runtime resolves SR2_WORKSPACE and stores it."""
@@ -414,7 +414,7 @@ class TestRuntimeWorkspaceWiring:
             tools=[
                 {
                     "name": "file_write",
-                    "class_path": "sr2_spectre.tools.builtins.file_write.FileWriteTool",
+                    "class_path": "spctr.tools.builtins.file_write.FileWriteTool",
                 }
             ]
         )
@@ -440,7 +440,7 @@ class TestRuntimeWorkspaceWiring:
             tools=[
                 {
                     "name": "file_write",
-                    "class_path": "sr2_spectre.tools.builtins.file_write.FileWriteTool",
+                    "class_path": "spctr.tools.builtins.file_write.FileWriteTool",
                     "config": {"workspace_root": str(explicit_workspace)},
                 }
             ]
@@ -465,11 +465,11 @@ class TestRuntimeWorkspaceWiring:
             tools=[
                 {
                     "name": "file_read",
-                    "class_path": "sr2_spectre.tools.builtins.file_read.FileReadTool",
+                    "class_path": "spctr.tools.builtins.file_read.FileReadTool",
                 },
                 {
                     "name": "file_write",
-                    "class_path": "sr2_spectre.tools.builtins.file_write.FileWriteTool",
+                    "class_path": "spctr.tools.builtins.file_write.FileWriteTool",
                 },
             ]
         )

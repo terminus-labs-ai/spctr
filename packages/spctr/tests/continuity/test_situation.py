@@ -1,4 +1,4 @@
-# AC11 — Fresh project resume: Spectre situation providers (sr2-102).
+# AC11 — Fresh project resume: spctr situation providers (sr2-102).
 #
 # Ground-truth tests for the generic SituationProvider contract:
 #   * CompositeSituationProvider refreshes every configured source
@@ -7,7 +7,7 @@
 #     silent (FR29); optional-source failure never enters `failures`
 #   * Built-in providers cover configured markdown/files, git, and beads (FR22)
 #   * Entries carry source, authority, observation time, and revision (FR24)
-#   * SpectreConfig declares the sources; nothing is hardcoded
+#   * SpctrConfig declares the sources; nothing is hardcoded
 #
 # The contract fixed for these tests (spec Interfaces section, verbatim):
 #
@@ -55,12 +55,12 @@ from sr2.pipeline.provenance import (
     EntryOrigin,
 )
 
-from sr2_spectre.continuity.sources import (
+from spctr.continuity.sources import (
     BeadsSituationProvider,
     FileSituationProvider,
     GitSituationProvider,
 )
-from sr2_spectre.continuity.situation import (
+from spctr.continuity.situation import (
     CompositeSituationProvider,
     SituationProvider,
     SituationRequest,
@@ -77,7 +77,7 @@ _LAYER = "situation"
 def make_request(**overrides):
     base = dict(
         owner_id="diego",
-        agent_id="spectre",
+        agent_id="spctr",
         origin="repl",
         cwd=None,
         projects=(),
@@ -98,7 +98,7 @@ def entries_from(entry_iterable, needle: str):
 def live_request(tmp_path, **overrides) -> SituationRequest:
     base = dict(
         owner_id="diego",
-        agent_id="spectre",
+        agent_id="spctr",
         origin="repl",
         cwd=str(tmp_path),
         projects=("SR2",),
@@ -505,25 +505,25 @@ class TestBeadsProvider:
 # ---------------------------------------------------------------------------
 
 
-_MINIMAL_SPECTRE = {
-    "agent": {"name": "spectre"},
+_MINIMAL_SPCTR = {
+    "agent": {"name": "spctr"},
     "models": {"default": {"model": "openai/gpt-4o"}},
     "pipeline": {"layers": []},
 }
 
 
-def _spectre_with(extra: dict):
-    from sr2_spectre.config import SpectreConfig
+def _spctr_with(extra: dict):
+    from spctr.config import SpctrConfig
 
-    data = {**_MINIMAL_SPECTRE, **extra}
-    return SpectreConfig(**data)
+    data = {**_MINIMAL_SPCTR, **extra}
+    return SpctrConfig(**data)
 
 
 class TestContinuityConfig:
     def test_situation_sources_parse(self):
         """AC11-r8: continuity.situation_sources parses type/paths/repo/
         project/required per the spec config shape."""
-        cfg = _spectre_with(
+        cfg = _spctr_with(
             {
                 "continuity": {
                     "situation_sources": [
@@ -547,13 +547,13 @@ class TestContinuityConfig:
 
     def test_defaults_empty(self):
         """AC11-r8: absent continuity section => empty source list."""
-        cfg = _spectre_with({})
+        cfg = _spctr_with({})
         assert cfg.continuity.situation_sources == []
 
     def test_unknown_source_type_rejected(self):
         """AC11-r8: unknown source types are a validation error."""
         with pytest.raises(ValidationError):
-            _spectre_with(
+            _spctr_with(
                 {
                     "continuity": {
                         "situation_sources": [{"type": "crystal-ball", "required": False}]

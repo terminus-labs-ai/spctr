@@ -21,8 +21,8 @@ import pytest
 
 from sr2.models import Message, TextBlock, ToolResultBlock, ToolUseBlock, TokenUsage
 from sr2.protocols.llm import CompletionRequest, CompletionResponse, StreamEvent
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.core import TurnResult
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.core import TurnResult
 
 
 # ---------------------------------------------------------------------------
@@ -34,13 +34,13 @@ def _minimal_pipeline_dict(with_tool_layer: bool = True) -> dict:
         {"name": "system", "target": "system", "resolvers": [{"type": "static", "config": {"text": "You are helpful."}}]},
     ]
     if with_tool_layer:
-        layers.append({"name": "tools", "target": "tools", "resolvers": [], "tool_providers": [{"type": "spectre_tools"}]})
+        layers.append({"name": "tools", "target": "tools", "resolvers": [], "tool_providers": [{"type": "spctr_tools"}]})
     layers.append({"name": "conversation", "target": "messages", "resolvers": [{"type": "session"}, {"type": "input"}]})
     return {"layers": layers}
 
 
-def _make_config(**agent_kwargs) -> SpectreConfig:
-    return SpectreConfig(
+def _make_config(**agent_kwargs) -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(name="test", **agent_kwargs),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline=_minimal_pipeline_dict(),
@@ -76,19 +76,19 @@ def _mock_sr2(turn_events: list[StreamEvent] | None = None) -> MagicMock:
 
 class TestAgentInit:
     def test_agent_has_sr2_attribute(self):
-        from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        from spctr.agent import Agent
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config(), session_id="s1")
         assert hasattr(agent, "sr2")
 
     def test_sr2_constructed_not_litellm_callable(self):
         """Agent.__init__ must use SR2, not call LiteLLMCallable directly."""
-        from sr2_spectre.agent import Agent
-        import sr2_spectre.agent as agent_module
+        from spctr.agent import Agent
+        import spctr.agent as agent_module
 
         # Verify LiteLLMCallable is not the primary client on Agent
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config(), session_id="s1")
 
@@ -99,16 +99,16 @@ class TestAgentInit:
         assert "tool_source" in call_kwargs
 
     def test_tool_source_is_registry(self):
-        from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        from spctr.agent import Agent
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config(), session_id="s1")
         call_kwargs = MockSR2.call_args.kwargs
         assert call_kwargs["tool_source"] is agent.registry
 
     def test_llm_dict_has_default_key(self):
-        from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        from spctr.agent import Agent
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             Agent(config=_make_config(), session_id="s1")
         call_kwargs = MockSR2.call_args.kwargs
@@ -121,15 +121,15 @@ class TestAgentInit:
 
 class TestSessionId:
     def test_session_id_propagated(self):
-        from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        from spctr.agent import Agent
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config(), session_id="my-session")
         assert agent.session_id == "my-session"
 
     def test_default_session_id_uses_name(self):
-        from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        from spctr.agent import Agent
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config())
         assert "test" in agent.session_id
@@ -141,28 +141,28 @@ class TestSessionId:
 
 class TestToolRegistration:
     def test_tools_from_config_registered(self):
-        from sr2_spectre.agent import Agent
-        from sr2_spectre.config import ToolConfig
+        from spctr.agent import Agent
+        from spctr.config import ToolConfig
 
         cfg = _make_config(tools=[
             ToolConfig(
                 name="dummy",
-                class_path="sr2_spectre.tools.registry:ToolRegistry",  # won't register real tool
+                class_path="spctr.tools.registry:ToolRegistry",  # won't register real tool
                 config={},
             )
         ])
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             with patch.object(
-                __import__("sr2_spectre.tools.registry", fromlist=["ToolRegistry"]).ToolRegistry,
+                __import__("spctr.tools.registry", fromlist=["ToolRegistry"]).ToolRegistry,
                 "register_from_class_path",
             ) as mock_reg:
                 agent = Agent(config=cfg)
 
     def test_register_tool_at_runtime(self):
-        from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        from spctr.agent import Agent
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config())
         agent.register_tool("echo", "Echo", {}, lambda msg: msg)
@@ -176,8 +176,8 @@ class TestToolRegistration:
 class TestHandleUserMessageHappyPath:
     @pytest.mark.asyncio
     async def test_returns_turn_result_with_text(self):
-        from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        from spctr.agent import Agent
+        with patch("spctr.session.SR2") as MockSR2:
             mock_sr2 = _mock_sr2([
                 StreamEvent(type="text", text="Hello "),
                 StreamEvent(type="text", text="world!"),
@@ -193,7 +193,7 @@ class TestHandleUserMessageHappyPath:
 
     @pytest.mark.asyncio
     async def test_seed_session_called_each_round(self):
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
         mock_sr2 = MagicMock()
         mock_sr2.continue_archive = AsyncMock()
         mock_sr2.seed_session = MagicMock()
@@ -204,7 +204,7 @@ class TestHandleUserMessageHappyPath:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
+        with patch("spctr.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config(), session_id="s")
 
         await agent.handle_user_message("Hello")
@@ -212,12 +212,12 @@ class TestHandleUserMessageHappyPath:
 
     @pytest.mark.asyncio
     async def test_history_has_user_and_assistant_messages(self):
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
         mock_sr2 = _mock_sr2([
             StreamEvent(type="text", text="Response"),
             StreamEvent(type="end"),
         ])
-        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
+        with patch("spctr.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config(), session_id="s")
 
         await agent.handle_user_message("Question")
@@ -234,7 +234,7 @@ class TestHandleUserMessageToolRoundTrip:
     @pytest.mark.asyncio
     async def test_single_tool_call_executed(self):
         """SR2 handles tool loop internally. We see tool_use_emitted + tool_result_received events."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         # SR2's turn() yields: tool_use_emitted, tool_result_received, iteration_complete,
         # then final text + end.
@@ -261,7 +261,7 @@ class TestHandleUserMessageToolRoundTrip:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
+        with patch("spctr.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config(), session_id="s")
 
         result = await agent.handle_user_message("What is 1+2?")
@@ -270,7 +270,7 @@ class TestHandleUserMessageToolRoundTrip:
 
     @pytest.mark.asyncio
     async def test_tool_result_appended_to_history(self):
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         # SR2 handles tool loop; history gets user + assistant (with text from final response)
         events = [
@@ -296,7 +296,7 @@ class TestHandleUserMessageToolRoundTrip:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
+        with patch("spctr.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
         await agent.handle_user_message("Echo hi")
@@ -315,7 +315,7 @@ class TestToolErrorRecovery:
     @pytest.mark.asyncio
     async def test_tool_error_fed_back_as_tool_result(self):
         """A failing tool's error text is surfaced via tool_result_received, loop continues."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         events = [
             StreamEvent(
@@ -340,7 +340,7 @@ class TestToolErrorRecovery:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
+        with patch("spctr.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
         result = await agent.handle_user_message("Try the tool")
@@ -349,7 +349,7 @@ class TestToolErrorRecovery:
     @pytest.mark.asyncio
     async def test_tool_error_does_not_raise_out_of_loop(self):
         """Tool failure must NOT propagate as an exception from handle_user_message."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         events = [
             StreamEvent(
@@ -374,7 +374,7 @@ class TestToolErrorRecovery:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
+        with patch("spctr.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
         result = await agent.handle_user_message("Trigger tool")
@@ -389,7 +389,7 @@ class TestMaxToolRounds:
     @pytest.mark.asyncio
     async def test_multiple_tool_iterations_counted(self):
         """SR2 handles multiple tool iterations; Agent counts tool calls from events."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         # Two tool iterations then final text
         events = [
@@ -424,7 +424,7 @@ class TestMaxToolRounds:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
+        with patch("spctr.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
         result = await agent.handle_user_message("Start")
@@ -434,7 +434,7 @@ class TestMaxToolRounds:
     @pytest.mark.asyncio
     async def test_sr2_max_tool_iterations_enforced(self):
         """SR2's own max_tool_iterations limits the loop; Agent receives whatever SR2 yields."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         # SR2 yields 2 tool iterations then stops (simulating max_tool_iterations hit)
         events = [
@@ -469,7 +469,7 @@ class TestMaxToolRounds:
                 yield ev
         mock_sr2.turn = _turn
 
-        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
+        with patch("spctr.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
         result = await agent.handle_user_message("Trigger")
@@ -484,9 +484,9 @@ class TestMaxToolRounds:
 class TestNewSession:
     @pytest.mark.asyncio
     async def test_new_session_resets_history(self):
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
         mock_sr2 = _mock_sr2()
-        with patch("sr2_spectre.session.SR2", return_value=mock_sr2):
+        with patch("spctr.session.SR2", return_value=mock_sr2):
             agent = Agent(config=_make_config())
 
         await agent.handle_user_message("Hello")
@@ -503,8 +503,8 @@ class TestNewSession:
 
 class TestRegisterTool:
     def test_register_tool_appears_in_registry(self):
-        from sr2_spectre.agent import Agent
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        from spctr.agent import Agent
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config())
         agent.register_tool("ping", "Ping", {}, lambda: "pong")
@@ -515,18 +515,18 @@ class TestRegisterTool:
 # K. pipeline.max_tool_iterations is the single source of truth for the
 #    tool-loop limit (reverses obsidian-ydt Behavior 1).
 #
-# SR2 owns and enforces the tool-loop limit. Spectre must pass the configured
+# SR2 owns and enforces the tool-loop limit. spctr must pass the configured
 # pipeline.max_tool_iterations through to SR2 UNCHANGED — there is no
-# spectre-side knob (agent.max_tool_rounds is gone) that overrides it.
+# spctr-side knob (agent.max_tool_rounds is gone) that overrides it.
 # Regression guard for the inverse bug: configuring pipeline.max_tool_iterations
 # (e.g. 1000) must be the value SR2 is actually built with.
 # ---------------------------------------------------------------------------
 
-def _config_with_iterations(pipeline_iterations: int) -> SpectreConfig:
+def _config_with_iterations(pipeline_iterations: int) -> SpctrConfig:
     """Build a config whose pipeline.max_tool_iterations is set to a known value."""
     pipeline = _minimal_pipeline_dict()
     pipeline["max_tool_iterations"] = pipeline_iterations
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="test"),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline=pipeline,
@@ -536,12 +536,12 @@ def _config_with_iterations(pipeline_iterations: int) -> SpectreConfig:
 class TestMaxToolIterationsSingleSource:
     def test_pipeline_max_tool_iterations_flows_through_unchanged(self):
         """SR2 must be constructed with exactly the configured pipeline.max_tool_iterations."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         # 1000 mirrors the real bug: user set it, the loop must honor it.
         cfg = _config_with_iterations(pipeline_iterations=1000)
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             Agent(config=cfg, session_id="s1")
 
@@ -556,11 +556,11 @@ class TestMaxToolIterationsSingleSource:
 
     def test_different_iteration_value_propagates(self):
         """A different configured value propagates too — value is not hard-coded."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         cfg = _config_with_iterations(pipeline_iterations=7)
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             Agent(config=cfg, session_id="s1")
 
@@ -580,22 +580,22 @@ class TestAgentAClose:
     @pytest.mark.asyncio
     async def test_aclose_calls_close_on_each_mcp_client(self):
         """aclose() must call close() on every MCP client it created."""
-        from sr2_spectre.agent import Agent
-        from sr2_spectre.config import McpServerConfig
+        from spctr.agent import Agent
+        from spctr.config import McpServerConfig
 
         cfg = _make_config(mcp_servers=[
             McpServerConfig(name="a", type="stdio", command=["server_a"]),
             McpServerConfig(name="b", type="stdio", command=["server_b"]),
         ])
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
 
             mock_client_a = AsyncMock()
             mock_client_b = AsyncMock()
 
             with patch(
-                "sr2_spectre.runtime.MCPClient",
+                "spctr.runtime.MCPClient",
                 side_effect=[mock_client_a, mock_client_b],
             ):
                 agent = Agent(config=cfg)
@@ -608,9 +608,9 @@ class TestAgentAClose:
     @pytest.mark.asyncio
     async def test_aclose_noop_when_no_mcp_servers(self):
         """aclose() is a no-op when the agent has no MCP servers configured."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=_make_config())
 

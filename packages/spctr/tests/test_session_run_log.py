@@ -23,14 +23,14 @@ import pytest
 from rich.console import Console
 
 from sr2.protocols.llm import StreamEvent
-from sr2_spectre.agent import Agent
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.runtime import Runtime
+from spctr.agent import Agent
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.core import RunContext, RunMode
+from spctr.runtime import Runtime
 
 KIB16 = 16 * 1024
 SYSTEM_MARKER = "SYSTEM-PROMPT-MARKER-7f3a"
-INTERFACES_DIR = Path(__file__).resolve().parents[1] / "src" / "sr2_spectre" / "interfaces"
+INTERFACES_DIR = Path(__file__).resolve().parents[1] / "src" / "spctr" / "interfaces"
 
 
 # ---------------------------------------------------------------------------
@@ -42,19 +42,19 @@ def home(tmp_path, monkeypatch) -> Path:
     h = tmp_path / "sr2home"
     h.mkdir()
     monkeypatch.setenv("SR2_HOME", str(h))
-    monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
+    monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
     return h
 
 
-def _config() -> SpectreConfig:
-    return SpectreConfig(
+def _config() -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(name="edi"),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline={"layers": [
             {"name": "system", "target": "system",
              "resolvers": [{"type": "static", "config": {"text": SYSTEM_MARKER}}]},
             {"name": "tools", "target": "tools", "resolvers": [],
-             "tool_providers": [{"type": "spectre_tools"}]},
+             "tool_providers": [{"type": "spctr_tools"}]},
             {"name": "conversation", "target": "messages",
              "resolvers": [{"type": "session"}, {"type": "input"}]},
         ]},
@@ -88,12 +88,12 @@ def _tool_call(tool_id: str, name: str, **args) -> StreamEvent:
 
 
 def _runtime(llm: ScriptedLLM) -> Runtime:
-    with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=llm):
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=llm):
         return Runtime(_config())
 
 
 def _agent(llm: ScriptedLLM | None = None) -> Agent:
-    with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=llm or ScriptedLLM()):
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=llm or ScriptedLLM()):
         return Agent(config=_config(), session_id="edi-default")
 
 
@@ -164,7 +164,7 @@ def _break_writes(path: Path) -> None:
 def _cleanup_in_other_process(home: Path) -> list[str]:
     code = (
         "import json\n"
-        "from sr2_spectre.run_log import SessionLogManager\n"
+        "from spctr.run_log import SessionLogManager\n"
         "print(json.dumps([str(p) for p in SessionLogManager().cleanup_once()]))\n"
     )
     out = subprocess.run(
@@ -186,23 +186,23 @@ async def _wait_for(predicate, timeout: float = 5.0) -> None:
 # ---------------------------------------------------------------------------
 
 async def _start_single_shot(agent):
-    from sr2_spectre.interfaces.single_shot import SingleShotInterface
+    from spctr.interfaces.single_shot import SingleShotInterface
     await SingleShotInterface(prompt="x").start(agent)
 
 
 async def _start_repl(agent):
-    from sr2_spectre.interfaces.repl import REPLInterface
+    from spctr.interfaces.repl import REPLInterface
     await REPLInterface(console=Console(file=io.StringIO())).start(agent)
 
 
 async def _start_tui(agent):
-    from sr2_spectre.interfaces.tui import TUIInterface
+    from spctr.interfaces.tui import TUIInterface
     await TUIInterface().start(agent)
 
 
 async def _start_discord(agent):
-    from sr2_spectre.interfaces.discord.config import DiscordConfig
-    from sr2_spectre.interfaces.discord.interface import DiscordInterface
+    from spctr.interfaces.discord.config import DiscordConfig
+    from spctr.interfaces.discord.interface import DiscordInterface
 
     adapter = AsyncMock()
     adapter.bot_id = 12345
@@ -210,7 +210,7 @@ async def _start_discord(agent):
     adapter.set_message_handler = MagicMock()
     adapter.set_slash_handler = MagicMock()
     with patch(
-        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter",
+        "spctr.interfaces.discord.interface.DiscordBotAdapter",
         return_value=adapter,
     ):
         await DiscordInterface(config=DiscordConfig()).start(agent)
@@ -261,7 +261,7 @@ class TestSessionStart:
         session = runtime.new_session("f")
         session.set_run_context(_ctx("discord"))
         session.set_run_context(RunContext(
-            interface="discord", mode=RunMode.INTERACTIVE, source=None, area="sr2-spectre",
+            interface="discord", mode=RunMode.INTERACTIVE, source=None, area="spctr",
         ))
         session.set_run_context(_ctx("repl"))
         path = _only_log(home)
@@ -572,12 +572,12 @@ class TestLogFailuresAreHarmless:
     async def test_unusable_log_directory_keeps_single_shot_output(
         self, tmp_path, monkeypatch, capsys, caplog
     ):
-        from sr2_spectre.interfaces.single_shot import SingleShotInterface
+        from spctr.interfaces.single_shot import SingleShotInterface
 
         blocker = tmp_path / "not-a-dir"
         blocker.write_text("x")
         monkeypatch.setenv("SR2_HOME", str(blocker))
-        monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
+        monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
 
         agent = _agent(ScriptedLLM([StreamEvent(type="text", text="the answer")]))
         iface = SingleShotInterface(prompt="question")

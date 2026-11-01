@@ -6,7 +6,7 @@ Covers:
     2. McpServerConfig parses an http server config
     3. McpServerConfig defaults (args, env, url, command)
     4. AgentConfig accepts mcp_servers list
-    5. SpectreConfig round-trips through load_config() with mcp_servers
+    5. SpctrConfig round-trips through load_config() with mcp_servers
 
   Agent wiring:
     6. Agent.__init__ with one stdio mcp_server creates one MCPClient
@@ -30,7 +30,7 @@ import pytest
 
 import shutil
 
-from sr2_spectre.config import AgentConfig, McpServerConfig, ModelConfig, SpectreConfig
+from spctr.config import AgentConfig, McpServerConfig, ModelConfig, SpctrConfig
 
 
 def _which(name: str) -> bool:
@@ -60,7 +60,7 @@ def _minimal_pipeline_dict() -> dict:
                 "name": "tools",
                 "target": "tools",
                 "resolvers": [],
-                "tool_providers": [{"type": "spectre_tools"}],
+                "tool_providers": [{"type": "spctr_tools"}],
             },
             {
                 "name": "conversation",
@@ -71,8 +71,8 @@ def _minimal_pipeline_dict() -> dict:
     }
 
 
-def _make_config(**agent_kwargs) -> SpectreConfig:
-    return SpectreConfig(
+def _make_config(**agent_kwargs) -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(name="test", **agent_kwargs),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline=_minimal_pipeline_dict(),
@@ -154,12 +154,12 @@ class TestAgentConfigMcpServers:
 
 
 # ---------------------------------------------------------------------------
-# 5. SpectreConfig round-trips through load_config() with mcp_servers
+# 5. SpctrConfig round-trips through load_config() with mcp_servers
 # ---------------------------------------------------------------------------
 
 class TestLoadConfigWithMcpServers:
     def test_load_config_with_mcp_servers(self, tmp_path):
-        """Req 5: SpectreConfig round-trips through load_config() with mcp_servers."""
+        """Req 5: SpctrConfig round-trips through load_config() with mcp_servers."""
         config_file = tmp_path / "config.yaml"
         config_file.write_text(
             "agent:\n"
@@ -195,7 +195,7 @@ class TestLoadConfigWithMcpServers:
             "        - type: input\n"
         )
 
-        from sr2_spectre.config import load_config
+        from spctr.config import load_config
         cfg = load_config(str(config_file))
 
         assert cfg.agent.name == "wired-agent"
@@ -221,7 +221,7 @@ class TestLoadConfigWithMcpServers:
 class TestAgentInitMcpClients:
     def test_stdio_mcp_server_creates_one_client(self):
         """Req 6: __init__ with one stdio mcp_server config creates one MCPClient."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         cfg = _make_config(
             mcp_servers=[
@@ -235,8 +235,8 @@ class TestAgentInitMcpClients:
             ]
         )
 
-        with patch("sr2_spectre.session.SR2") as MockSR2, \
-             patch("sr2_spectre.runtime.MCPClient") as MockMCPClient:
+        with patch("spctr.session.SR2") as MockSR2, \
+             patch("spctr.runtime.MCPClient") as MockMCPClient:
             MockSR2.return_value = MagicMock()
             MockMCPClient.return_value = MagicMock()
 
@@ -251,7 +251,7 @@ class TestAgentInitMcpClients:
 
     def test_http_mcp_server_creates_one_client(self):
         """Req 7: __init__ with one http mcp_server config creates one MCPClient."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         cfg = _make_config(
             mcp_servers=[
@@ -263,8 +263,8 @@ class TestAgentInitMcpClients:
             ]
         )
 
-        with patch("sr2_spectre.session.SR2") as MockSR2, \
-             patch("sr2_spectre.runtime.MCPClient") as MockMCPClient:
+        with patch("spctr.session.SR2") as MockSR2, \
+             patch("spctr.runtime.MCPClient") as MockMCPClient:
             MockSR2.return_value = MagicMock()
             MockMCPClient.return_value = MagicMock()
 
@@ -277,7 +277,7 @@ class TestAgentInitMcpClients:
 
     def test_streamable_http_mcp_server_creates_streamable_client(self):
         """__init__ with a streamable-http mcp_server creates an MCPClient with server_type='streamable-http'."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         cfg = _make_config(
             mcp_servers=[
@@ -289,8 +289,8 @@ class TestAgentInitMcpClients:
             ]
         )
 
-        with patch("sr2_spectre.session.SR2") as MockSR2, \
-             patch("sr2_spectre.runtime.MCPClient") as MockMCPClient:
+        with patch("spctr.session.SR2") as MockSR2, \
+             patch("spctr.runtime.MCPClient") as MockMCPClient:
             MockSR2.return_value = MagicMock()
             MockMCPClient.return_value = MagicMock()
 
@@ -303,12 +303,12 @@ class TestAgentInitMcpClients:
 
     def test_no_mcp_servers_creates_no_clients(self):
         """Req 8: __init__ with no mcp_servers never constructs an MCPClient."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         cfg = _make_config()  # no mcp_servers
 
-        with patch("sr2_spectre.session.SR2") as MockSR2, \
-             patch("sr2_spectre.runtime.MCPClient") as MockMCPClient:
+        with patch("spctr.session.SR2") as MockSR2, \
+             patch("spctr.runtime.MCPClient") as MockMCPClient:
             MockSR2.return_value = MagicMock()
 
             agent = Agent(config=cfg)
@@ -323,7 +323,7 @@ class TestAgentInitMcpClients:
 class TestAgentInitialize:
     async def test_initialize_connects_client_and_registers_bridges(self):
         """Req 9: initialize() connects each MCPClient and registers bridges into self.registry."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         bridge = _make_mock_bridge("list_files")
         mock_client = MagicMock()
@@ -335,8 +335,8 @@ class TestAgentInitialize:
             ]
         )
 
-        with patch("sr2_spectre.session.SR2") as MockSR2, \
-             patch("sr2_spectre.runtime.MCPClient", return_value=mock_client):
+        with patch("spctr.session.SR2") as MockSR2, \
+             patch("spctr.runtime.MCPClient", return_value=mock_client):
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -347,8 +347,8 @@ class TestAgentInitialize:
 
     async def test_initialize_failing_server_logs_warning_and_continues(self, caplog):
         """Req 10: initialize() with a failing server logs a warning and the remaining server still connects."""
-        from sr2_spectre.agent import Agent
-        from sr2_spectre.mcp.client import MCPConnectionError
+        from spctr.agent import Agent
+        from spctr.mcp.client import MCPConnectionError
 
         bridge = _make_mock_bridge("working_tool")
 
@@ -368,12 +368,12 @@ class TestAgentInitialize:
         client_instances = [failing_client, ok_client]
         client_iter = iter(client_instances)
 
-        with patch("sr2_spectre.session.SR2") as MockSR2, \
-             patch("sr2_spectre.runtime.MCPClient", side_effect=lambda **kw: next(client_iter)):
+        with patch("spctr.session.SR2") as MockSR2, \
+             patch("spctr.runtime.MCPClient", side_effect=lambda **kw: next(client_iter)):
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
-        with caplog.at_level(logging.WARNING, logger="sr2_spectre.agent"):
+        with caplog.at_level(logging.WARNING, logger="spctr.agent"):
             await agent.initialize()
 
         # Warning was logged for the failing server
@@ -386,11 +386,11 @@ class TestAgentInitialize:
 
     async def test_initialize_no_mcp_servers_is_noop(self):
         """Req 11: initialize() with no mcp_servers completes without error."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         cfg = _make_config()  # no mcp_servers
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -403,7 +403,7 @@ class TestAgentInitialize:
 
     async def test_initialize_multiple_bridges_all_registered(self):
         """initialize() registers ALL bridges returned by a single client."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         bridge_a = _make_mock_bridge("tool_alpha")
         bridge_b = _make_mock_bridge("tool_beta")
@@ -417,8 +417,8 @@ class TestAgentInitialize:
             ]
         )
 
-        with patch("sr2_spectre.session.SR2") as MockSR2, \
-             patch("sr2_spectre.runtime.MCPClient", return_value=mock_client):
+        with patch("spctr.session.SR2") as MockSR2, \
+             patch("spctr.runtime.MCPClient", return_value=mock_client):
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -429,8 +429,8 @@ class TestAgentInitialize:
 
     async def test_initialize_does_not_raise_on_mcp_connection_error(self):
         """MCPConnectionError must never propagate out of initialize()."""
-        from sr2_spectre.agent import Agent
-        from sr2_spectre.mcp.client import MCPConnectionError
+        from spctr.agent import Agent
+        from spctr.mcp.client import MCPConnectionError
 
         mock_client = MagicMock()
         mock_client.connect = AsyncMock(side_effect=MCPConnectionError("timeout"))
@@ -441,8 +441,8 @@ class TestAgentInitialize:
             ]
         )
 
-        with patch("sr2_spectre.session.SR2") as MockSR2, \
-             patch("sr2_spectre.runtime.MCPClient", return_value=mock_client):
+        with patch("spctr.session.SR2") as MockSR2, \
+             patch("spctr.runtime.MCPClient", return_value=mock_client):
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg)
 
@@ -463,7 +463,7 @@ class TestBeadsMcpSmoke:
         """Smoke: connect to the live beads-mcp stdio server and verify tools exist."""
         import os, sys
 
-        from sr2_spectre.mcp.client import MCPClient
+        from spctr.mcp.client import MCPClient
 
         beads_bin = shutil.which("beads-mcp") or os.path.join(os.path.dirname(sys.executable), "beads-mcp")
         assert os.path.isfile(beads_bin), f"beads-mcp not found at {beads_bin}"

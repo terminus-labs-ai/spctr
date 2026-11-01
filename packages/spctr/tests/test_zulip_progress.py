@@ -19,16 +19,16 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any
 
-from sr2_spectre.events import (
+from spctr.events import (
     AgentDone,
     AgentTextDelta,
     AgentToolResult,
     AgentToolStart,
 )
-from sr2_spectre.interfaces.common import tail_for_stream
-from sr2_spectre.interfaces.zulip import ZulipConfig, ZulipInterface
-from sr2_spectre.interfaces.zulip.client import ZulipCredentials
-from sr2_spectre.resume import ResumeResult
+from spctr.interfaces.common import tail_for_stream
+from spctr.interfaces.zulip import ZulipConfig, ZulipInterface
+from spctr.interfaces.zulip.client import ZulipCredentials
+from spctr.resume import ResumeResult
 
 DIEGO_ID = 8
 BOT_ID = 9
@@ -158,7 +158,7 @@ async def _drive(monkeypatch, script: list[tuple[float, Any]],
                  hold: bool = False, final: str | None = None,
                  **over: Any) -> list:
     """Run the real poll loop over one message; return the ordered log."""
-    import sr2_spectre.interfaces.zulip.interface as iface_mod
+    import spctr.interfaces.zulip.interface as iface_mod
 
     clock = [0.0]
     log: list = []

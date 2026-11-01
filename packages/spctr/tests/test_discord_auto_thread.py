@@ -14,9 +14,9 @@ from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
 
-from sr2_spectre.events import AgentDone, AgentTextDelta
-from sr2_spectre.interfaces.discord.config import DiscordConfig
-from sr2_spectre.interfaces.discord.interface import DiscordInterface
+from spctr.events import AgentDone, AgentTextDelta
+from spctr.interfaces.discord.config import DiscordConfig
+from spctr.interfaces.discord.interface import DiscordInterface
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +60,7 @@ class TestAdapterCreateThreadOffline:
 
     def test_is_thread_channel_returns_true_for_thread(self) -> None:
         import discord
-        from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
+        from spctr.interfaces.discord.adapter import DiscordBotAdapter
 
         adapter = DiscordBotAdapter(DiscordConfig(token="fake"))
         mock_thread = MagicMock(spec=discord.Thread)
@@ -68,7 +68,7 @@ class TestAdapterCreateThreadOffline:
 
     def test_is_thread_channel_returns_false_for_text_channel(self) -> None:
         import discord
-        from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
+        from spctr.interfaces.discord.adapter import DiscordBotAdapter
 
         adapter = DiscordBotAdapter(DiscordConfig(token="fake"))
         mock_channel = MagicMock(spec=discord.TextChannel)
@@ -147,7 +147,7 @@ async def test_auto_thread_disabled_returns_same_channel() -> None:
     agent = _make_mock_agent()
 
     with patch(
-        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter"
+        "spctr.interfaces.discord.interface.DiscordBotAdapter"
     ) as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
@@ -168,7 +168,7 @@ async def test_auto_thread_enabled_creates_thread_for_parent_channel() -> None:
     agent = _make_mock_agent()
 
     with patch(
-        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter"
+        "spctr.interfaces.discord.interface.DiscordBotAdapter"
     ) as MockAdapter:
         mock_adapter = _make_mock_adapter()
         mock_adapter.is_thread_channel.return_value = False
@@ -203,7 +203,7 @@ async def test_auto_thread_parent_mention_always_creates_new_thread() -> None:
     agent = _make_mock_agent()
 
     with patch(
-        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter"
+        "spctr.interfaces.discord.interface.DiscordBotAdapter"
     ) as MockAdapter:
         mock_adapter = _make_mock_adapter()
         mock_adapter.is_thread_channel.return_value = False
@@ -235,7 +235,7 @@ async def test_auto_thread_message_inside_thread_returns_thread_id() -> None:
     agent = _make_mock_agent()
 
     with patch(
-        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter"
+        "spctr.interfaces.discord.interface.DiscordBotAdapter"
     ) as MockAdapter:
         mock_adapter = _make_mock_adapter()
         mock_adapter.is_thread_channel.return_value = True
@@ -257,7 +257,7 @@ async def test_auto_thread_fallback_on_create_failure() -> None:
     agent = _make_mock_agent()
 
     with patch(
-        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter"
+        "spctr.interfaces.discord.interface.DiscordBotAdapter"
     ) as MockAdapter:
         mock_adapter = _make_mock_adapter()
         mock_adapter.is_thread_channel.return_value = False
@@ -280,7 +280,7 @@ async def test_full_flow_reply_routed_to_thread() -> None:
     agent = _make_mock_agent([AgentTextDelta(text="Answer!"), AgentDone()])
 
     with patch(
-        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter"
+        "spctr.interfaces.discord.interface.DiscordBotAdapter"
     ) as MockAdapter:
         mock_adapter = _make_mock_adapter()
         mock_adapter.is_thread_channel.return_value = False

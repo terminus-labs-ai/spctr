@@ -12,8 +12,8 @@ import time
 
 import pytest
 
-from sr2_spectre.tools.builtins.edit import EditTool
-from sr2_spectre.tools.builtins.file_write import FileWriteTool
+from spctr.tools.builtins.edit import EditTool
+from spctr.tools.builtins.file_write import FileWriteTool
 
 _DELAY = 0.02
 _N = 8

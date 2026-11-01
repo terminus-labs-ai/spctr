@@ -1,6 +1,6 @@
 """Retry of a streamed model call that dies mid-stream (obsidian-d6bi).
 
-The only mocked boundary is ``sr2_spectre.live_llm.LiteLLMCallable`` (plus
+The only mocked boundary is ``spctr.live_llm.LiteLLMCallable`` (plus
 ``asyncio.sleep`` in the backoff test). Retry sits per Session, over LiveLLM.
 """
 from __future__ import annotations
@@ -16,12 +16,12 @@ import yaml
 from pydantic import ValidationError
 from sr2.protocols.llm import CompletionRequest, Message, StreamEvent, TextBlock
 
-from sr2_spectre.config import (
-    AgentConfig, ModelConfig, SpectreConfig, load_config, load_resolved_config,
+from spctr.config import (
+    AgentConfig, ModelConfig, SpctrConfig, load_config, load_resolved_config,
 )
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.live_llm import LiveLLM, ModelCallGuardError, RetryingLLM
-from sr2_spectre.runtime import Runtime
+from spctr.core import RunContext, RunMode
+from spctr.live_llm import LiveLLM, ModelCallGuardError, RetryingLLM
+from spctr.runtime import Runtime
 
 MODEL = "openai/retry-test-model"
 REQUEST = CompletionRequest(messages=[Message(role="user", content=[TextBlock(text="same-prompt")])])
@@ -68,7 +68,7 @@ def _cfg(retries=2, backoff=0.0) -> ModelConfig:
 
 
 def _retrying(cfg: ModelConfig, fake: FakeInner) -> RetryingLLM:
-    with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=fake):
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=fake):
         live = LiveLLM(cfg)
     return RetryingLLM(live, lambda: live.model_config)
 
@@ -131,7 +131,7 @@ class TestBounded:
     async def test_config_change_applies_to_next_call(self):
         a = FakeInner(([], _midstream()), OK)
         b = FakeInner(([], _midstream()), OK)
-        with patch("sr2_spectre.live_llm.LiteLLMCallable", side_effect=[a, b]):
+        with patch("spctr.live_llm.LiteLLMCallable", side_effect=[a, b]):
             live = LiveLLM(_cfg(retries=0))
             llm = RetryingLLM(live, lambda: live.model_config)
             with pytest.raises(lx.MidStreamFallbackError):
@@ -208,7 +208,7 @@ class TestConfigFields:
         home.mkdir(), cwd.mkdir()
         (home / "config.yaml").write_text(yaml.dump({"models": {"default": {
             "model": MODEL, "stream_retries": 4, "stream_retry_backoff_seconds": 9}}}))
-        (cwd / ".spectre.yaml").write_text(yaml.dump(
+        (cwd / ".spctr.yaml").write_text(yaml.dump(
             {"models": {"default": {"stream_retry_backoff_seconds": 1.5}}}))
         top = tmp_path / "agent.yaml"
         top.write_text(yaml.dump({"agent": {"name": "t"}, "pipeline": _PIPELINE,
@@ -218,7 +218,7 @@ class TestConfigFields:
         assert (m.stream_retries, m.stream_retry_backoff_seconds) == (0, 1.5)
 
     def test_not_forwarded_to_litellm(self):
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as mock:
+        with patch("spctr.live_llm.LiteLLMCallable") as mock:
             LiveLLM(_cfg(retries=3, backoff=1.0))
         assert "stream_retries" not in mock.call_args.kwargs
         assert "stream_retry_backoff_seconds" not in mock.call_args.kwargs
@@ -226,15 +226,15 @@ class TestConfigFields:
 
 # --- Session-level: real Runtime/Session turn ---------------------------------
 
-def _config() -> SpectreConfig:
-    return SpectreConfig(
+def _config() -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(name="edi"),
         models={"default": _cfg(retries=2, backoff=0.0).model_copy(update={"base_url": "http://t:1"})},
         pipeline={"layers": [
             {"name": "system", "target": "system",
              "resolvers": [{"type": "static", "config": {"text": "sys"}}]},
             {"name": "tools", "target": "tools", "resolvers": [],
-             "tool_providers": [{"type": "spectre_tools"}]},
+             "tool_providers": [{"type": "spctr_tools"}]},
             {"name": "conversation", "target": "messages",
              "resolvers": [{"type": "session"}, {"type": "input"}]},
         ]},
@@ -247,13 +247,13 @@ def home(tmp_path, monkeypatch) -> Path:
     h = tmp_path / "sr2home"
     h.mkdir()
     monkeypatch.setenv("SR2_HOME", str(h))
-    monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
+    monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
     monkeypatch.delenv("SR2_SESSION_LOG_DIR", raising=False)
     return h
 
 
 def _session(fake: FakeInner, ran: list | None = None):
-    with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=fake):
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=fake):
         runtime = Runtime(_config())
     if ran is not None:
         async def ghost(**_):

@@ -24,8 +24,8 @@ from rich.console import Console
 from sr2.models import Message, TextBlock, ThinkingBlock, ToolResultBlock, ToolUseBlock
 from sr2.pipeline.token_counting import CharacterTokenCounter
 
-from sr2_spectre.interfaces.repl import _COMMANDS, _HELP, REPLInterface
-from sr2_spectre.interfaces.session_io import HistoryStats, estimate_history_stats
+from spctr.interfaces.repl import _COMMANDS, _HELP, REPLInterface
+from spctr.interfaces.session_io import HistoryStats, estimate_history_stats
 
 
 # ---------------------------------------------------------------------------
@@ -105,7 +105,7 @@ def _plain_text(lines: list[str]) -> str:
 def test_estimate_history_stats_lives_in_session_io() -> None:
     import inspect
 
-    from sr2_spectre.interfaces import session_io
+    from spctr.interfaces import session_io
 
     assert callable(session_io.estimate_history_stats)
     module = inspect.getmodule(session_io.estimate_history_stats)
@@ -241,7 +241,7 @@ async def test_context_empty_history() -> None:
 
 @pytest.mark.asyncio
 async def test_footer_shows_same_estimate_as_context() -> None:
-    from sr2_spectre.events import AgentDone, AgentTextDelta
+    from spctr.events import AgentDone, AgentTextDelta
 
     history = _fixture_history()
     agent = _agent(history)
@@ -277,7 +277,7 @@ def test_context_offered_by_slash_completer() -> None:
     from prompt_toolkit.completion import CompleteEvent
     from prompt_toolkit.document import Document
 
-    from sr2_spectre.interfaces.repl import _SlashCompleter
+    from spctr.interfaces.repl import _SlashCompleter
 
     doc = Document(text="/context", cursor_position=len("/context"))
     completions = [
@@ -300,7 +300,7 @@ async def test_help_lists_context_command() -> None:
 
 
 def test_module_docstring_lists_context() -> None:
-    import sr2_spectre.interfaces.repl as repl_module
+    import spctr.interfaces.repl as repl_module
 
     assert "/context" in (repl_module.__doc__ or "")
 

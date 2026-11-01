@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from sr2_spectre.path_resolution import ConfigPathError, resolve_path
+from spctr.path_resolution import ConfigPathError, resolve_path
 
 
 # ---------------------------------------------------------------------------
@@ -191,9 +191,9 @@ def test_relative_path_with_var_prefix(tmp_path: Path) -> None:
 
 def test_env_defaults_to_os_environ(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When env=None (default), os.environ is used for lookups."""
-    monkeypatch.setenv("TEST_SPECTRE_VAR", "/from/environ")
+    monkeypatch.setenv("TEST_SPCTR_VAR", "/from/environ")
     declaring = make_declaring_file(tmp_path, "config.yaml")
-    result = resolve_path("${TEST_SPECTRE_VAR}/file.yaml", declaring)
+    result = resolve_path("${TEST_SPCTR_VAR}/file.yaml", declaring)
     assert result == Path("/from/environ/file.yaml")
 
 

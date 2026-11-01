@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sr2_spectre.tools.builtins.beads import (
+from spctr.tools.builtins.beads import (
     BeadsCommentTool,
     BeadsCreateTool,
     BeadsDepTool,

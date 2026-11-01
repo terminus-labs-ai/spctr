@@ -1,4 +1,4 @@
-"""Tests for CLI argument parsing (sr2-spectre).
+"""Tests for CLI argument parsing (spctr).
 
 Verifies that positional arguments (config, prompt) must appear contiguously
 before options, and that the usage examples in the epilog reflect the correct
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from sr2_spectre.cli import _parse_args
+from spctr.cli import _parse_args
 
 
 # ---------------------------------------------------------------------------
@@ -19,7 +19,7 @@ class TestParseArgsCorrectForms:
     """Verify all documented command forms parse correctly."""
 
     def test_single_shot_prompt_before_interface(self) -> None:
-        """sr2-spectre config.yaml 'prompt' --interface single_shot"""
+        """spctr config.yaml 'prompt' --interface single_shot"""
         args = _parse_args(
             ["config.yaml", "What is the weather?", "--interface", "single_shot"]
         )
@@ -35,14 +35,14 @@ class TestParseArgsCorrectForms:
         assert args.interface == "repl"  # default
 
     def test_tui_without_prompt(self) -> None:
-        """sr2-spectre config.yaml --interface tui"""
+        """spctr config.yaml --interface tui"""
         args = _parse_args(["config.yaml", "--interface", "tui"])
         assert args.config == "config.yaml"
         assert args.prompt == []
         assert args.interface == "tui"
 
     def test_trace_with_prompt(self) -> None:
-        """sr2-spectre config.yaml 'Hello' --trace"""
+        """spctr config.yaml 'Hello' --trace"""
         args = _parse_args(["config.yaml", "Hello", "--trace"])
         assert args.config == "config.yaml"
         assert args.prompt == ["Hello"]
@@ -97,7 +97,7 @@ class TestParseArgsBrokenForms:
     """
 
     def test_interface_between_config_and_prompt_fails(self) -> None:
-        """sr2-spectre config.yaml --interface single_shot 'prompt' exits 2."""
+        """spctr config.yaml --interface single_shot 'prompt' exits 2."""
         with pytest.raises(SystemExit) as exc_info:
             _parse_args(
                 ["config.yaml", "--interface", "single_shot", "What is the weather?"]
@@ -131,25 +131,25 @@ class TestEpilogCorrectness:
         import io
         import contextlib
 
-        from sr2_spectre.cli import _parse_args as parse
+        from spctr.cli import _parse_args as parse
         # Reconstruct the parser to check epilog
         import argparse
 
         # We can't call _parse_args directly with --help (it sys.exits),
         # so verify the module docstring instead
-        import sr2_spectre.cli as cli_module
+        import spctr.cli as cli_module
         assert "config.yaml" in cli_module.__doc__
-        assert "sr2-spectre" in cli_module.__doc__
+        assert "spctr" in cli_module.__doc__
 
     def test_module_docstring_shows_correct_order(self) -> None:
         """Module docstring must show prompt BEFORE --interface, not after."""
-        import sr2_spectre.cli as cli_module
+        import spctr.cli as cli_module
         doc = cli_module.__doc__ or ""
 
         # The correct form: config prompt --interface
         # Find the single_shot example line
         for line in doc.splitlines():
-            if "single_shot" in line and "sr2-spectre" in line:
+            if "single_shot" in line and "spctr" in line:
                 # In the correct form, the prompt (quoted string) comes BEFORE --interface
                 prompt_pos = line.index("'") if "'" in line else line.index('"') if '"' in line else -1
                 interface_pos = line.index("--interface")
@@ -170,7 +170,7 @@ class TestParseArgsAgentWithoutPositional:
 
     run_async resolves the config from --agent (agents dir) and only requires
     the positional when --agent is absent. The systemd unit uses this form:
-        sr2-spectre --agent edi --interface discord
+        spctr --agent edi --interface discord
     Regression guard for obsidian-87f (Discord-as-service).
     """
 

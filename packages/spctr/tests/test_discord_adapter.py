@@ -19,9 +19,9 @@ import pytest
 
 discord = pytest.importorskip("discord")
 
-from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
-from sr2_spectre.interfaces.discord.config import DiscordConfig
-from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
+from spctr.interfaces.discord.adapter import DiscordBotAdapter
+from spctr.interfaces.discord.config import DiscordConfig
+from spctr.interfaces.discord.config_source import DiscordConfigSource
 
 
 def _adapter(**overrides) -> DiscordBotAdapter:

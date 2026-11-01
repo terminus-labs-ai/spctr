@@ -12,10 +12,10 @@ from sr2.pipeline.provenance import (
 from sr2.pipeline.stores.sqlite import SQLiteProvenanceStore
 from sr2.protocols.llm import StreamEvent
 
-from sr2_spectre.config import AgentConfig, ResumeConfig, SpectreConfig
-from sr2_spectre.resume import ResumeResult, load_resumable_history, write_rewind
-from sr2_spectre.session import Session
-from sr2_spectre.tools.registry import ToolRegistry
+from spctr.config import AgentConfig, ResumeConfig, SpctrConfig
+from spctr.resume import ResumeResult, load_resumable_history, write_rewind
+from spctr.session import Session
+from spctr.tools.registry import ToolRegistry
 
 
 def message(role, text):
@@ -78,8 +78,8 @@ async def test_completed_history_matches_session(shuffled):
     engine = MagicMock()
     engine.continue_archive = AsyncMock()
     engine.turn = turn
-    config = SpectreConfig(agent={}, models={"default": {"model": "test"}}, pipeline={"layers": []})
-    with patch("sr2_spectre.session.SR2", return_value=engine):
+    config = SpctrConfig(agent={}, models={"default": {"model": "test"}}, pipeline={"layers": []})
+    with patch("spctr.session.SR2", return_value=engine):
         session = Session("s", config, MagicMock(), ToolRegistry())
     await session.handle_user_message("u0")
     await session.handle_user_message("u1")
@@ -215,7 +215,7 @@ def test_resume_config_defaults_and_overrides():
     assert defaults.enabled is True
     assert defaults.interrupted_marker == "[This turn was interrupted by a restart before it finished.]"
     assert defaults.restore_failed_notice == "Earlier context for this conversation could not be restored."
-    config = SpectreConfig.model_validate({
+    config = SpctrConfig.model_validate({
         "agent": {"resume": {"enabled": False, "interrupted_marker": "interrupted",
                              "restore_failed_notice": "unavailable"}},
         "models": {"default": {"model": "test"}}, "pipeline": {"layers": []},

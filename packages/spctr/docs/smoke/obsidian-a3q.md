@@ -11,7 +11,7 @@
 Confirm the fix is in the running tree and services pick it up (editable install).
 
 ```
-cd /home/shepard/git/sr2-spectre
+cd /home/shepard/git/spctr
 ```
 
 ```
@@ -20,12 +20,12 @@ git log --oneline -1
 Expect: HEAD is the obsidian-a3q fix commit.
 
 ```
-grep -n "always starts a NEW thread" src/sr2_spectre/interfaces/discord/interface.py
+grep -n "always starts a NEW thread" src/spctr/interfaces/discord/interface.py
 ```
 Expect: one match (the fix comment present).
 
 ```
-grep -rn "get_thread_for_parent\|link_parent_thread" src/sr2_spectre/
+grep -rn "get_thread_for_parent\|link_parent_thread" src/spctr/
 ```
 Expect: NO matches (parent->thread reuse fully removed).
 

@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from sr2_spectre.reminders import (
+from spctr.reminders import (
     DeliveryLoop,
     Reminder,
     ReminderOrigin,
@@ -77,7 +77,7 @@ def _origin(**overrides) -> ReminderOrigin:
         requester_id="8",
         requester_mention="@8",
         channel_id="42",
-        channel_name="sr2-spectre",
+        channel_name="spctr",
         topic="plan",
     )
     base.update(overrides)
@@ -115,7 +115,7 @@ def _seed(store: ReminderStore, text: str, due_at: datetime) -> str:
             requester_mention="@8",
             origin_channel_id="42",
             dest_channel_id="42",
-            dest_channel_name="sr2-spectre",
+            dest_channel_name="spctr",
             dest_topic="reminders",
             text=text,
             due_at=due_at,
@@ -302,7 +302,7 @@ async def test_r3_list_shows_original_due_time_of_a_retried_row(store):
     lines = result.splitlines()
     assert [line.split()[0] for line in lines] == ["r2", "r1"]
     assert lines[0] == (
-        "r2 Thu 2026-10-15 15:10 MST #sr2-spectre pending retried one"
+        "r2 Thu 2026-10-15 15:10 MST #spctr pending retried one"
     )
 
 
@@ -347,7 +347,7 @@ def _insert_legacy_row(path: Path, reminder_id: str, text: str, due_at: datetime
         "requester_mention, origin_channel_id, dest_channel_id, "
         "dest_channel_name, dest_topic, text, due_at, created_at, status, "
         "attempts) VALUES (?, 'miranda', 'zulip', '8', '@8', '42', '42', "
-        "'sr2-spectre', 'reminders', ?, ?, ?, 'pending', 0)",
+        "'spctr', 'reminders', ?, ?, ?, 'pending', 0)",
         (
             reminder_id,
             text,

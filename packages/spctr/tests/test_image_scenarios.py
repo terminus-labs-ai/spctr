@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sr2_spectre.tools.image_scenarios import (
+from spctr.tools.image_scenarios import (
     ContentFragment,
     FrameFragment,
     ImageScenarioRegistry,

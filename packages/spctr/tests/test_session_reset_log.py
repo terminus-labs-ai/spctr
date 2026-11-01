@@ -19,8 +19,8 @@ import pytest
 from rich.console import Console
 
 from sr2.protocols.llm import StreamEvent
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.run_log import SessionLogManager
+from spctr.core import RunContext, RunMode
+from spctr.run_log import SessionLogManager
 from tests.test_session_run_log import ScriptedLLM, _agent, _events, _named
 
 
@@ -56,7 +56,7 @@ def _assert_fresh_log(path: Path, interface: str, session_id: str) -> None:
 
 
 async def _start_repl(agent):
-    from sr2_spectre.interfaces.repl import REPLInterface
+    from spctr.interfaces.repl import REPLInterface
 
     repl = REPLInterface(console=Console(file=io.StringIO()))
     await repl.start(agent)
@@ -64,8 +64,8 @@ async def _start_repl(agent):
 
 
 async def _start_discord(agent):
-    from sr2_spectre.interfaces.discord.config import DiscordConfig
-    from sr2_spectre.interfaces.discord.interface import DiscordInterface
+    from spctr.interfaces.discord.config import DiscordConfig
+    from spctr.interfaces.discord.interface import DiscordInterface
 
     adapter = AsyncMock()
     adapter.bot_id = 12345
@@ -74,7 +74,7 @@ async def _start_discord(agent):
     adapter.set_slash_handler = MagicMock()
     iface = DiscordInterface(config=DiscordConfig())
     with patch(
-        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter",
+        "spctr.interfaces.discord.interface.DiscordBotAdapter",
         return_value=adapter,
     ):
         await iface.start(agent)
@@ -217,14 +217,14 @@ class TestInterfaceResetCommands:
         assert str(new[0]) in capsys.readouterr().err
 
     async def test_tui_reset_command_opens_a_tui_log(self, log_dir, capsys):
-        from sr2_spectre.interfaces.tui import SpectreTUI, TUIInterface
+        from spctr.interfaces.tui import SpctrTUI, TUIInterface
 
         agent = _agent()
         await TUIInterface().start(agent)
         (first,) = _files(log_dir)
         capsys.readouterr()
 
-        await SpectreTUI(agent)._handle_command("/reset", None, MagicMock())
+        await SpctrTUI(agent)._handle_command("/reset", None, MagicMock())
 
         new = _new_files(log_dir, [first])
         assert len(new) == 1, "TUI /reset left the new session without a log"
@@ -238,7 +238,7 @@ class TestInterfaceResetCommands:
 
 class TestDiscordSessionSwitch:
     async def test_channel_switch_opens_exactly_one_discord_log(self, log_dir, capsys):
-        from sr2_spectre.interfaces.discord.session_map import ChannelSession
+        from spctr.interfaces.discord.session_map import ChannelSession
 
         agent = _agent()
         iface = await _start_discord(agent)

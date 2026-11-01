@@ -1,4 +1,4 @@
-# Smoke — obsidian-87f: 4 spectre agent Discord bots as systemd services
+# Smoke — obsidian-87f: 4 spctr agent Discord bots as systemd services
 
 **Proves:** edi/tali/liara/miranda each run as an always-on systemd user service
 (`sr2-discord@<agent>`), auto-start on boot, log into Discord on their own bot
@@ -39,7 +39,7 @@ Per-agent token files (mode 600, token only, sourced from each hermes profile):
 
 Global discord block (token via `${DISCORD_BOT_TOKEN}`, `mention_only: true`):
 ```
-/home/shepard/.sr2/spectre.yaml
+/home/shepard/.sr2/spctr.yaml
 ```
 
 ---
@@ -60,7 +60,7 @@ for a in edi tali liara miranda; do printf '%-8s ' "$a"; systemctl --user is-act
 ```
 **Expect:** every line reads `inactive` or `failed` (not `active`).
 
-## Scenario 2 — all 4 spectre bots are active and enabled
+## Scenario 2 — all 4 spctr bots are active and enabled
 
 ```
 for a in edi tali liara miranda; do printf '%-8s active=' "$a"; systemctl --user is-active sr2-discord@$a; done
@@ -75,7 +75,7 @@ for a in edi tali liara miranda; do printf '%-8s enabled=' "$a"; systemctl --use
 ## Scenario 3 — each bot logged into Discord on its own identity
 
 ```
-grep "logged in as" /home/shepard/.sr2-spectre/spectre.log | tail -4
+grep "logged in as" /home/shepard/.spctr/spctr.log | tail -4
 ```
 **Expect:** four distinct lines naming EDI, Tali, Liara, Miranda, each with a
 different bot ID.
@@ -92,7 +92,7 @@ answers ONLY when mentioned.
 
 Confirm the inbound message was handled (no traceback):
 ```
-tail -30 /home/shepard/.sr2-spectre/spectre.log | grep -iE "error|traceback|exception" | tail
+tail -30 /home/shepard/.spctr/spctr.log | grep -iE "error|traceback|exception" | tail
 ```
 **Expect:** no output (no errors).
 
@@ -115,7 +115,7 @@ systemctl --user is-active sr2-discord@edi
 **Expect:** `active` again (systemd restarted it within ~5s).
 
 ```
-grep "logged in as EDI" /home/shepard/.sr2-spectre/spectre.log | tail -1
+grep "logged in as EDI" /home/shepard/.spctr/spctr.log | tail -1
 ```
 **Expect:** a fresh login line with a newer timestamp.
 
@@ -123,7 +123,7 @@ grep "logged in as EDI" /home/shepard/.sr2-spectre/spectre.log | tail -1
 
 ## Teardown / rollback (only if reverting to hermes)
 
-Stop + disable the spectre bots:
+Stop + disable the spctr bots:
 ```
 systemctl --user disable --now sr2-discord@edi sr2-discord@tali sr2-discord@liara sr2-discord@miranda
 ```
@@ -140,7 +140,7 @@ systemctl --user enable --now hermes-gateway-edi hermes-gateway-tali hermes-gate
 | # | Scenario | Pass when |
 |---|----------|-----------|
 | 1 | hermes down | all 4 hermes-gateway not `active` |
-| 2 | spectre up | all 4 sr2-discord@ `active` AND `enabled` |
+| 2 | spctr up | all 4 sr2-discord@ `active` AND `enabled` |
 | 3 | logged in | 4 distinct "logged in as" lines (EDI/Tali/Liara/Miranda) |
 | 4 | live reply | @mention → in-channel reply, no traceback |
 | 5 | auto-restart | killed bot returns to `active` + fresh login |

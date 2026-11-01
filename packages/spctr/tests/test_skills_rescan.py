@@ -59,14 +59,14 @@ from unittest.mock import patch
 
 import pytest
 
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-RUNTIME_LOGGER = "sr2_spectre.runtime"
+RUNTIME_LOGGER = "spctr.runtime"
 
 #: Base of the synthetic mtime timeline: 1.9e9 ≈ 2030, i.e. above the real
 #: clock, for the monotonicity reason spelled out in the module docstring.
@@ -152,7 +152,7 @@ def _pipeline_dict(system_text: str = "You are helpful.") -> dict:
                 "name": "tools",
                 "target": "tools",
                 "resolvers": [],
-                "tool_providers": [{"type": "spectre_tools"}],
+                "tool_providers": [{"type": "spctr_tools"}],
             },
             {
                 "name": "conversation",
@@ -168,8 +168,8 @@ def _make_config(
     skills_dirs: list[str] | None = None,
     default_skills: bool = True,
     system_text: str = "You are helpful.",
-) -> SpectreConfig:
-    return SpectreConfig(
+) -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(
             name="test",
             tools=[],
@@ -183,9 +183,9 @@ def _make_config(
 
 
 def _warning_records(caplog, needle: str | None = None) -> list[logging.LogRecord]:
-    """WARNING records from anywhere in the ``sr2_spectre`` logger tree.
+    """WARNING records from anywhere in the ``spctr`` logger tree.
 
-    Deliberately scoped to the ``sr2_spectre`` ROOT rather than one logger
+    Deliberately scoped to the ``spctr`` ROOT rather than one logger
     name: the contract says "exactly one warning" about a failed rescan
     without naming which module logs it (runtime vs skills.core both
     qualify), while the prefix filter still excludes third-party warnings —
@@ -196,7 +196,7 @@ def _warning_records(caplog, needle: str | None = None) -> list[logging.LogRecor
     records = [
         r
         for r in caplog.records
-        if r.levelno == logging.WARNING and r.name.split(".")[0] == "sr2_spectre"
+        if r.levelno == logging.WARNING and r.name.split(".")[0] == "spctr"
     ]
     if needle is not None:
         records = [r for r in records if needle in r.getMessage()]
@@ -207,10 +207,10 @@ def _warning_records(caplog, needle: str | None = None) -> list[logging.LogRecor
 def runtime_factory():
     """Build Runtimes with the LLM construction stubbed out (existing pattern)."""
 
-    def _build(config: SpectreConfig):
-        from sr2_spectre.runtime import Runtime
+    def _build(config: SpctrConfig):
+        from spctr.runtime import Runtime
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             return Runtime(config=config)
 
     return _build
@@ -260,7 +260,7 @@ def rescan(runtime_factory, tmp_path):
     original = type(runtime)._rebuild_skills
     calls: list[int] = []
 
-    def spy(self, cfg: SpectreConfig) -> None:  # noqa: ANN001 - class patch
+    def spy(self, cfg: SpctrConfig) -> None:  # noqa: ANN001 - class patch
         calls.append(1)
         original(self, cfg)
 
@@ -424,17 +424,17 @@ class TestSteadyStateNoRebuild:
         names = runtime.skill_registry.list_names()
 
         # No per-message log noise, and the "no rebuild" claim is about OUR
-        # subsystem: filter to spectre-owned loggers so a chatty unrelated
+        # subsystem: filter to spctr-owned loggers so a chatty unrelated
         # library cannot mask or trip the check.
         with caplog.at_level(logging.INFO):
             for _ in range(3):
                 assert rescan["run"]() == []
             assert rescan["rebuild_calls"]() == settled
 
-        spectre_logs = [
-            r for r in caplog.records if r.name.split(".")[0] == "sr2_spectre"
+        spctr_logs = [
+            r for r in caplog.records if r.name.split(".")[0] == "spctr"
         ]
-        assert spectre_logs == []
+        assert spctr_logs == []
         assert runtime.skill_registry.list_names() == names
 
     def test_mtime_restored_to_recorded_value_does_not_rebuild(self, rescan):
@@ -477,7 +477,7 @@ class TestRescanFailureLastGood:
     """Last-good contract for the RESCAN path.
 
     A failed rescan is pinned as: ``apply_config`` returns normally, exactly
-    one WARNING is emitted by the ``sr2_spectre`` tree, and — the real teeth
+    one WARNING is emitted by the ``spctr`` tree, and — the real teeth
     — the skills that were in force before the failure are still in force
     byte-for-byte.
 
@@ -658,7 +658,7 @@ class TestBuiltinBehaviorPreserved:
         runtime = rescan["runtime"]
         # Builtin identity comes from DEFAULT_SKILLS, imported here rather
         # than hardcoded, so the pin does not rot if the list is edited.
-        from sr2_spectre.skills.builtin import DEFAULT_SKILLS
+        from spctr.skills.builtin import DEFAULT_SKILLS
 
         for builtin in DEFAULT_SKILLS:
             assert builtin.name in runtime.skill_registry

@@ -21,15 +21,15 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from sr2.models import ToolResultBlock, ToolUseBlock
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_config(**agent_kwargs) -> SpectreConfig:
-    return SpectreConfig(
+def _make_config(**agent_kwargs) -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(name="test", **agent_kwargs),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline={"layers": [
@@ -64,7 +64,7 @@ class TestExecuteToolTruncation:
     @pytest.mark.asyncio
     async def test_truncation_kicks_in_at_cap(self):
         """A tool result exactly at the cap is NOT truncated."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         cap = 100
         cfg = _make_config(tool_result_max_bytes=cap)
@@ -72,7 +72,7 @@ class TestExecuteToolTruncation:
         # Register a tool that returns exactly cap bytes
         tool_output = "x" * cap
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg, session_id="s1")
 
@@ -94,7 +94,7 @@ class TestExecuteToolTruncation:
     @pytest.mark.asyncio
     async def test_truncation_kicks_in_above_cap(self):
         """A tool result exceeding the cap IS truncated."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         cap = 100
         cfg = _make_config(tool_result_max_bytes=cap)
@@ -102,7 +102,7 @@ class TestExecuteToolTruncation:
         # Register a tool that returns content exceeding the cap
         tool_output = "x" * 200
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg, session_id="s1")
 
@@ -123,7 +123,7 @@ class TestExecuteToolTruncation:
     @pytest.mark.asyncio
     async def test_truncation_preserves_prefix(self):
         """Truncated content preserves the beginning of the original output."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         cap = 50
         cfg = _make_config(tool_result_max_bytes=cap)
@@ -131,7 +131,7 @@ class TestExecuteToolTruncation:
         # Content with meaningful prefix
         tool_output = "HEADER: important data at the start" + "x" * 500
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg, session_id="s1")
 
@@ -151,14 +151,14 @@ class TestExecuteToolTruncation:
     @pytest.mark.asyncio
     async def test_truncation_marker_includes_original_size(self):
         """The truncation marker includes the original output size for debugging."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         cap = 50
         cfg = _make_config(tool_result_max_bytes=cap)
 
         tool_output = "x" * 1000
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg, session_id="s1")
 
@@ -178,12 +178,12 @@ class TestExecuteToolTruncation:
     @pytest.mark.asyncio
     async def test_error_results_also_truncated(self):
         """Error results from tools are also subject to truncation."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         cap = 50
         cfg = _make_config(tool_result_max_bytes=cap)
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg, session_id="s1")
 
@@ -207,13 +207,13 @@ class TestExecuteToolTruncation:
     @pytest.mark.asyncio
     async def test_small_results_unchanged(self):
         """Results well under the cap pass through unchanged."""
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         cfg = _make_config(tool_result_max_bytes=65536)
 
         tool_output = "small result"
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg, session_id="s1")
 
@@ -238,7 +238,7 @@ class TestExecuteToolTruncation:
         SR2/LLM request caused exceed_context_size_error and crashed the run.
         With truncation, the tool returns a bounded result and the loop continues.
         """
-        from sr2_spectre.agent import Agent
+        from spctr.agent import Agent
 
         # Simulate a very tight cap to reproduce the overflow scenario
         cap = 1000
@@ -247,7 +247,7 @@ class TestExecuteToolTruncation:
         # Simulate a massive tool result (like the grep blob from spc-3)
         massive_output = "x" * (10 * 1024 * 1024)  # 10MB
 
-        with patch("sr2_spectre.session.SR2") as MockSR2:
+        with patch("spctr.session.SR2") as MockSR2:
             MockSR2.return_value = MagicMock()
             agent = Agent(config=cfg, session_id="s1")
 
@@ -277,10 +277,10 @@ _ORIGINAL_SIZE_RE = re.compile(r"original size:\s*(\d+)\s*bytes", re.IGNORECASE)
 
 
 def _agent_with_tool(cap: int, fn):
-    from sr2_spectre.agent import Agent
+    from spctr.agent import Agent
 
     cfg = _make_config(tool_result_max_bytes=cap)
-    with patch("sr2_spectre.session.SR2") as MockSR2:
+    with patch("spctr.session.SR2") as MockSR2:
         MockSR2.return_value = MagicMock()
         agent = Agent(config=cfg, session_id="s1")
     agent.register_tool("mb_tool", "Returns multibyte output", {}, fn)

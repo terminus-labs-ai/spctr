@@ -10,7 +10,7 @@ the workspace — no git-URL source for sr2 anywhere in the metadata, one
 root lock. AC2 (FR2): file history under ``packages/sr2`` follows into
 commits merged in from the old sr2 repository, and history under
 ``packages/spctr`` follows through the ``git mv`` into the pre-move
-sr2-spectre history.
+spctr history.
 
 AC1-r1 clones the revision under test into a temp dir and syncs it with
 a throwaway venv (``UV_PROJECT_ENVIRONMENT``); it needs network access,
@@ -126,7 +126,7 @@ def test_ac1_r1_root_uv_sync_frozen_installs_both_packages_from_workspace(
             "import json\n"
             "from importlib.metadata import distribution\n"
             "out = {}\n"
-            "for name in ('sr2', 'sr2-spectre'):\n"
+            "for name in ('sr2', 'spctr'):\n"
             "    raw = distribution(name).read_text('direct_url.json')\n"
             "    out[name] = json.loads(raw) if raw else None\n"
             "print(json.dumps(out))",
@@ -139,7 +139,7 @@ def test_ac1_r1_root_uv_sync_frozen_installs_both_packages_from_workspace(
 
     expected = {
         "sr2": "{clone}/packages/sr2",
-        "sr2-spectre": "{clone}/packages/spctr",
+        "spctr": "{clone}/packages/spctr",
     }
     for name, template in expected.items():
         want = Path(template.format(clone=clone)).resolve()
@@ -193,14 +193,14 @@ def test_ac1_r3_single_root_uv_lock_declares_both_members() -> None:
         assert listed == "", f"member lock still tracked in the index: {member_lock}"
 
     text = (REPO_ROOT / "uv.lock").read_text()
-    for member in ("sr2", "sr2-spectre"):
+    for member in ("sr2", "spctr"):
         assert f'name = "{member}"' in text, f"uv.lock does not pin {member}"
     workspace_section = re.search(
         r"\[manifest\]\nmembers = \[\n(.*?)\]", text, re.DOTALL
     )
     assert workspace_section is not None, "uv.lock has no [manifest] members list"
     members = workspace_section.group(1)
-    assert '"sr2"' in members and '"sr2-spectre"' in members, (
+    assert '"sr2"' in members and '"spctr"' in members, (
         f"uv.lock manifest members incomplete:\n{members}"
     )
 
@@ -222,7 +222,7 @@ def test_ac2_r1_sr2_file_history_follows_into_premerge_commits() -> None:
 
 def test_ac2_r2_spctr_file_history_follows_through_the_move() -> None:
     """AC2-r2: git log --follow on a file under packages/spctr returns
-    the pre-move sr2-spectre commits, which predate the merge commit."""
+    the pre-move spctr commits, which predate the merge commit."""
     follow = set(
         _git("log", "--follow", "--format=%H", "--", "packages/spctr/pyproject.toml").split()
     )

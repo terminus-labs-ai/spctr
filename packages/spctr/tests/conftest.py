@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.events import (
+from spctr.core import RunContext, RunMode
+from spctr.events import (
     AgentDone,
     AgentEvent,
     AgentTextDelta,
@@ -22,7 +22,7 @@ from sr2_spectre.events import (
     AgentToolResult,
     AgentToolStart,
 )
-from sr2_spectre.interfaces.tui import SpectreTUI, TUIInterface
+from spctr.interfaces.tui import SpctrTUI, TUIInterface
 
 
 @pytest.fixture(autouse=True)
@@ -98,9 +98,9 @@ def mock_agent() -> MagicMock:
 
 
 @pytest.fixture
-def tui_app(mock_agent: MagicMock) -> SpectreTUI:
-    """SpectreTUI app instance wired to a mock agent."""
-    return SpectreTUI(mock_agent)
+def tui_app(mock_agent: MagicMock) -> SpctrTUI:
+    """SpctrTUI app instance wired to a mock agent."""
+    return SpctrTUI(mock_agent)
 
 
 @pytest.fixture
@@ -152,7 +152,7 @@ def _surviving_pids(marker: str) -> list[int]:
     return pids
 
 
-async def submit_input(pilot, app: SpectreTUI, text: str) -> None:
+async def submit_input(pilot, app: SpctrTUI, text: str) -> None:
     """Type text into the prompt input and submit."""
     from textual.widgets import Input
     inp = app.query_one("#prompt", Input)
@@ -161,14 +161,14 @@ async def submit_input(pilot, app: SpectreTUI, text: str) -> None:
     await pilot.pause()
 
 
-def get_log_lines(app: SpectreTUI) -> list[str]:
+def get_log_lines(app: SpctrTUI) -> list[str]:
     """Return the RichLog lines as a list of strings."""
     from textual.widgets import RichLog
     log = app.query_one("#output", RichLog)
     return [str(line.text) for line in log.lines]
 
 
-def assert_log_contains(app: SpectreTUI, substring: str) -> None:
+def assert_log_contains(app: SpctrTUI, substring: str) -> None:
     """Assert the RichLog contains a line with the given substring."""
     lines = get_log_lines(app)
     assert any(substring in line for line in lines), (

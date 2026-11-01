@@ -1,7 +1,7 @@
 """E2E support for spc-125 (Connect Miranda's CLI to safe no-area Zulip chat).
 
 Everything the frozen J1B journeys need to run the REAL user entry point
-(``python -m sr2_spectre.cli <config> --interface zulip --log-file …``)
+(``python -m spctr.cli <config> --interface zulip --log-file …``)
 against substituted loopback boundaries only:
 
 - a Zulip endpoint speaking the actual protocol (register with string
@@ -826,13 +826,13 @@ class ZulipCliRun:
 def _child_env(sr2_home: Path, model_pointer: Path) -> dict[str, str]:
     """Isolated child environment: worktree sources first, no ambient state.
 
-    Inherits no SR2_HOME, SR2_AREA, SPECTRE_MEMORY_DSN, active-model pointer,
+    Inherits no SR2_HOME, SR2_AREA, SPCTR_MEMORY_DSN, active-model pointer,
     project var or session-log override; PYTHONPATH names the worktree ``src``
     so the editable install cannot select another checkout.
     """
     env = {
         k: v for k, v in os.environ.items()
-        if k not in ("SR2_HOME", "SR2_AREA", "SPECTRE_MEMORY_DSN",
+        if k not in ("SR2_HOME", "SR2_AREA", "SPCTR_MEMORY_DSN",
                      "SR2_ACTIVE_MODEL_FILE", "SR2_PROJECT", "SR2_SESSION_LOG_DIR",
                      "LITELLM_LOG")
     }
@@ -867,7 +867,7 @@ def _write_topic_docs(root: Path) -> None:
             f"{marker} NOW\n", encoding="utf-8")
         (d / "AGENTS.md").write_text(f"{marker} AGENTS\n", encoding="utf-8")
 
-    topic("sr2/spectre", "sr2-spectre", AREA_MARKER)
+    topic("sr2/spctr", "spctr", AREA_MARKER)
     topic("family/decoy", "decoy", DECOY_MARKER)
     topic("proj/cwd-area", "cwd-area", CWD_MARKER)
 
@@ -993,7 +993,7 @@ class Harness:
 
         channels = self.channels
         if channels is None:
-            channels = {CONFIGURED_CHANNEL: "sr2-spectre"} if self.nonempty_area \
+            channels = {CONFIGURED_CHANNEL: "spctr"} if self.nonempty_area \
                 else {CONFIGURED_CHANNEL: ""}
         # spc-1012 shape: the mapping's IDs become the ``channels`` list (one
         # block entry per line) and its areas the string-keyed
@@ -1033,7 +1033,7 @@ class Harness:
         try:
             run.proc = subprocess.Popen(
                 [str(REPO_ROOT / ".venv" / "bin" / "python"), "-m",
-                 "sr2_spectre.cli", str(run.config_path), "--interface", "zulip",
+                 "spctr.cli", str(run.config_path), "--interface", "zulip",
                  "--log-file", str(run.workdir / "cli.log")],
                 stdout=out, stderr=err, text=True,
                 env=env, cwd=str(cwd),

@@ -11,7 +11,7 @@ This is a hard floor, independent of the model's scenario choice.
 ## Prerequisites
 
 - Python 3.12+ with project deps installed (`uv sync` or `uv run`)
-- Working directory: project root (`sr2-spectre`)
+- Working directory: project root (`spctr`)
 
 ## Smoke Steps
 
@@ -27,12 +27,12 @@ PYTHONPATH=src pytest tests/test_content_cap.py -v
 
 ```bash
 PYTHONPATH=src python -c "
-from sr2_spectre.tools.image_scenarios import load_image_scenarios
-from sr2_spectre.tools.builtins.generate_image import GenerateImageTool
+from spctr.tools.image_scenarios import load_image_scenarios
+from spctr.tools.builtins.generate_image import GenerateImageTool
 from pathlib import Path
 
 registry = load_image_scenarios(
-    Path('src/sr2_spectre/resources/scenarios/image_scenarios.yaml')
+    Path('src/spctr/resources/scenarios/image_scenarios.yaml')
 )
 
 # SFW-capped character
@@ -75,7 +75,7 @@ All content cap checks passed.
 
 ```bash
 PYTHONPATH=src python -c "
-from sr2_spectre.tools.builtins.generate_image import GenerateImageTool
+from spctr.tools.builtins.generate_image import GenerateImageTool
 
 try:
     GenerateImageTool(max_content='ecchi')
@@ -94,7 +94,7 @@ PASS: Invalid max_content 'ecchi'. Must be one of: nsfw, sfw
 
 ```bash
 PYTHONPATH=src python -c "
-from sr2_spectre.tools.builtins.generate_image import _content_level_rank
+from spctr.tools.builtins.generate_image import _content_level_rank
 
 # sfw < nsfw
 assert _content_level_rank('sfw') < _content_level_rank('nsfw')
@@ -130,5 +130,5 @@ PASS: content level ranking correct
 
 ## Files Changed
 
-- `src/sr2_spectre/tools/builtins/generate_image.py` — added `max_content` param, `scenario_registry` param, `_check_content_cap()`, `_content_level_rank()`
+- `src/spctr/tools/builtins/generate_image.py` — added `max_content` param, `scenario_registry` param, `_check_content_cap()`, `_content_level_rank()`
 - `tests/test_content_cap.py` — 15 tests

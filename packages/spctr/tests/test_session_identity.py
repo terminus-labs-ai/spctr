@@ -1,7 +1,7 @@
-"""Session-identity plumbing for SPECTRE_SESSION_ID (spc-137).
+"""Session-identity plumbing for SPCTR_SESSION_ID (spc-137).
 
 Covers the seam contract:
-  1. The ContextVar module is a leaf (imports nothing from sr2_spectre).
+  1. The ContextVar module is a leaf (imports nothing from spctr).
   2. Session.stream_message sets current_session_id for the whole turn —
      the log stem when session logging is on, the frame_id otherwise —
      and restores the previous value on exit.
@@ -22,20 +22,20 @@ import pytest
 
 from sr2.models import ToolResultBlock, ToolUseBlock
 from sr2.protocols.llm import StreamEvent
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.run_log import SessionLogManager
-from sr2_spectre.session import Session
-from sr2_spectre.session_identity import current_session_id
-from sr2_spectre.tools.builtins.terminal import TerminalTool
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.core import RunContext, RunMode
+from spctr.run_log import SessionLogManager
+from spctr.session import Session
+from spctr.session_identity import current_session_id
+from spctr.tools.builtins.terminal import TerminalTool
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_config() -> SpectreConfig:
-    return SpectreConfig(
+def _make_config() -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(name="test"),
         models={
             "default": ModelConfig(model="test-model", base_url="http://test:8000")
@@ -86,7 +86,7 @@ def _make_session(
     sr2: MagicMock,
     log_manager: SessionLogManager | None = None,
 ) -> Session:
-    with patch("sr2_spectre.session.SR2", return_value=sr2):
+    with patch("spctr.session.SR2", return_value=sr2):
         session = Session(
             frame_id=frame_id,
             config=_make_config(),
@@ -109,8 +109,8 @@ def _open_log_ctx(session: Session) -> None:
 # ---------------------------------------------------------------------------
 
 def test_session_identity_module_is_a_leaf() -> None:
-    """session_identity must import nothing from sr2_spectre (no cycles)."""
-    import sr2_spectre.session_identity as si
+    """session_identity must import nothing from spctr (no cycles)."""
+    import spctr.session_identity as si
 
     tree = ast.parse(Path(inspect.getsourcefile(si)).read_text())
     imported: list[str] = []
@@ -120,8 +120,8 @@ def test_session_identity_module_is_a_leaf() -> None:
         elif isinstance(node, ast.ImportFrom) and node.module:
             imported.append(node.module)
     offenders = [
-        name for name in imported if name == "sr2_spectre" or name.startswith(
-            "sr2_spectre."
+        name for name in imported if name == "spctr" or name.startswith(
+            "spctr."
         )
     ]
     assert offenders == []
@@ -233,7 +233,7 @@ async def test_concurrent_turns_observe_their_own_frame_id():
 @pytest.mark.asyncio
 async def test_terminal_during_logged_turn_sees_log_stem(tmp_path, monkeypatch):
     """A terminal command run during a logged turn exports the log stem."""
-    from sr2_spectre.tools.registry import ToolRegistry
+    from spctr.tools.registry import ToolRegistry
 
     monkeypatch.setenv("SR2_SESSION_LOG_DIR", str(tmp_path / "logs"))
     manager = SessionLogManager()
@@ -242,7 +242,7 @@ async def test_terminal_during_logged_turn_sees_log_stem(tmp_path, monkeypatch):
     # flows through Session._run_tool exactly as in production.
     registry = ToolRegistry()
     registry.register_from_class_path(
-        "sr2_spectre.tools.builtins.terminal.TerminalTool"
+        "spctr.tools.builtins.terminal.TerminalTool"
     )
     session._registry = registry
     _open_log_ctx(session)
@@ -250,7 +250,7 @@ async def test_terminal_during_logged_turn_sees_log_stem(tmp_path, monkeypatch):
     stem = session._log.path.stem
 
     use = ToolUseBlock(
-        id="tu1", name="terminal", input={"command": 'echo "$SPECTRE_SESSION_ID"'}
+        id="tu1", name="terminal", input={"command": 'echo "$SPCTR_SESSION_ID"'}
     )
     results: list[ToolResultBlock] = []
 

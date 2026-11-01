@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from sr2_spectre.config import ModelConfig
-from sr2_spectre.live_llm import build_llm
+from spctr.config import ModelConfig
+from spctr.live_llm import build_llm
 
 
 def _cfg(**extra) -> ModelConfig:
@@ -32,7 +32,7 @@ class TestContextLimitPassthrough:
             _cfg(context_limit=0)
 
     def test_build_llm_forwards_context_limit(self):
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             build_llm(_cfg(context_limit=229000))
         assert MockLLM.call_args.kwargs["context_limit"] == 229000
@@ -40,7 +40,7 @@ class TestContextLimitPassthrough:
     def test_build_llm_omits_context_limit_when_unset(self):
         # Callers that never set the knob must not see a new kwarg — the
         # guard stays opt-in and existing call assertions keep holding.
-        with patch("sr2_spectre.live_llm.LiteLLMCallable") as MockLLM:
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
             MockLLM.return_value = MagicMock()
             build_llm(_cfg())
         assert "context_limit" not in MockLLM.call_args.kwargs

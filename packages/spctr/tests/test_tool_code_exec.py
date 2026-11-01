@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 import pytest
 
-from sr2_spectre.tools.builtins.code_exec import CodeExecTool
-from sr2_spectre.tools.registry import ToolRegistry
+from spctr.tools.builtins.code_exec import CodeExecTool
+from spctr.tools.registry import ToolRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ def test_code_exec_input_schema_timeout_optional() -> None:
 def test_code_exec_registers_via_class_path() -> None:
     reg = ToolRegistry()
     reg.register_from_class_path(
-        "sr2_spectre.tools.builtins.code_exec.CodeExecTool"
+        "spctr.tools.builtins.code_exec.CodeExecTool"
     )
     assert "code_exec" in reg
 
@@ -337,12 +337,12 @@ async def test_code_exec_timeout_kills_grandchildren() -> None:
 @pytest.mark.asyncio
 async def test_code_exec_snippet_cannot_mutate_the_host_interpreter() -> None:
     """State written by a snippet must not appear in the bot's own modules."""
-    import sr2_spectre.tools.builtins.code_exec as module
+    import spctr.tools.builtins.code_exec as module
 
     tool = CodeExecTool()
     result = await tool(
         code=(
-            "import sr2_spectre.tools.builtins.code_exec as m\n"
+            "import spctr.tools.builtins.code_exec as m\n"
             "m.PWNED = True\n"
         )
     )

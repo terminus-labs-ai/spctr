@@ -12,9 +12,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.interfaces.repl import REPLInterface
-from sr2_spectre.interfaces.session_io import (
+from spctr.core import RunContext, RunMode
+from spctr.interfaces.repl import REPLInterface
+from spctr.interfaces.session_io import (
     default_save_path,
     deserialize_history,
     format_history_summary,
@@ -40,7 +40,7 @@ def _complete(text: str) -> list[str]:
     from prompt_toolkit.completion import CompleteEvent
     from prompt_toolkit.document import Document
 
-    from sr2_spectre.interfaces.repl import _COMMANDS, _SlashCompleter
+    from spctr.interfaces.repl import _COMMANDS, _SlashCompleter
 
     doc = Document(text=text, cursor_position=len(text))
     return [c.text for c in _SlashCompleter(_COMMANDS).get_completions(doc, CompleteEvent(""))]
@@ -61,7 +61,7 @@ def test_completion_suppressed_on_normal_text() -> None:
 
 def test_completion_offers_commands_only_after_slash() -> None:
     """Slash-prefixed input still completes; bare slash lists everything."""
-    from sr2_spectre.interfaces.repl import _COMMANDS
+    from spctr.interfaces.repl import _COMMANDS
 
     assert _complete("/") == _COMMANDS
     assert _complete("/q") == ["/quit"]
@@ -69,7 +69,7 @@ def test_completion_offers_commands_only_after_slash() -> None:
 
 
 def test_repl_satisfies_interface_protocol() -> None:
-    from sr2_spectre.interfaces import Interface
+    from spctr.interfaces import Interface
 
     instance = REPLInterface()
     assert isinstance(instance, Interface)
@@ -77,7 +77,7 @@ def test_repl_satisfies_interface_protocol() -> None:
 
 def test_cli_loads_repl_interface() -> None:
     """_load_interface('repl') must return the REPLInterface class."""
-    from sr2_spectre.cli import _load_interface
+    from spctr.cli import _load_interface
 
     cls = _load_interface("repl")
     assert cls is REPLInterface
@@ -143,7 +143,7 @@ async def test_area_is_cwd_basename_without_any_markers(tmp_path, monkeypatch) -
 @pytest.mark.asyncio
 async def test_area_is_exact_cwd_not_git_root_name(tmp_path, monkeypatch) -> None:
     """AC3: a subdirectory of a repo resolves to the subdirectory, not the repo."""
-    repo = tmp_path / "sr2-spectre"
+    repo = tmp_path / "spctr"
     (repo / ".git").mkdir(parents=True)
     src = repo / "src"
     src.mkdir()
@@ -356,7 +356,7 @@ async def test_save_default_path(tmp_path: Path, make_mock_agent, monkeypatch) -
     agent.history = [Message(role="user", content=[TextBlock(text="x")])]
     target = tmp_path / "default" / "session.json"
     monkeypatch.setattr(
-        "sr2_spectre.interfaces.repl.default_save_path", lambda: target
+        "spctr.interfaces.repl.default_save_path", lambda: target
     )
     interface = REPLInterface()
     buf = _console_capturing(interface)
@@ -419,7 +419,7 @@ def test_format_history_summary_truncates(make_mock_agent) -> None:
 def test_default_save_path_under_home() -> None:
     p = default_save_path()
     assert p.name == "session.json"
-    assert ".sr2-spectre" in str(p)
+    assert ".spctr" in str(p)
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +440,7 @@ async def _feed_keys(keys: str, timeout: float = 3.0) -> str:
     from prompt_toolkit.input import create_pipe_input
     from prompt_toolkit.output import DummyOutput
 
-    from sr2_spectre.interfaces.repl import _COMMANDS, _SlashCompleter, _make_prompt_session
+    from spctr.interfaces.repl import _COMMANDS, _SlashCompleter, _make_prompt_session
 
     with create_pipe_input() as pipe_input:
         with create_app_session(input=pipe_input, output=DummyOutput()):
@@ -454,7 +454,7 @@ async def _feed_keys(keys: str, timeout: float = 3.0) -> str:
 
 @pytest.mark.asyncio
 async def test_enter_submits(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("sr2_spectre.interfaces.repl._history_file", lambda: tmp_path / "h")
+    monkeypatch.setattr("spctr.interfaces.repl._history_file", lambda: tmp_path / "h")
     assert await _feed_keys("hello\r") == "hello"
 
 
@@ -465,7 +465,7 @@ async def test_enter_submits_multiline_buffer(tmp_path, monkeypatch) -> None:
     The embedded literal LF mirrors the newline Shift+Enter inserts. A trailing
     CR must accept the multiline buffer rather than insert another newline.
     """
-    monkeypatch.setattr("sr2_spectre.interfaces.repl._history_file", lambda: tmp_path / "h")
+    monkeypatch.setattr("spctr.interfaces.repl._history_file", lambda: tmp_path / "h")
     assert await _feed_keys("line1\nline2\r") == "line1\nline2"
 
 
@@ -479,7 +479,7 @@ async def test_enter_submits_multiline_buffer(tmp_path, monkeypatch) -> None:
     ],
 )
 async def test_shift_enter_inserts_newline(name, sequence, tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr("sr2_spectre.interfaces.repl._history_file", lambda: tmp_path / "h")
+    monkeypatch.setattr("spctr.interfaces.repl._history_file", lambda: tmp_path / "h")
     assert await _feed_keys(f"a{sequence}b\r") == "a\nb"
 
 
@@ -492,7 +492,7 @@ def test_shift_enter_sequences_are_distinct_from_enter() -> None:
     from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
     from prompt_toolkit.keys import Keys
 
-    from sr2_spectre.interfaces.repl import _SHIFT_ENTER_SEQUENCES
+    from spctr.interfaces.repl import _SHIFT_ENTER_SEQUENCES
 
     for sequence in _SHIFT_ENTER_SEQUENCES:
         assert ANSI_SEQUENCES[sequence] is Keys.ControlJ

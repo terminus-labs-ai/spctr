@@ -1,6 +1,6 @@
 """Tests for ToolRegistry."""
 import pytest
-from sr2_spectre.tools.registry import ToolRegistry
+from spctr.tools.registry import ToolRegistry
 
 
 def _sync_add(a: int, b: int) -> str:

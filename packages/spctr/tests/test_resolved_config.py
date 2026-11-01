@@ -6,14 +6,14 @@ the four-tier config resolution chain. The positional file is treated as
 
     merge(
         $SR2_HOME/config.yaml,                  # tier 1
-        $SR2_HOME/spectre.yaml,                 # tier 2
-        <cwd>/.spectre.yaml,                    # tier 3
+        $SR2_HOME/spctr.yaml,                 # tier 2
+        <cwd>/.spctr.yaml,                    # tier 3
         extends-resolved(<positional file>),    # tier 4, wins over all
     )
 
 ASSUMED SEAM (the implementer MUST conform to these signatures):
 
-    from sr2_spectre.config import (
+    from spctr.config import (
         load_resolved_config,
         load_resolved_config_with_provenance,
     )
@@ -49,7 +49,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sr2_spectre.config import (
+from spctr.config import (
     CircularExtendsError,
     load_resolved_config,
     load_resolved_config_with_provenance,
@@ -93,7 +93,7 @@ class TestPositionalWinsOverTiers:
     def test_positional_overrides_tier2(self, dirs):
         """A key set in both tier 2 and the positional file resolves to positional."""
         sr2_home, cwd, env = dirs
-        _write_yaml(sr2_home / "spectre.yaml", {"key": "tier2"})
+        _write_yaml(sr2_home / "spctr.yaml", {"key": "tier2"})
         pos = cwd / "run.yaml"
         _write_yaml(pos, {"key": "positional"})
 
@@ -103,7 +103,7 @@ class TestPositionalWinsOverTiers:
     def test_positional_overrides_tier3(self, dirs):
         """A key set in both tier 3 and the positional file resolves to positional."""
         sr2_home, cwd, env = dirs
-        _write_yaml(cwd / ".spectre.yaml", {"key": "tier3"})
+        _write_yaml(cwd / ".spctr.yaml", {"key": "tier3"})
         pos = cwd / "run.yaml"
         _write_yaml(pos, {"key": "positional"})
 
@@ -114,8 +114,8 @@ class TestPositionalWinsOverTiers:
         """When the same key is set in every tier, positional (tier 4) wins."""
         sr2_home, cwd, env = dirs
         _write_yaml(sr2_home / "config.yaml", {"key": "tier1"})
-        _write_yaml(sr2_home / "spectre.yaml", {"key": "tier2"})
-        _write_yaml(cwd / ".spectre.yaml", {"key": "tier3"})
+        _write_yaml(sr2_home / "spctr.yaml", {"key": "tier2"})
+        _write_yaml(cwd / ".spctr.yaml", {"key": "tier3"})
         pos = cwd / "run.yaml"
         _write_yaml(pos, {"key": "positional"})
 
@@ -136,11 +136,11 @@ class TestLowerTiersContributeOmittedKeys:
             {"models": {"default": {"base_url": "http://tier1:8000"}}},
         )
         pos = cwd / "run.yaml"
-        _write_yaml(pos, {"agent": {"name": "spectre"}})
+        _write_yaml(pos, {"agent": {"name": "spctr"}})
 
         result = load_resolved_config(pos, cwd=cwd, env=env)
         assert result["models"]["default"]["base_url"] == "http://tier1:8000"
-        assert result["agent"]["name"] == "spectre"
+        assert result["agent"]["name"] == "spctr"
 
     def test_deep_merge_positional_and_tier1(self, dirs):
         """Nested dicts deep-merge: positional adds a sibling key, tier1 key survives."""
@@ -166,7 +166,7 @@ class TestTierOrderingPreserved:
         """Tier 2 wins over tier 1 for keys the positional file doesn't set."""
         sr2_home, cwd, env = dirs
         _write_yaml(sr2_home / "config.yaml", {"shared": "tier1"})
-        _write_yaml(sr2_home / "spectre.yaml", {"shared": "tier2"})
+        _write_yaml(sr2_home / "spctr.yaml", {"shared": "tier2"})
         pos = cwd / "run.yaml"
         _write_yaml(pos, {"other": "positional"})
 
@@ -176,8 +176,8 @@ class TestTierOrderingPreserved:
     def test_tier3_overrides_tier2_when_positional_silent(self, dirs):
         """Tier 3 wins over tier 2 for keys the positional file doesn't set."""
         sr2_home, cwd, env = dirs
-        _write_yaml(sr2_home / "spectre.yaml", {"shared": "tier2"})
-        _write_yaml(cwd / ".spectre.yaml", {"shared": "tier3"})
+        _write_yaml(sr2_home / "spctr.yaml", {"shared": "tier2"})
+        _write_yaml(cwd / ".spctr.yaml", {"shared": "tier3"})
         pos = cwd / "run.yaml"
         _write_yaml(pos, {"other": "positional"})
 
@@ -188,8 +188,8 @@ class TestTierOrderingPreserved:
         """Each tier contributes its own unique key; positional wins shared key."""
         sr2_home, cwd, env = dirs
         _write_yaml(sr2_home / "config.yaml", {"shared": "tier1", "t1": True})
-        _write_yaml(sr2_home / "spectre.yaml", {"shared": "tier2", "t2": True})
-        _write_yaml(cwd / ".spectre.yaml", {"shared": "tier3", "t3": True})
+        _write_yaml(sr2_home / "spctr.yaml", {"shared": "tier2", "t2": True})
+        _write_yaml(cwd / ".spctr.yaml", {"shared": "tier3", "t3": True})
         pos = cwd / "run.yaml"
         _write_yaml(pos, {"shared": "positional", "t4": True})
 
@@ -278,7 +278,7 @@ class TestExtendsVarInterpolation:
 
 class TestBackwardCompatibility:
     def test_single_file_no_tiers_returns_file_content(self, tmp_path):
-        """With SR2_HOME pointing at an empty dir and no .spectre.yaml,
+        """With SR2_HOME pointing at an empty dir and no .spctr.yaml,
         the resolved config equals exactly the positional file's content."""
         empty_home = tmp_path / "empty_home"
         empty_home.mkdir()
@@ -358,7 +358,7 @@ class TestCircularExtends:
 
 class TestDeDup:
     def test_positional_equals_tier3_no_double_merge(self, dirs):
-        """Passing cwd/.spectre.yaml as the positional file does not error and
+        """Passing cwd/.spctr.yaml as the positional file does not error and
         does not duplicate-merge it.
 
         Strengthened de-dup assertion: a plain-list merge is *replace*, so a
@@ -369,10 +369,10 @@ class TestDeDup:
         resolver would still produce a single value, but the de-dup contract is
         that the key has a single, well-defined provenance source naming the
         file — not a duplicated/extends artifact. We assert the source resolves
-        to the .spectre.yaml file itself and nothing leaks an 'extends' key.
+        to the .spctr.yaml file itself and nothing leaks an 'extends' key.
         """
         sr2_home, cwd, env = dirs
-        tier3_path = cwd / ".spectre.yaml"
+        tier3_path = cwd / ".spctr.yaml"
         _write_yaml(tier3_path, {"key": "tier3"})
 
         config, provenance = load_resolved_config_with_provenance(
@@ -385,13 +385,13 @@ class TestDeDup:
         # path were double-merged as two distinct tiers, provenance bookkeeping
         # would have no single coherent source to point at; pinning it to the
         # filename makes the de-dup observable rather than silently lossy.
-        assert ".spectre.yaml" in provenance["key"].source
+        assert ".spctr.yaml" in provenance["key"].source
 
     def test_positional_equals_tier3_lower_tier_still_contributes(self, dirs):
         """De-dup of the positional==tier3 path must not drop lower-tier keys."""
         sr2_home, cwd, env = dirs
         _write_yaml(sr2_home / "config.yaml", {"t1": True})
-        tier3_path = cwd / ".spectre.yaml"
+        tier3_path = cwd / ".spctr.yaml"
         _write_yaml(tier3_path, {"key": "tier3"})
 
         result = load_resolved_config(tier3_path, cwd=cwd, env=env)
@@ -456,16 +456,16 @@ class TestProvenanceHonorsPositional:
 # load_config_with_provenance(cwd, env) (which ignores the positional file).
 #
 # Patch style mirrors tests/test_trace_flag.py (monkeypatch
-# sr2_spectre.cli.<name>, neutralize Agent + plugin loader so no LLM turn runs).
+# spctr.cli.<name>, neutralize Agent + plugin loader so no LLM turn runs).
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from sr2_spectre.cli import main, run_async
-from sr2_spectre.core import TurnResult
+from spctr.cli import main, run_async
+from spctr.core import TurnResult
 
 
 def _make_mock_config() -> MagicMock:
-    """Minimal SpectreConfig stand-in (mirrors test_trace_flag.py)."""
+    """Minimal SpctrConfig stand-in (mirrors test_trace_flag.py)."""
     config = MagicMock()
     config.agent.name = "test-agent"
     config.agent.tools = []
@@ -494,7 +494,7 @@ def _make_mock_interface() -> MagicMock:
 
 class TestCliRoutesPositionalThroughResolver:
     """Test A1: run_async must route the positional path through the unified
-    resolver (sr2_spectre.cli.resolve_config), not the old load_config."""
+    resolver (spctr.cli.resolve_config), not the old load_config."""
 
     @pytest.mark.asyncio
     async def test_run_async_calls_unified_resolver_with_positional_path(self):
@@ -513,16 +513,16 @@ class TestCliRoutesPositionalThroughResolver:
             # so this test fails for the right reason (resolver not wired) rather
             # than an AttributeError at patch time.
             patch(
-                "sr2_spectre.cli.resolve_config",
+                "spctr.cli.resolve_config",
                 resolver_spy,
                 create=True,
             ),
-            patch("sr2_spectre.cli._configure_logging"),
+            patch("spctr.cli._configure_logging"),
             patch(
-                "sr2_spectre.cli._load_interface",
+                "spctr.cli._load_interface",
                 return_value=_fake_interface_cls(_make_mock_interface()),
             ),
-            patch("sr2_spectre.cli.Agent") as MockAgent,
+            patch("spctr.cli.Agent") as MockAgent,
         ):
             mock_agent_instance = AsyncMock()
             mock_agent_instance.handle_user_message.return_value = TurnResult(

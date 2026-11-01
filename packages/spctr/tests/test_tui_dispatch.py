@@ -10,9 +10,9 @@ from unittest.mock import MagicMock, PropertyMock
 
 import pytest
 
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.events import AgentDone, AgentEvent, AgentTextDelta
-from sr2_spectre.interfaces.tui import SpectreTUI
+from spctr.core import RunContext, RunMode
+from spctr.events import AgentDone, AgentEvent, AgentTextDelta
+from spctr.interfaces.tui import SpctrTUI
 from tests.conftest import (
     _make_mock_agent,
     assert_log_contains,
@@ -26,7 +26,7 @@ from tests.conftest import (
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_non_slash_input_dispatches_to_agent(tui_app: SpectreTUI) -> None:
+async def test_non_slash_input_dispatches_to_agent(tui_app: SpctrTUI) -> None:
     """Non-empty non-slash input must call agent.stream_message()."""
     agent = tui_app.agent
     async with tui_app.run_test(headless=True) as pilot:
@@ -36,7 +36,7 @@ async def test_non_slash_input_dispatches_to_agent(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_slash_input_does_not_dispatch_to_agent(tui_app: SpectreTUI) -> None:
+async def test_slash_input_does_not_dispatch_to_agent(tui_app: SpctrTUI) -> None:
     """Slash-prefixed input must NOT call agent.stream_message()."""
     agent = tui_app.agent
     async with tui_app.run_test(headless=True) as pilot:
@@ -46,7 +46,7 @@ async def test_slash_input_does_not_dispatch_to_agent(tui_app: SpectreTUI) -> No
 
 
 @pytest.mark.asyncio
-async def test_empty_input_does_not_dispatch(tui_app: SpectreTUI) -> None:
+async def test_empty_input_does_not_dispatch(tui_app: SpctrTUI) -> None:
     """Empty/whitespace input must not dispatch to agent."""
     agent = tui_app.agent
     async with tui_app.run_test(headless=True) as pilot:
@@ -60,7 +60,7 @@ async def test_empty_input_does_not_dispatch(tui_app: SpectreTUI) -> None:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_quit_command_exits_app(tui_app: SpectreTUI) -> None:
+async def test_quit_command_exits_app(tui_app: SpctrTUI) -> None:
     """/quit must exit the app."""
     async with tui_app.run_test(headless=True) as pilot:
         await submit_input(pilot, tui_app, "/quit")
@@ -69,7 +69,7 @@ async def test_quit_command_exits_app(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_exit_command_exits_app(tui_app: SpectreTUI) -> None:
+async def test_exit_command_exits_app(tui_app: SpctrTUI) -> None:
     """/exit must exit the app."""
     async with tui_app.run_test(headless=True) as pilot:
         await submit_input(pilot, tui_app, "/exit")
@@ -78,7 +78,7 @@ async def test_exit_command_exits_app(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_reset_command_starts_new_session(tui_app: SpectreTUI) -> None:
+async def test_reset_command_starts_new_session(tui_app: SpctrTUI) -> None:
     """/reset must call agent.new_session() and show confirmation."""
     async with tui_app.run_test(headless=True) as pilot:
         await submit_input(pilot, tui_app, "/reset")
@@ -88,7 +88,7 @@ async def test_reset_command_starts_new_session(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_help_command_shows_help(tui_app: SpectreTUI) -> None:
+async def test_help_command_shows_help(tui_app: SpctrTUI) -> None:
     """/help must display the help text in the log."""
     async with tui_app.run_test(headless=True) as pilot:
         await submit_input(pilot, tui_app, "/help")
@@ -98,7 +98,7 @@ async def test_help_command_shows_help(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_tools_command_lists_tools(tui_app: SpectreTUI) -> None:
+async def test_tools_command_lists_tools(tui_app: SpctrTUI) -> None:
     """/tools must list available tool names in the log."""
     agent = tui_app.agent
     agent.registry.list_names = MagicMock(return_value=["edit", "grep", "terminal"])
@@ -113,7 +113,7 @@ async def test_tools_command_lists_tools(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_history_command_shows_summary(tui_app: SpectreTUI) -> None:
+async def test_history_command_shows_summary(tui_app: SpctrTUI) -> None:
     """/history must show the conversation history summary."""
     # Create a mock agent with some history
     from sr2.models import Message, TextBlock
@@ -123,7 +123,7 @@ async def test_history_command_shows_summary(tui_app: SpectreTUI) -> None:
         Message(role="assistant", content=[TextBlock(text="hi there")]),
     ]
     agent = _make_mock_agent(history=history)
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "/history")
@@ -132,7 +132,7 @@ async def test_history_command_shows_summary(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_history_empty_shows_message(tui_app: SpectreTUI) -> None:
+async def test_history_empty_shows_message(tui_app: SpctrTUI) -> None:
     """/history with no history must show 'No conversation history'."""
     async with tui_app.run_test(headless=True) as pilot:
         await submit_input(pilot, tui_app, "/history")
@@ -141,7 +141,7 @@ async def test_history_empty_shows_message(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_save_command_saves_session(tmp_path: Path, tui_app: SpectreTUI) -> None:
+async def test_save_command_saves_session(tmp_path: Path, tui_app: SpctrTUI) -> None:
     """/save [path] must serialize history to JSON at the given path."""
     from sr2.models import Message, TextBlock
 
@@ -149,7 +149,7 @@ async def test_save_command_saves_session(tmp_path: Path, tui_app: SpectreTUI) -
         Message(role="user", content=[TextBlock(text="test message")]),
     ]
     agent = _make_mock_agent(history=history)
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     save_path = tmp_path / "test_session.json"
 
@@ -165,7 +165,7 @@ async def test_save_command_saves_session(tmp_path: Path, tui_app: SpectreTUI) -
 
 
 @pytest.mark.asyncio
-async def test_save_default_path(tmp_path: Path, tui_app: SpectreTUI) -> None:
+async def test_save_default_path(tmp_path: Path, tui_app: SpctrTUI) -> None:
     """/save without path must use default location."""
     from sr2.models import Message, TextBlock
 
@@ -173,7 +173,7 @@ async def test_save_default_path(tmp_path: Path, tui_app: SpectreTUI) -> None:
         Message(role="user", content=[TextBlock(text="test")]),
     ]
     agent = _make_mock_agent(history=history)
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "/save")
@@ -195,7 +195,7 @@ async def test_load_command_loads_session(tmp_path: Path) -> None:
     save_path.write_text(json.dumps(save_data))
 
     agent = _make_mock_agent(history=[])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, f"/load {save_path}")
@@ -206,7 +206,7 @@ async def test_load_command_loads_session(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_load_nonexistent_file(tui_app: SpectreTUI) -> None:
+async def test_load_nonexistent_file(tui_app: SpctrTUI) -> None:
     """/load with missing path must show error in log."""
     async with tui_app.run_test(headless=True) as pilot:
         await submit_input(pilot, tui_app, "/load /nonexistent/path.json")
@@ -215,7 +215,7 @@ async def test_load_nonexistent_file(tui_app: SpectreTUI) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unknown_command_shows_hint(tui_app: SpectreTUI) -> None:
+async def test_unknown_command_shows_hint(tui_app: SpctrTUI) -> None:
     """/unknown must show 'Unknown command' hint in log."""
     async with tui_app.run_test(headless=True) as pilot:
         await submit_input(pilot, tui_app, "/foobar")
@@ -235,7 +235,7 @@ async def test_agent_text_response_rendered_to_log() -> None:
         AgentTextDelta(text="world"),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "hi")
         await pilot.pause()
@@ -245,14 +245,14 @@ async def test_agent_text_response_rendered_to_log() -> None:
 @pytest.mark.asyncio
 async def test_tool_events_rendered_to_log() -> None:
     """Tool start/result events must surface in the log."""
-    from sr2_spectre.events import AgentToolResult, AgentToolStart
+    from spctr.events import AgentToolResult, AgentToolStart
 
     agent = _make_mock_agent(stream_events=[
         AgentToolStart(tool_id="t1", name="read_file", input={"path": "x"}),
         AgentToolResult(tool_id="t1", name="read_file", content="ok"),
         AgentDone(tool_calls_executed=1),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "read x")
         await pilot.pause()

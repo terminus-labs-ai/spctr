@@ -24,7 +24,7 @@ from tests.conftest import _surviving_pids
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-from sr2_spectre.dispatch import (
+from spctr.dispatch import (
     DispatchEnvelope,
     STATUS_EXIT_CODES,
     classify,
@@ -198,12 +198,12 @@ _TIMEOUT_CONFIG_TEMPLATE = (
         "  tools: []\n",
         "  tools:\n"
         "    - name: terminal\n"
-        "      class_path: sr2_spectre.tools.builtins.terminal.TerminalTool\n"
+        "      class_path: spctr.tools.builtins.terminal.TerminalTool\n"
         "      config:\n"
         "        timeout: 300\n",
     )
     # The tools layer must advertise the registry or the model sees no tools.
-    .replace("      tool_providers: []\n", "      tool_providers:\n        - type: spectre_tools\n")
+    .replace("      tool_providers: []\n", "      tool_providers:\n        - type: spctr_tools\n")
 )
 
 
@@ -225,7 +225,7 @@ def _child_env(sr2_home: Path) -> dict[str, str]:
     env = {
         k: v
         for k, v in os.environ.items()
-        if k not in ("SR2_HOME", "SR2_ACTIVE_MODEL_FILE", "SPECTRE_MEMORY_DSN")
+        if k not in ("SR2_HOME", "SR2_ACTIVE_MODEL_FILE", "SPCTR_MEMORY_DSN")
     }
     env["SR2_HOME"] = str(sr2_home)
     env["PYTHONPATH"] = str(REPO_ROOT / "src")
@@ -237,7 +237,7 @@ def _run_dispatch_cli(
 ) -> subprocess.CompletedProcess:
     started = time.monotonic()
     proc = subprocess.run(
-        [sys.executable, "-m", "sr2_spectre.cli", "dispatch", *argv],
+        [sys.executable, "-m", "spctr.cli", "dispatch", *argv],
         capture_output=True,
         text=True,
         env=env,
@@ -350,7 +350,7 @@ def test_dispatch_e2e_timeout_leaves_no_surviving_children(tmp_path):
 def test_dispatch_prompt_and_prompt_file_are_mutually_exclusive(tmp_path):
     proc = subprocess.run(
         [
-            sys.executable, "-m", "sr2_spectre.cli", "dispatch",
+            sys.executable, "-m", "spctr.cli", "dispatch",
             "--agent", "x",
             "--prompt", "a",
             "--prompt-file", "/tmp/does-not-matter",

@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from sr2_spectre.config import CircularExtendsError, resolve_extends, load_merged_config
-from sr2_spectre.path_resolution import ConfigPathError
+from spctr.config import CircularExtendsError, resolve_extends, load_merged_config
+from spctr.path_resolution import ConfigPathError
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +27,7 @@ class TestResolveExtendsNoExtends:
         """Config without 'extends:' is returned as-is."""
         declaring = tmp_path / "config.yaml"
         declaring.write_text("")
-        cfg = {"agent": {"name": "spectre"}, "timeout": 30}
+        cfg = {"agent": {"name": "spctr"}, "timeout": 30}
 
         result = resolve_extends(cfg, declaring_file=declaring)
 
@@ -296,7 +296,7 @@ class TestLoadMergedConfigWithExtends:
         base = cwd / "base.yaml"
         _write_yaml(base, {"inherited_key": "from_base", "shared": "base"})
 
-        _write_yaml(cwd / ".spectre.yaml", {
+        _write_yaml(cwd / ".spctr.yaml", {
             "extends": "base.yaml",
             "shared": "project",
             "project_key": True,
@@ -337,12 +337,12 @@ class TestLoadMergedConfigWithExtends:
         cwd.mkdir()
 
         # tier 2 sets key
-        _write_yaml(sr2_home / "spectre.yaml", {"key": "tier2_value"})
+        _write_yaml(sr2_home / "spctr.yaml", {"key": "tier2_value"})
 
         # tier 3 extends a base that also sets key, but tier 3 itself doesn't
         base = cwd / "base.yaml"
         _write_yaml(base, {"key": "base_value"})
-        _write_yaml(cwd / ".spectre.yaml", {"extends": "base.yaml", "other": True})
+        _write_yaml(cwd / ".spctr.yaml", {"extends": "base.yaml", "other": True})
 
         result = load_merged_config(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
 
@@ -362,7 +362,7 @@ class TestLoadMergedConfigWithExtends:
 
         base = cwd / "base.yaml"
         _write_yaml(base, {"base": True})
-        _write_yaml(cwd / ".spectre.yaml", {"extends": "base.yaml", "project": True})
+        _write_yaml(cwd / ".spctr.yaml", {"extends": "base.yaml", "project": True})
 
         result = load_merged_config(cwd=cwd, env={"SR2_HOME": str(sr2_home)})
 

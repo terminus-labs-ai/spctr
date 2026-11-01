@@ -18,11 +18,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from sr2_spectre.events import AgentDone, AgentTextDelta, AgentToolResult, AgentToolStart
-from sr2_spectre.interfaces.discord.adapter import DiscordBotAdapter
-from sr2_spectre.interfaces.discord.config import DiscordConfig
-from sr2_spectre.interfaces.discord.config_source import DiscordConfigSource
-from sr2_spectre.interfaces.discord.interface import DiscordInterface
+from spctr.events import AgentDone, AgentTextDelta, AgentToolResult, AgentToolStart
+from spctr.interfaces.discord.adapter import DiscordBotAdapter
+from spctr.interfaces.discord.config import DiscordConfig
+from spctr.interfaces.discord.config_source import DiscordConfigSource
+from spctr.interfaces.discord.interface import DiscordInterface
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +143,7 @@ async def test_start_initializes_adapter() -> None:
     interface = DiscordInterface(config=config)
     agent = _make_mock_agent()
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -162,7 +162,7 @@ async def test_stop_cleans_up() -> None:
     config = DiscordConfig(token="test")
     interface = DiscordInterface(config=config)
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -183,7 +183,7 @@ async def test_ignores_empty_messages() -> None:
     interface = DiscordInterface(DiscordConfig(token="test"))
     agent = _make_mock_agent()
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -202,7 +202,7 @@ async def test_responds_to_regular_message() -> None:
     interface = DiscordInterface(DiscordConfig(mention_only=False))
     agent = _make_mock_agent([AgentTextDelta(text="Hi!"), AgentDone()])
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -221,7 +221,7 @@ async def test_mention_filter_blocks_non_mentions() -> None:
     interface = DiscordInterface(DiscordConfig(mention_only=True))
     agent = _make_mock_agent()
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -243,7 +243,7 @@ async def test_slash_resets_channel_session() -> None:
     interface = DiscordInterface(DiscordConfig())
     agent = _make_mock_agent()
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -266,7 +266,7 @@ async def test_slash_help_sends_help_text() -> None:
     interface = DiscordInterface(DiscordConfig())
     agent = _make_mock_agent()
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -286,9 +286,9 @@ async def test_slash_hb_posts_probe_without_agent() -> None:
     agent = _make_mock_agent()
 
     with patch(
-        "sr2_spectre.interfaces.discord.interface.DiscordBotAdapter"
+        "spctr.interfaces.discord.interface.DiscordBotAdapter"
     ) as MockAdapter, patch(
-        "sr2_spectre.interfaces.discord.interface.probe_harbinger_status",
+        "spctr.interfaces.discord.interface.probe_harbinger_status",
         new=AsyncMock(return_value="```\nLive slots: busy=1\n```"),
     ) as mock_probe:
         mock_adapter = _make_mock_adapter()
@@ -327,7 +327,7 @@ async def test_stream_collects_text_and_sends_final() -> None:
     ]
     agent = _make_mock_agent(events)
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -349,7 +349,7 @@ async def test_history_isolated_per_channel() -> None:
     interface = DiscordInterface(DiscordConfig())
     agent = _make_mock_agent([AgentTextDelta(text="OK"), AgentDone()])
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -377,7 +377,7 @@ async def test_long_response_chunked() -> None:
     long_text = "x" * 250
     agent = _make_mock_agent([AgentTextDelta(text=long_text), AgentDone()])
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -405,7 +405,7 @@ async def test_agent_error_handled_gracefully() -> None:
 
     interface = DiscordInterface(DiscordConfig())
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -427,7 +427,7 @@ async def test_slash_ask_routes_to_agent() -> None:
     interface = DiscordInterface(DiscordConfig())
     agent = _make_mock_agent([AgentTextDelta(text="Answer"), AgentDone()])
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -454,7 +454,7 @@ async def test_slash_ask_resolves_thread_channel() -> None:
     interface = DiscordInterface(DiscordConfig(auto_thread=True))
     agent = _make_mock_agent([AgentTextDelta(text="Answer"), AgentDone()])
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter(is_thread=False)
         MockAdapter.return_value = mock_adapter
         # Pre-link the parent to a thread
@@ -494,7 +494,7 @@ async def test_tool_events_merged_into_thinking_message() -> None:
     ]
     agent = _make_mock_agent(events)
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -544,7 +544,7 @@ async def test_interleaved_text_and_tools_do_not_clobber() -> None:
     ]
     agent = _make_mock_agent(events)
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -578,7 +578,7 @@ async def test_tool_log_suppressed_when_disabled() -> None:
     ]
     agent = _make_mock_agent(events)
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -619,7 +619,7 @@ async def test_streaming_edit_does_not_overwrite_final_message() -> None:
     ]
     agent = _make_mock_agent(events)
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -672,7 +672,7 @@ async def test_mention_bypassed_in_thread_with_active_session() -> None:
     interface = DiscordInterface(DiscordConfig(mention_only=True))
     agent = _make_mock_agent([AgentTextDelta(text="Follow-up answer"), AgentDone()])
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter(is_thread=True)
         MockAdapter.return_value = mock_adapter
 
@@ -700,7 +700,7 @@ async def test_mention_still_required_in_thread_without_session() -> None:
     interface = DiscordInterface(DiscordConfig(mention_only=True))
     agent = _make_mock_agent()
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter(is_thread=True)
         MockAdapter.return_value = mock_adapter
 
@@ -724,7 +724,7 @@ async def test_mention_still_required_in_parent_channel() -> None:
     interface = DiscordInterface(DiscordConfig(mention_only=True))
     agent = _make_mock_agent()
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         # Parent channel is NOT a thread
         mock_adapter = _make_mock_adapter(is_thread=False)
         MockAdapter.return_value = mock_adapter
@@ -747,7 +747,7 @@ async def test_mention_bypass_not_applied_when_mention_only_false() -> None:
     interface = DiscordInterface(DiscordConfig(mention_only=False))
     agent = _make_mock_agent([AgentTextDelta(text="OK"), AgentDone()])
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter(is_thread=False)
         MockAdapter.return_value = mock_adapter
 
@@ -775,7 +775,7 @@ async def test_slash_status_renders_session_info() -> None:
     interface = DiscordInterface(DiscordConfig())
     agent = _make_mock_agent()
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -823,7 +823,7 @@ async def test_long_run_progress_shows_latest_activity_not_frozen_head() -> None
     events.append(AgentDone())
     agent = _make_mock_agent(events)
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
 
@@ -859,7 +859,7 @@ def _make_mock_interaction(channel_id: int = 12345) -> MagicMock:
 async def _started_interface(config: DiscordConfig, agent: Any) -> tuple:
     """Start an interface against a mocked adapter and return (interface, adapter)."""
     interface = DiscordInterface(config)
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
         await interface.start(agent)
@@ -919,7 +919,7 @@ async def test_slash_hb_defers_then_posts_probe() -> None:
     interface, mock_adapter = await _started_interface(DiscordConfig(), _make_mock_agent())
 
     with patch(
-        "sr2_spectre.interfaces.discord.interface.probe_harbinger_status",
+        "spctr.interfaces.discord.interface.probe_harbinger_status",
         new=AsyncMock(return_value="```\nLive slots: busy=1\n```"),
     ):
         await interface._handle_slash("hb", "", _make_mock_interaction(777))
@@ -1038,13 +1038,13 @@ async def test_native_slash_uses_real_shared_parent_channel_gate() -> None:
 # /model — interface wiring (reads live config, writes the pointer file)
 # ---------------------------------------------------------------------------
 
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig  # noqa: E402
-from sr2_spectre.config_source import SpectreConfigSource  # noqa: E402
-from sr2_spectre.interfaces.discord.config_source import DiscordConfigView  # noqa: E402
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig  # noqa: E402
+from spctr.config_source import SpctrConfigSource  # noqa: E402
+from spctr.interfaces.discord.config_source import DiscordConfigView  # noqa: E402
 
 
-def _spectre_with_models(active: str = "default") -> SpectreConfig:
-    return SpectreConfig(
+def _spctr_with_models(active: str = "default") -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(name="t"),
         models={
             "default": ModelConfig(model="m-default", base_url="http://default/v1"),
@@ -1057,7 +1057,7 @@ def _spectre_with_models(active: str = "default") -> SpectreConfig:
 
 
 def _view_interface(active: str = "default") -> DiscordInterface:
-    source = SpectreConfigSource.static(_spectre_with_models(active))
+    source = SpctrConfigSource.static(_spctr_with_models(active))
     return DiscordInterface(config_source=DiscordConfigView(source))
 
 
@@ -1105,7 +1105,7 @@ async def test_model_command_rejects_unknown_without_writing(tmp_path, monkeypat
 
 @pytest.mark.asyncio
 async def test_model_command_unavailable_without_whole_config() -> None:
-    # A plain DiscordConfigSource carries no SpectreConfig, so /model can't run.
+    # A plain DiscordConfigSource carries no SpctrConfig, so /model can't run.
     source = DiscordConfigSource(lambda: DiscordConfig(token="t"), DiscordConfig(token="t"))
     interface = DiscordInterface(config_source=source)
 
@@ -1134,7 +1134,7 @@ async def test_run_agent_tracks_and_clears_the_task() -> None:
     interface = DiscordInterface(DiscordConfig(mention_only=False))
     agent = _make_mock_agent([AgentTextDelta(text="hi"), AgentDone()])
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         MockAdapter.return_value = _make_mock_adapter()
         await interface.start(agent)
 
@@ -1160,7 +1160,7 @@ async def test_stop_cancels_active_run_and_finalizes_partial() -> None:
     agent = _make_mock_agent()
     agent.stream_message = _blocking_stream
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
         await interface.start(agent)
@@ -1189,7 +1189,7 @@ async def test_stop_cancels_active_run_and_finalizes_partial() -> None:
 # /area (show) and /retry — obsidian-fqps.5
 # ---------------------------------------------------------------------------
 
-from sr2_spectre.core import RunContext, RunMode  # noqa: E402
+from spctr.core import RunContext, RunMode  # noqa: E402
 
 
 def _agent_with_area(area: str) -> MagicMock:
@@ -1208,7 +1208,7 @@ async def test_area_command_reports_resolved_area() -> None:
     interface = DiscordInterface(DiscordConfig())
     agent = _agent_with_area("normandy")
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
         await interface.start(agent)
@@ -1240,7 +1240,7 @@ async def test_retry_reruns_last_user_message() -> None:
     interface = DiscordInterface(DiscordConfig())
     agent = _make_mock_agent()
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         MockAdapter.return_value = _make_mock_adapter()
         await interface.start(agent)
 
@@ -1265,7 +1265,7 @@ async def test_retry_with_no_history_reports_nothing() -> None:
     interface = DiscordInterface(DiscordConfig())
     agent = _make_mock_agent()
 
-    with patch("sr2_spectre.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
+    with patch("spctr.interfaces.discord.interface.DiscordBotAdapter") as MockAdapter:
         mock_adapter = _make_mock_adapter()
         MockAdapter.return_value = mock_adapter
         await interface.start(agent)

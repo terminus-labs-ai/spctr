@@ -17,11 +17,11 @@ from typing import Any
 
 import pytest
 
-from sr2_spectre.events import AgentDone, AgentTextDelta
-from sr2_spectre.interfaces.zulip import ZulipConfig, ZulipInterface
-from sr2_spectre.interfaces.zulip.client import ZulipCredentials
-from sr2_spectre.reminders import tool as reminders_tool
-from sr2_spectre.resume import ResumeResult
+from spctr.events import AgentDone, AgentTextDelta
+from spctr.interfaces.zulip import ZulipConfig, ZulipInterface
+from spctr.interfaces.zulip.client import ZulipCredentials
+from spctr.reminders import tool as reminders_tool
+from spctr.resume import ResumeResult
 
 DIEGO_ID = 8
 BOT_ID = 9
@@ -138,7 +138,7 @@ def _msg(text: str, topic: str) -> dict:
 @pytest.fixture
 def start(monkeypatch):
     """Start the real interface over a fake client; yields a runner."""
-    import sr2_spectre.interfaces.zulip.interface as iface_mod
+    import spctr.interfaces.zulip.interface as iface_mod
 
     monkeypatch.setattr(iface_mod, "load_zulip_credentials", lambda path: (
         ZulipCredentials(email="miranda-bot@zulip.example", api_key="k",

@@ -18,11 +18,11 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from sr2_spectre.config import SpectreConfig
-from sr2_spectre.events import AgentTextDelta
-from sr2_spectre.interfaces.zulip import ZulipConfig, ZulipDMInterface, ZulipInterface
-from sr2_spectre.interfaces.zulip.client import ZulipCredentials
-from sr2_spectre.resume import ResumeResult
+from spctr.config import SpctrConfig
+from spctr.events import AgentTextDelta
+from spctr.interfaces.zulip import ZulipConfig, ZulipDMInterface, ZulipInterface
+from spctr.interfaces.zulip.client import ZulipCredentials
+from spctr.resume import ResumeResult
 
 OWN_ID = 14
 HUMAN_A = 8
@@ -156,7 +156,7 @@ def _credentials(path: str) -> ZulipCredentials:
 async def _drive_stream(monkeypatch, config: ZulipConfig,
                         batches: list[list[dict]],
                         registration: dict = REGISTRATION):
-    import sr2_spectre.interfaces.zulip.interface as iface_mod
+    import spctr.interfaces.zulip.interface as iface_mod
 
     interface = ZulipInterface(config)
     client = _FakeClient(interface, batches, registration)
@@ -173,7 +173,7 @@ async def _drive_stream(monkeypatch, config: ZulipConfig,
 
 async def _poll_direct(monkeypatch, config: ZulipConfig, messages: list[dict]):
     """Admitted sender IDs of one DM batch through the real start/poll core."""
-    import sr2_spectre.interfaces.zulip.direct as direct_mod
+    import spctr.interfaces.zulip.direct as direct_mod
 
     interface = ZulipDMInterface(config)
     client = _FakeClient(interface, [messages], REGISTRATION)
@@ -224,7 +224,7 @@ async def test_AC4_b_nonempty_users_rejects_unlisted_human(monkeypatch):
 @pytest.mark.parametrize("build", [
     pytest.param(lambda: ZulipConfig(zuliprc="/x", allowed_user_ids=[HUMAN_A]),
                  id="zulip-config"),
-    pytest.param(lambda: SpectreConfig(
+    pytest.param(lambda: SpctrConfig(
         agent={"name": "miranda"}, models={"default": {"model": "m"}},
         pipeline={"layers": []},
         zulip={"zuliprc": "/x", "allowed_user_ids": [HUMAN_A]}),

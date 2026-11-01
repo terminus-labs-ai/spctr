@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from sr2_spectre.tools.builtins.comfyui_client import (
+from spctr.tools.builtins.comfyui_client import (
     ComfyUIClient,
     ComfyUIError,
     ImageRef,

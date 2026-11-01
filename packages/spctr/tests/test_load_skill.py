@@ -15,19 +15,19 @@ from unittest.mock import patch
 
 import pytest
 
-from sr2_spectre.config import (
+from spctr.config import (
     AgentConfig,
     ModelConfig,
     SkillConfig,
-    SpectreConfig,
+    SpctrConfig,
 )
-from sr2_spectre.skills.builtin import DEFAULT_SKILLS
-from sr2_spectre.skills.core import Skill, SkillRegistry
+from spctr.skills.builtin import DEFAULT_SKILLS
+from spctr.skills.core import Skill, SkillRegistry
 
 
-def _base_config(skills: list[SkillConfig] | None = None) -> SpectreConfig:
-    """Build a minimal SpectreConfig for testing."""
-    return SpectreConfig(
+def _base_config(skills: list[SkillConfig] | None = None) -> SpctrConfig:
+    """Build a minimal SpctrConfig for testing."""
+    return SpctrConfig(
         agent=AgentConfig(
             name="test",
             tools=[],
@@ -45,7 +45,7 @@ def _base_config(skills: list[SkillConfig] | None = None) -> SpectreConfig:
                     "name": "tools",
                     "target": "tools",
                     "resolvers": [],
-                    "tool_providers": [{"type": "spectre_tools"}],
+                    "tool_providers": [{"type": "spctr_tools"}],
                 },
                 {
                     "name": "conversation",
@@ -66,7 +66,7 @@ class TestLoadSkillTool:
 
     def _make_tool(self, skills: list[Skill] | None = None) -> "LoadSkillTool":
         """Create a LoadSkillTool with a pre-populated registry."""
-        from sr2_spectre.tools.builtins.load_skill import LoadSkillTool
+        from spctr.tools.builtins.load_skill import LoadSkillTool
         registry = SkillRegistry()
         for skill in skills or []:
             registry.register(skill)
@@ -179,22 +179,22 @@ class TestRuntimeSkillsBootstrap:
 
     def test_load_skill_auto_registered(self):
         """load_skill is auto-registered in the tool registry on Runtime init."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         cfg = _base_config()
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "load_skill" in runtime.registry
 
     def test_default_skills_registered(self):
         """Builtin DEFAULT_SKILLS are registered in the SkillRegistry."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         cfg = _base_config()
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Check that the builtin skill is registered
@@ -204,11 +204,11 @@ class TestRuntimeSkillsBootstrap:
 
     def test_skill_registry_accessible(self):
         """The SkillRegistry is accessible as runtime.skill_registry."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         cfg = _base_config()
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert isinstance(runtime.skill_registry, SkillRegistry)
@@ -216,11 +216,11 @@ class TestRuntimeSkillsBootstrap:
 
     async def test_load_skill_returns_builtin_content(self):
         """The load_skill tool can retrieve builtin skill content."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         cfg = _base_config()
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Get the load_skill tool spec and call it
@@ -231,11 +231,11 @@ class TestRuntimeSkillsBootstrap:
 
     async def test_load_skill_list_shows_builtin(self):
         """Listing skills via load_skill shows the builtin skills."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         cfg = _base_config()
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         spec = runtime.registry._tools["load_skill"]
@@ -252,7 +252,7 @@ class TestConfigSkillFiles:
 
     def test_config_skill_loaded(self, tmp_path: Path):
         """A skill file declared in config is loaded into the registry."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         # Create a skill file on disk
         skill_file = tmp_path / "custom-skill.md"
@@ -268,7 +268,7 @@ class TestConfigSkillFiles:
             )
         ])
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         assert "custom-skill" in runtime.skill_registry
@@ -280,7 +280,7 @@ class TestConfigSkillFiles:
 
     def test_config_skill_missing_file_warns(self, tmp_path: Path, caplog):
         """A missing skill file logs a warning but doesn't crash."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
         import logging
 
         cfg = _base_config(skills=[
@@ -291,7 +291,7 @@ class TestConfigSkillFiles:
             )
         ])
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         # Should have logged a warning
@@ -305,7 +305,7 @@ class TestConfigSkillFiles:
 
     def test_config_skill_overrides_default(self, tmp_path: Path):
         """A config skill with the same name as a default overwrites it."""
-        from sr2_spectre.runtime import Runtime
+        from spctr.runtime import Runtime
 
         skill_file = tmp_path / "override.md"
         skill_file.write_text("# Override Skill\n\nThis overrides the default.\n")
@@ -318,7 +318,7 @@ class TestConfigSkillFiles:
             )
         ])
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             runtime = Runtime(config=cfg)
 
         skill = runtime.skill_registry.get("sr2-conventions")
@@ -367,9 +367,9 @@ class TestSkillConfig:
         assert len(agent.skills) == 2
         assert agent.skills[0].name == "s1"
 
-    def test_spectre_config_with_skills(self):
-        """SpectreConfig validates with skills in agent config."""
-        cfg = SpectreConfig(
+    def test_spctr_config_with_skills(self):
+        """SpctrConfig validates with skills in agent config."""
+        cfg = SpctrConfig(
             agent=AgentConfig(
                 name="test",
                 skills=[SkillConfig(name="s1", path="/s1.md")],
@@ -398,19 +398,19 @@ class TestNoDuplicateRegistration:
 
     def test_no_duplicate_load_skill(self):
         """If load_skill is explicitly in tools[], don't register twice."""
-        from sr2_spectre.runtime import Runtime
-        from sr2_spectre.config import ToolConfig
+        from spctr.runtime import Runtime
+        from spctr.config import ToolConfig
 
         cfg = _base_config()
         cfg.agent.tools = [
             ToolConfig(
                 name="load_skill",
-                class_path="sr2_spectre.tools.builtins.load_skill.LoadSkillTool",
+                class_path="spctr.tools.builtins.load_skill.LoadSkillTool",
                 config={},
             )
         ]
 
-        with patch("sr2_spectre.live_llm.LiteLLMCallable"):
+        with patch("spctr.live_llm.LiteLLMCallable"):
             # This will fail because LoadSkillTool requires registry= parameter
             # but register_from_class_path passes **config (empty dict).
             # That's OK — the test verifies the no-duplicate behavior when it works.

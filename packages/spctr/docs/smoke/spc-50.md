@@ -5,7 +5,7 @@
 ## Setup
 
 ```bash
-cd ~/git/sr2-spectre
+cd ~/git/spctr
 ```
 
 ## Scenarios
@@ -24,7 +24,7 @@ uv run pytest tests/test_provenance_wiring.py -k "TestConfigProvenanceStorePath"
 uv run pytest tests/test_provenance_wiring.py -k "TestResolveProvenancePath" -q
 ```
 
-**Expect:** `4 passed` — default resolves to `~/.sr2-spectre/provenance.db`, custom paths pass through, empty string → None, tilde expands.
+**Expect:** `4 passed` — default resolves to `~/.spctr/provenance.db`, custom paths pass through, empty string → None, tilde expands.
 
 ### 3. Unit: Runtime.initialize() connects store
 
@@ -93,14 +93,14 @@ None — temp files are cleaned up by test fixtures.
 
 ## Config Usage
 
-Add to any agent YAML or spectre.yaml:
+Add to any agent YAML or spctr.yaml:
 
 ```yaml
 # Enable persistent provenance (default behavior — path auto-resolved)
-# provenance_store_path: ~/.sr2-spectre/provenance.db
+# provenance_store_path: ~/.spctr/provenance.db
 
 # Custom path
-provenance_store_path: /var/lib/spectre/provenance.db
+provenance_store_path: /var/lib/spctr/provenance.db
 
 # Disable (fall back to in-memory)
 provenance_store_path: ""

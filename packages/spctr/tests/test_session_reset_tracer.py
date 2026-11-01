@@ -19,9 +19,9 @@ import pytest
 
 from sr2.pipeline.tracing import CollectingTracer
 from sr2.protocols.llm import StreamEvent
-from sr2_spectre.agent import Agent
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.run_log import SessionLogManager
+from spctr.agent import Agent
+from spctr.core import RunContext, RunMode
+from spctr.run_log import SessionLogManager
 from tests.test_session_run_log import ScriptedLLM, _config, _events
 
 
@@ -31,7 +31,7 @@ from tests.test_session_run_log import ScriptedLLM, _config, _events
 
 @pytest.fixture(autouse=True)
 def _no_memory_dsn(monkeypatch):
-    monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
+    monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
 
 
 def _text(text: str) -> list[StreamEvent]:
@@ -40,7 +40,7 @@ def _text(text: str) -> list[StreamEvent]:
 
 def _agent(*rounds, tracer=None) -> Agent:
     llm = ScriptedLLM(*rounds)
-    with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=llm):
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=llm):
         return Agent(config=_config(), session_id="edi-default", tracer=tracer)
 
 

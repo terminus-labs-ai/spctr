@@ -20,9 +20,9 @@ import pytest
 from sr2.models import TokenUsage
 from sr2.pipeline.tracing import CollectingTracer
 from sr2.protocols.llm import StreamEvent
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.runtime import Runtime
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
+from spctr.core import RunContext, RunMode
+from spctr.runtime import Runtime
 
 SYSTEM_MARKER = "SYSTEM-PROMPT-MARKER-91c2"
 PROFILE = "deepthink"
@@ -39,7 +39,7 @@ def home(tmp_path, monkeypatch) -> Path:
     h = tmp_path / "sr2home"
     h.mkdir()
     monkeypatch.setenv("SR2_HOME", str(h))
-    monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
+    monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
     return h
 
 
@@ -52,7 +52,7 @@ def _config(*, active: str = PROFILE, system_resolvers=None, system_transformers
     }
     if system_transformers:
         system_layer["transformers"] = system_transformers
-    return SpectreConfig(
+    return SpctrConfig(
         agent=AgentConfig(name="edi"),
         models={
             "default": ModelConfig(model="cfg-default", base_url="http://test:8000"),
@@ -63,7 +63,7 @@ def _config(*, active: str = PROFILE, system_resolvers=None, system_transformers
         pipeline={"layers": [
             system_layer,
             {"name": "tools", "target": "tools", "resolvers": [],
-             "tool_providers": [{"type": "spectre_tools"}]},
+             "tool_providers": [{"type": "spctr_tools"}]},
             {"name": "conversation", "target": "messages",
              "resolvers": [{"type": "session"}, {"type": "input"}]},
         ]},
@@ -129,7 +129,7 @@ def _tool(tool_id, name, **args):
 
 
 def _runtime(provider, config=None) -> Runtime:
-    with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=provider):
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=provider):
         return Runtime(config or _config())
 
 
@@ -304,7 +304,7 @@ class TestModelCall:
         session = _session(runtime)
         await session.handle_user_message("first")
         second = FakeProvider(Call(_text("two")), model="openai/resolved-model-b")
-        with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=second):
+        with patch("spctr.live_llm.LiteLLMCallable", return_value=second):
             runtime.apply_config(_config(active="altprofile"))
         await session.handle_user_message("second")
         first_call, second_call = _model_calls(_events(home))

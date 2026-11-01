@@ -10,14 +10,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from sr2_spectre.events import (
+from spctr.events import (
     AgentDone,
     AgentTextDelta,
     AgentThinkingDelta,
     AgentToolResult,
     AgentToolStart,
 )
-from sr2_spectre.interfaces.tui import SpectreTUI
+from spctr.interfaces.tui import SpctrTUI
 from tests.conftest import (
     _make_mock_agent,
     assert_log_contains,
@@ -41,7 +41,7 @@ async def test_text_delta_streams_to_live_region(
         AgentTextDelta(text="world"),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "say hi")
@@ -69,7 +69,7 @@ async def test_text_committed_as_markdown_on_done(
         AgentTextDelta(text="\n\nSome **bold** text."),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "render markdown")
@@ -96,7 +96,7 @@ async def test_live_region_cleared_after_commit(
         AgentTextDelta(text="streaming text"),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")
@@ -121,7 +121,7 @@ async def test_no_text_delta_produces_no_commit(
     agent = make_mock_agent(stream_events=[
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         # Capture initial log lines
@@ -155,7 +155,7 @@ async def test_thinking_delta_renders_in_thinking_region(
         AgentTextDelta(text="The answer is 42."),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "think")
@@ -182,7 +182,7 @@ async def test_thinking_not_committed_to_richlog(
         AgentTextDelta(text="Here is the answer."),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")
@@ -208,7 +208,7 @@ async def test_thinking_region_cleared_on_done(
         AgentThinkingDelta(text="thinking..."),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")
@@ -238,7 +238,7 @@ async def test_input_disabled_during_streaming(
         AgentTextDelta(text="chunk"),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "start streaming")
@@ -265,7 +265,7 @@ async def test_input_reenabled_after_streaming(
         AgentTextDelta(text="done"),
         AgentDone(tool_calls_executed=0),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "quick")
@@ -298,7 +298,7 @@ async def test_tool_events_rendered_during_stream(
         AgentTextDelta(text="Found file.txt"),
         AgentDone(tool_calls_executed=1),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")
@@ -328,7 +328,7 @@ async def test_status_updated_on_done(
         AgentTextDelta(text="result"),
         AgentDone(tool_calls_executed=3),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")
@@ -358,7 +358,7 @@ async def test_status_shows_ready_after_done(
         AgentTextDelta(text="result"),
         AgentDone(tool_calls_executed=1),
     ])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")
@@ -387,7 +387,7 @@ async def test_status_shows_error_on_exception(
     agent = make_mock_agent(stream_events=[])  # override below
     agent.stream_message = _failing_stream
 
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         await submit_input(pilot, app, "test")
@@ -410,7 +410,7 @@ async def test_set_working_status(
 ) -> None:
     """set_working_status shows the working indicator."""
     agent = make_mock_agent(stream_events=[AgentDone(tool_calls_executed=0)])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         app.set_working_status()
@@ -427,7 +427,7 @@ async def test_set_ready_status(
 ) -> None:
     """set_ready_status shows the ready indicator with checkmark."""
     agent = make_mock_agent(stream_events=[AgentDone(tool_calls_executed=0)])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         app.set_ready_status("sess-1", 5, 2)
@@ -446,7 +446,7 @@ async def test_set_error_status(
 ) -> None:
     """set_error_status shows the error indicator."""
     agent = make_mock_agent(stream_events=[AgentDone(tool_calls_executed=0)])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(headless=True) as pilot:
         app.set_error_status("something broke")
@@ -472,7 +472,7 @@ async def test_status_row_not_occluded_by_footer(
     from textual.widgets import Footer, Static
 
     agent = make_mock_agent(stream_events=[AgentDone(tool_calls_executed=0)])
-    app = SpectreTUI(agent)
+    app = SpctrTUI(agent)
 
     async with app.run_test(size=(80, 24), headless=True) as pilot:
         app.set_working_status()

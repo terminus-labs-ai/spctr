@@ -105,7 +105,7 @@ bd close <id>         # Complete work
 ## Build & Test
 
 This repository is a uv workspace: members `packages/sr2` (core) and
-`packages/spctr` (this package, import name `sr2_spectre`). One lock at
+`packages/spctr` (this package, import name `spctr`). One lock at
 the root; `sr2` resolves through `{ workspace = true }`.
 
 Provision the root venv (installs both members editable):
@@ -142,12 +142,12 @@ launch's session-log environment. No `env -u` prefix is needed.
 
 ### Running tests in a build worktree
 
-Build sessions work in Git worktrees under `/data/worktrees/sr2-spectre/`
+Build sessions work in Git worktrees under `/data/worktrees/spctr/`
 (one per bead). Worktrees are self-contained: create the venv and run
 both suites with:
 
 ```bash
-cd /data/worktrees/sr2-spectre/<bead> && uv sync --frozen && ./scripts/run_tests.sh
+cd /data/worktrees/spctr/<bead> && uv sync --frozen && ./scripts/run_tests.sh
 ```
 
 `uv sync` installs both workspace members from the committed root
@@ -160,12 +160,12 @@ Project identity statements. Agent G and the review lenses grade every
 change against them; a violation is escalation trigger 3.
 
 - **Every behaviour and every message is a YAML parameter.** Any switch,
-  threshold, timing, retry or guard that changes what Spectre does, and any
+  threshold, timing, retry or guard that changes what spctr does, and any
   text shown to a user or sent to a model, is a field in the YAML config
-  (`SpectreConfig` in `src/sr2_spectre/config.py`, documented in
+  (`SpctrConfig` in `src/spctr/config.py`, documented in
   `config.example.yaml` and `docs/CONFIG-REFERENCE.md`). Behaviour that
   belongs to the SR2 pipeline is a field in SR2 `PipelineConfig`, not a
-  Spectre-side side-config or split hook. No hardcoded message strings, no
+  spctr-side side-config or split hook. No hardcoded message strings, no
   constants that a deployment might want to vary. (Diego, 2026-10-20, spc-959.)
 - **Discover the roster, never hardcode it.** Agents are the YAML files
   under `$SR2_HOME/agents` (fallback `~/.sr2/agents`). Tooling, tests and

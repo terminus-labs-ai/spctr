@@ -22,9 +22,9 @@ import pytest
 
 from sr2.config.models import ToolLoopLimitError
 from sr2.protocols.llm import StreamEvent
-from sr2_spectre.config import AgentConfig, ModelConfig, SpectreConfig, load_config
-from sr2_spectre.core import RunContext, RunMode
-from sr2_spectre.runtime import Runtime
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig, load_config
+from spctr.core import RunContext, RunMode
+from spctr.runtime import Runtime
 
 
 # ---------------------------------------------------------------------------
@@ -39,19 +39,19 @@ def home(tmp_path, monkeypatch) -> Path:
     # SR2_SESSION_LOG_DIR (if exported) takes precedence over SR2_HOME in
     # SessionLogManager.directory; drop it so logs land under the fixture home.
     monkeypatch.delenv("SR2_SESSION_LOG_DIR", raising=False)
-    monkeypatch.delenv("SPECTRE_MEMORY_DSN", raising=False)
+    monkeypatch.delenv("SPCTR_MEMORY_DSN", raising=False)
     return h
 
 
-def _config(**agent_kwargs) -> SpectreConfig:
-    return SpectreConfig(
+def _config(**agent_kwargs) -> SpctrConfig:
+    return SpctrConfig(
         agent=AgentConfig(name="edi", **agent_kwargs),
         models={"default": ModelConfig(model="test-model", base_url="http://test:8000")},
         pipeline={"layers": [
             {"name": "system", "target": "system",
              "resolvers": [{"type": "static", "config": {"text": "system prompt"}}]},
             {"name": "tools", "target": "tools", "resolvers": [],
-             "tool_providers": [{"type": "spectre_tools"}]},
+             "tool_providers": [{"type": "spctr_tools"}]},
             {"name": "conversation", "target": "messages",
              "resolvers": [{"type": "session"}, {"type": "input"}]},
         ]},
@@ -73,8 +73,8 @@ class NullLLM:
         yield  # pragma: no cover — keeps this an async generator
 
 
-def _session(config: SpectreConfig | None = None):
-    with patch("sr2_spectre.live_llm.LiteLLMCallable", return_value=NullLLM()):
+def _session(config: SpctrConfig | None = None):
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=NullLLM()):
         runtime = Runtime(config or _config())
     session = runtime.new_session("frame-1")
     session.set_run_context(
@@ -155,7 +155,7 @@ class TestStopRuleEventLogging:
 
 
 # ---------------------------------------------------------------------------
-# AC7-r3 — both pipeline blocks pass through Spectre config unchanged
+# AC7-r3 — both pipeline blocks pass through spctr config unchanged
 # ---------------------------------------------------------------------------
 
 class TestPipelineBlockPassthrough:

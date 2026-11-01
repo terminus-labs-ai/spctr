@@ -9,7 +9,7 @@
 ## Setup
 
 ```
-cd /home/shepard/git/sr2-spectre
+cd /home/shepard/git/spctr
 ```
 
 ```
@@ -41,7 +41,7 @@ $PY -m pytest "tests/test_discord_interface.py::test_slash_hb_works_with_mention
 ## Scenario 3 — strip enables parse (one-liner)
 
 ```
-$PY -c "from sr2_spectre.interfaces.discord.handler import strip_bot_mention, parse_slash_command; print(parse_slash_command(strip_bot_mention('<@111> /hb', ['<@111>'], 111)))"
+$PY -c "from spctr.interfaces.discord.handler import strip_bot_mention, parse_slash_command; print(parse_slash_command(strip_bot_mention('<@111> /hb', ['<@111>'], 111)))"
 ```
 
 **Expect:** `('hb', '')`.

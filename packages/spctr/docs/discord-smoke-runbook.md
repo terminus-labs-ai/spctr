@@ -1,6 +1,6 @@
 # Discord Smoke Test Runbook
 
-**Purpose:** Verify all 4 spectre Discord bots (edi, liara, miranda, tali) respond to @mention after the systemd cutover.
+**Purpose:** Verify all 4 spctr Discord bots (edi, liara, miranda, tali) respond to @mention after the systemd cutover.
 
 ## Prerequisites
 
@@ -74,7 +74,7 @@ systemctl --user stop hermes-gateway-<agent>
 - **4 bots, 2 GPU router lanes:** Concurrent conversations may cause model-swap thrash. The router alternates models between active conversations. Not a bug — a known constraint.
 - **Token storage:** `~/.sr2/discord/<agent>.env` (mode 600). Contains only `DISCORD_BOT_TOKEN`.
 - **Systemd template:** `~/.config/systemd/user/sr2-discord@.service`. Uses `%i` for agent name, `%h/.sr2/discord/%i.env` for env file.
-- **Global discord config:** `~/.sr2/spectre.yaml` `discord:` block (reused by all bots). Token is injected via env var `${DISCORD_BOT_TOKEN}`.
+- **Global discord config:** `~/.sr2/spctr.yaml` `discord:` block (reused by all bots). Token is injected via env var `${DISCORD_BOT_TOKEN}`.
 - **Per-agent config:** `~/.sr2/agents/<agent>.yaml` → extends `base.yaml` → extends `~/.sr2/config.yaml`.
 
 ## Auto-start on Boot

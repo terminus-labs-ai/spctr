@@ -1,4 +1,4 @@
-"""Tests for the skill system (sr2_spectre.skills).
+"""Tests for the skill system (spctr.skills).
 
 Covers:
 - Skill dataclass validation (frozen, required fields)
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from sr2_spectre.skills.core import Skill, SkillRegistry, load_skill_from_path
+from spctr.skills.core import Skill, SkillRegistry, load_skill_from_path
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +264,7 @@ class TestLoadSkillFromPath:
         assert skill.content == "os env content"
 
     def test_unset_env_var_raises_config_path_error(self):
-        from sr2_spectre.path_resolution import ConfigPathError
+        from spctr.path_resolution import ConfigPathError
 
         with pytest.raises(ConfigPathError, match="SR2_UNSET_VAR"):
             load_skill_from_path(
@@ -291,7 +291,7 @@ class TestBuiltinSkill:
     """Built-in sr2-conventions skill ships with correct content."""
 
     def test_builtin_skill_exists(self):
-        from sr2_spectre.skills.builtin import get_sr2_conventions_skill
+        from spctr.skills.builtin import get_sr2_conventions_skill
 
         skill = get_sr2_conventions_skill()
         assert skill.name == "sr2-conventions"
@@ -299,7 +299,7 @@ class TestBuiltinSkill:
         assert skill.version == "0.1.0"
 
     def test_builtin_content_has_key_sections(self):
-        from sr2_spectre.skills.builtin import get_sr2_conventions_skill
+        from spctr.skills.builtin import get_sr2_conventions_skill
 
         skill = get_sr2_conventions_skill()
         content = skill.content
@@ -311,21 +311,21 @@ class TestBuiltinSkill:
         assert "Tool" in content or "tool" in content
 
     def test_builtin_tags(self):
-        from sr2_spectre.skills.builtin import get_sr2_conventions_skill
+        from spctr.skills.builtin import get_sr2_conventions_skill
 
         skill = get_sr2_conventions_skill()
         assert "sr2" in skill.tags
         assert "conventions" in skill.tags
 
     def test_default_skills_list(self):
-        from sr2_spectre.skills.builtin import DEFAULT_SKILLS
+        from spctr.skills.builtin import DEFAULT_SKILLS
 
         assert len(DEFAULT_SKILLS) >= 1
         assert DEFAULT_SKILLS[0].name == "sr2-conventions"
 
     def test_builtin_registers_cleanly(self):
         """The builtin skill can be registered in a registry without errors."""
-        from sr2_spectre.skills.builtin import DEFAULT_SKILLS
+        from spctr.skills.builtin import DEFAULT_SKILLS
 
         registry = SkillRegistry()
         for skill in DEFAULT_SKILLS:
@@ -344,7 +344,7 @@ class TestSolidReviewSkill:
     """Built-in solid-review skill ships with correct content."""
 
     def test_solid_review_skill_exists(self):
-        from sr2_spectre.skills.builtin import get_solid_review_skill
+        from spctr.skills.builtin import get_solid_review_skill
 
         skill = get_solid_review_skill()
         assert skill.name == "solid-review"
@@ -352,7 +352,7 @@ class TestSolidReviewSkill:
         assert skill.version == "0.1.0"
 
     def test_solid_review_content_has_key_sections(self):
-        from sr2_spectre.skills.builtin import get_solid_review_skill
+        from spctr.skills.builtin import get_solid_review_skill
 
         skill = get_solid_review_skill()
         content = skill.content
@@ -367,7 +367,7 @@ class TestSolidReviewSkill:
 
     def test_solid_review_content_has_scope_guidance(self):
         """The skill instructs agents to accept a scope argument."""
-        from sr2_spectre.skills.builtin import get_solid_review_skill
+        from spctr.skills.builtin import get_solid_review_skill
 
         skill = get_solid_review_skill()
         content = skill.content
@@ -377,7 +377,7 @@ class TestSolidReviewSkill:
 
     def test_solid_review_content_has_output_format(self):
         """The skill includes an output format template."""
-        from sr2_spectre.skills.builtin import get_solid_review_skill
+        from spctr.skills.builtin import get_solid_review_skill
 
         skill = get_solid_review_skill()
         content = skill.content
@@ -386,7 +386,7 @@ class TestSolidReviewSkill:
         assert "prioritize" in content.lower() or "priority" in content.lower()
 
     def test_solid_review_tags(self):
-        from sr2_spectre.skills.builtin import get_solid_review_skill
+        from spctr.skills.builtin import get_solid_review_skill
 
         skill = get_solid_review_skill()
         assert "review" in skill.tags
@@ -396,7 +396,7 @@ class TestSolidReviewSkill:
         assert "audit" in skill.tags
 
     def test_default_skills_includes_solid_review(self):
-        from sr2_spectre.skills.builtin import DEFAULT_SKILLS
+        from spctr.skills.builtin import DEFAULT_SKILLS
 
         names = [s.name for s in DEFAULT_SKILLS]
         assert "sr2-conventions" in names
@@ -405,7 +405,7 @@ class TestSolidReviewSkill:
 
     def test_solid_review_registers_cleanly(self):
         """The solid-review skill registers in a registry without errors."""
-        from sr2_spectre.skills.builtin import get_solid_review_skill
+        from spctr.skills.builtin import get_solid_review_skill
 
         registry = SkillRegistry()
         skill = get_solid_review_skill()

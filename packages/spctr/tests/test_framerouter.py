@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from sr2_spectre.framerouter import FrameInfo, FrameRouter
+from spctr.framerouter import FrameInfo, FrameRouter
 
 
 @pytest.fixture
