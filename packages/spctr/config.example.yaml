@@ -123,6 +123,11 @@ pipeline:
 #   tool_start_line: "▶ `{name}` - `{input}`"
 #   tool_result_ok_line: "✓ `{name}` - `{content}`"     # newlines in {content} become |
 #   tool_result_error_line: "✖ `{name}` - `{content}`"
+#   handoff_start_message: "→ {agent} took over ({frame_id})"
+#   handoff_end_message: "← {agent}: {status} in {duration}"
+#   stop_handoff_message: "⏹ stopped {agent}"
+#   stop_turn_message: "⏹ stopped"
+#   stop_idle_message: "nothing running"
 
 # Direct-mode alternative: replace the Zulip block above; --interface zulip selects it.
 # Example peer 8 is a placeholder: use the intended human's user ID.

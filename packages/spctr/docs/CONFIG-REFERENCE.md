@@ -523,6 +523,11 @@ zulip:
   tool_start_line: "▶ `{name}` - `{input}`"
   tool_result_ok_line: "✓ `{name}` - `{content}`"
   tool_result_error_line: "✖ `{name}` - `{content}`"
+  handoff_start_message: "→ {agent} took over ({frame_id})"
+  handoff_end_message: "← {agent}: {status} in {duration}"
+  stop_handoff_message: "⏹ stopped {agent}"
+  stop_turn_message: "⏹ stopped"
+  stop_idle_message: "nothing running"
 ```
 
 | Field | Type | Default | Description |
@@ -545,6 +550,11 @@ zulip:
 | `tool_start_line` | str | ``"▶ `{name}` - `{input}`"`` | Stream mode: the line a tool start appends; `{name}` is the tool name and `{input}` its input. Direct mode ignores it |
 | `tool_result_ok_line` | str | ``"✓ `{name}` - `{content}`"`` | Stream mode: the line a successful tool result appends; `{content}` is the result with newlines shown as `\|`. Direct mode ignores it |
 | `tool_result_error_line` | str | ``"✖ `{name}` - `{content}`"`` | Stream mode: the line a failed tool result appends; same placeholders as `tool_result_ok_line`. Direct mode ignores it |
+| `handoff_start_message` | str | `"→ {agent} took over ({frame_id})"` | Stream mode: posted in the topic when a handoff takes over; `{agent}` and `{frame_id}` are filled from the handoff event. Direct mode ignores it |
+| `handoff_end_message` | str | `"← {agent}: {status} in {duration}"` | Stream mode: posted in the topic when a handoff returns; `{agent}`, `{status}` and the rounded `{duration}` in minutes and seconds are filled from the handoff event. Direct mode ignores it |
+| `stop_handoff_message` | str | `"⏹ stopped {agent}"` | Stream mode: reply to `!stop` after cancelling this topic's active handoff. Direct mode ignores it |
+| `stop_turn_message` | str | `"⏹ stopped"` | Stream mode: reply to `!stop` after cancelling this topic's running turn and queued turns. Direct mode ignores it |
+| `stop_idle_message` | str | `"nothing running"` | Stream mode: reply to `!stop` when this topic has no running turn. Direct mode ignores it |
 
 For direct mode, replace the Zulip block with a minimal configuration like this example, substituting the intended human's user ID for `8`:
 

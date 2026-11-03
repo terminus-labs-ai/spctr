@@ -69,7 +69,13 @@ import urllib.parse
 from typing import TYPE_CHECKING, Any, Callable
 
 from spctr.core import RunContext, RunMode
-from spctr.events import AgentTextDelta, AgentToolResult, AgentToolStart
+from spctr.events import (
+    AgentHandoffEnd,
+    AgentHandoffStart,
+    AgentTextDelta,
+    AgentToolResult,
+    AgentToolStart,
+)
 from spctr.interfaces.common import chunk_message, tail_for_stream
 from spctr.interfaces.zulip.client import (
     ZulipClient,
@@ -129,6 +135,15 @@ def render_tool_line(
         value = value[:max_chars] + "..."
     values = {"name": name, "input": value, "content": value}
     return _TOOL_PLACEHOLDER.sub(lambda m: values[m.group(1)], template)
+
+
+def is_stop_command(content: str) -> bool:
+    return content.strip() == "!stop"
+
+
+def _format_handoff_duration(duration_s: float) -> str:
+    minutes, seconds = divmod(max(0, int(round(duration_s))), 60)
+    return f"{minutes}m {seconds}s"
 
 
 class _ProgressView:
@@ -304,6 +319,7 @@ class ZulipInterface:
         # message's task waits for this one, so a topic runs in order while
         # distinct topics run concurrently.
         self._topic_tails: dict[str, asyncio.Task[None]] = {}
+        self._topic_tasks: dict[str, set[asyncio.Task[None]]] = {}
         # Serializes delivery-loop restarts now that turns overlap.
         self._reminders_lock = asyncio.Lock()
         # Reminders (spc-139, FR6): delivery loop + the per-turn origin.
@@ -369,8 +385,9 @@ class ZulipInterface:
         """Cancel in-flight turns, close every interface-owned Session, then
         the transport."""
         self._running = False
-        tails = list(self._topic_tails.values())
+        tails = [task for tasks in self._topic_tasks.values() for task in tasks]
         self._topic_tails.clear()
+        self._topic_tasks.clear()
         for task in tails:
             task.cancel()
         await asyncio.gather(*tails, return_exceptions=True)
@@ -615,23 +632,58 @@ class ZulipInterface:
         """
         if not self._is_allowed_message(message, config):
             return
+        channel_id = message["stream_id"]
+        topic = str(message.get("subject", ""))
+        if is_stop_command(str(message.get("content", ""))):
+            asyncio.create_task(self._stop_topic(channel_id, topic))
+            return
         frame_id = topic_frame_id(
             self._agent.config.agent.name,
             self._origin,
-            message["stream_id"],
-            str(message.get("subject", "")),
+            channel_id,
+            topic,
         )
         previous = self._topic_tails.get(frame_id)
         task = asyncio.create_task(
             self._handle_in_topic(previous, message, batch_ids, config)
         )
         self._topic_tails[frame_id] = task
+        self._topic_tasks.setdefault(frame_id, set()).add(task)
 
         def _forget(done: asyncio.Task[None]) -> None:
+            tasks = self._topic_tasks.get(frame_id)
+            if tasks is not None:
+                tasks.discard(done)
+                if not tasks:
+                    del self._topic_tasks[frame_id]
             if self._topic_tails.get(frame_id) is done:
                 del self._topic_tails[frame_id]
 
         task.add_done_callback(_forget)
+
+    async def _stop_topic(self, channel_id: int, topic: str) -> str:
+        """Stop only the active handoff, or else this topic's turn queue."""
+        frame_id = topic_frame_id(
+            self._agent.config.agent.name, self._origin, channel_id, topic
+        )
+        entry = self._sessions.get(frame_id)
+        handoff = entry[0].active_handoff if entry is not None else None
+        if handoff is not None:
+            handoff.cancel()
+            text = self._config.stop_handoff_message.format(agent=handoff.agent)
+        else:
+            tasks = tuple(self._topic_tasks.get(frame_id, ()))
+            running = any(not task.done() for task in tasks)
+            if running:
+                # Stop this topic's turn and queued turns only. (dec: dec-358)
+                self._topic_tails.pop(frame_id, None)
+                for task in tasks:
+                    task.cancel()
+                text = self._config.stop_turn_message
+            else:
+                text = self._config.stop_idle_message
+        await self._send_reply(channel_id, topic, text)
+        return text
 
     async def _handle_in_topic(
         self,
@@ -735,6 +787,9 @@ class ZulipInterface:
         channel_id = message["stream_id"]
         message_id = message["id"]
         topic = str(message.get("subject", ""))
+        if is_stop_command(str(message.get("content", ""))):
+            await self._stop_topic(channel_id, topic)
+            return
         # The area comes from this message's own read: the channel_areas
         # override, else the channel name (display_recipient) derived as
         # Discord derives it, else "" — never the working-directory area.
@@ -911,7 +966,22 @@ class ZulipInterface:
                 async for event in session.stream_message(
                     str(message.get("content", ""))
                 ):
-                    if isinstance(event, AgentTextDelta):
+                    if isinstance(event, AgentHandoffStart):
+                        text = config.handoff_start_message.format(
+                            agent=event.agent, frame_id=event.frame_id
+                        )
+                        await self._send_reply(channel_id, topic, text)
+                    elif isinstance(event, AgentHandoffEnd):
+                        text = config.handoff_end_message.format(
+                            agent=event.agent,
+                            status=event.status,
+                            duration=_format_handoff_duration(event.duration_s),
+                        )
+                        await self._send_reply(channel_id, topic, text)
+                    elif event.frame_id is not None:
+                        # Foreign handoff frames never touch caller progress. (dec: dec-362)
+                        continue
+                    elif isinstance(event, AgentTextDelta):
                         parts.append(event.text)
                         progress.text("".join(parts))
                     elif isinstance(event, AgentToolStart):
