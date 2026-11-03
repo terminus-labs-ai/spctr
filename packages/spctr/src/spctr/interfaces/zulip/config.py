@@ -91,6 +91,11 @@ class ZulipConfig(BaseModel):
             appends; ``{name}`` and ``{content}`` (newlines as ``|``).
         tool_result_error_line: Stream mode: the line a failed tool result
             appends; same placeholders as ``tool_result_ok_line``.
+        handoff_start_message: Stream mode: posted when a handoff takes over.
+        handoff_end_message: Stream mode: posted when a handoff returns.
+        stop_handoff_message: Stream mode: reply after stopping a handoff.
+        stop_turn_message: Stream mode: reply after stopping a topic turn.
+        stop_idle_message: Stream mode: reply when ``!stop`` finds no turn.
     """
     model_config = ConfigDict(strict=True)
 
@@ -114,6 +119,11 @@ class ZulipConfig(BaseModel):
     tool_start_line: str = "▶ `{name}` - `{input}`"
     tool_result_ok_line: str = "✓ `{name}` - `{content}`"
     tool_result_error_line: str = "✖ `{name}` - `{content}`"
+    handoff_start_message: str = "→ {agent} took over ({frame_id})"
+    handoff_end_message: str = "← {agent}: {status} in {duration}"
+    stop_handoff_message: str = "⏹ stopped {agent}"
+    stop_turn_message: str = "⏹ stopped"
+    stop_idle_message: str = "nothing running"
 
     @model_validator(mode="before")
     @classmethod
