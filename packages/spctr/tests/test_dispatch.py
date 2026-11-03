@@ -127,6 +127,7 @@ def test_classify_precedence():
 def test_status_exit_codes_are_distinct():
     assert len(set(STATUS_EXIT_CODES.values())) == len(STATUS_EXIT_CODES)
     assert STATUS_EXIT_CODES["done"] == 0
+    assert STATUS_EXIT_CODES["cancelled"] == 6
 
 
 def test_envelope_json_round_trips():
@@ -137,6 +138,7 @@ def test_envelope_json_round_trips():
         exit_code=0,
         duration_s=1.5,
         message="VERDICT: DONE\nWROTE /tmp/a.md",
+        frame_id="handoff-liara-123",
         wrote=["/tmp/a.md"],
         wrote_missing=[],
         raw_stdout="",

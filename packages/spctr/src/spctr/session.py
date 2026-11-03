@@ -12,6 +12,7 @@ import logging
 import sys
 import time
 import weakref
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 if TYPE_CHECKING:
@@ -104,6 +105,9 @@ class Session:
         # a close() requested meanwhile is deferred until the last one ends.
         self._turns_in_flight = 0
         self._close_requested = False
+        self._handoff_events: asyncio.Queue[AgentEvent] = asyncio.Queue()
+        self.active_handoff: Any = None
+        self.is_handoff_target = False
 
         # Run context — set by the Interface at start(); None until then.
         self._run_context: RunContext | None = None
@@ -307,7 +311,13 @@ class Session:
             )
 
         try:
-            out = await self._registry.execute(block.name, block.input)
+            if block.name == "handoff":
+                from spctr.tools.builtins.handoff import bind_caller
+
+                with bind_caller(self):
+                    out = await self._registry.execute(block.name, block.input)
+            else:
+                out = await self._registry.execute(block.name, block.input)
 
             # Check for post-execute events (generic dispatch — no name-magic)
             events_to_dispatch: list[Any] = []
@@ -341,6 +351,47 @@ class Session:
                 ToolResultBlock(tool_use_id=block.id, content=content, is_error=True),
                 original_bytes,
             )
+
+    def emit_handoff_event(self, event: AgentEvent) -> None:
+        """Forward a target-frame event into this Session's active stream."""
+        self._handoff_events.put_nowait(event)
+
+    async def _with_handoff_events(self, stream: Any) -> AsyncIterator[Any]:
+        """Yield SR2 events while interleaving events emitted by a handoff tool."""
+        iterator = stream.__aiter__()
+        next_event = asyncio.create_task(iterator.__anext__())
+        forwarded: asyncio.Task | None = None
+        try:
+            while True:
+                forwarded = asyncio.create_task(self._handoff_events.get())
+                done, _ = await asyncio.wait(
+                    {next_event, forwarded}, return_when=asyncio.FIRST_COMPLETED
+                )
+                if forwarded in done:
+                    yield forwarded.result()
+                    while not self._handoff_events.empty():
+                        yield self._handoff_events.get_nowait()
+                else:
+                    forwarded.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await forwarded
+
+                if next_event not in done:
+                    continue
+                try:
+                    event = next_event.result()
+                except StopAsyncIteration:
+                    while not self._handoff_events.empty():
+                        yield self._handoff_events.get_nowait()
+                    return
+                yield event
+                next_event = asyncio.create_task(iterator.__anext__())
+        finally:
+            for task in (next_event, forwarded):
+                if task is not None and not task.done():
+                    task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await task
 
     async def stream_message(self, text: str) -> AsyncIterator[AgentEvent]:
         """Stream agent events for a user message, logging turn boundaries."""
@@ -411,7 +462,12 @@ class Session:
             tool_id_to_name: dict[str, str] = {}
 
             try:
-                async for ev in self.sr2.turn(user_input=increment):
+                async for ev in self._with_handoff_events(
+                    self.sr2.turn(user_input=increment)
+                ):
+                    if isinstance(ev, AgentEvent):
+                        yield ev
+                        continue
                     if ev.type == "text" and ev.text:
                         text_acc.append(ev.text)
                         yield AgentTextDelta(text=ev.text)

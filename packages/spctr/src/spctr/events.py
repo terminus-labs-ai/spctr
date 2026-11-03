@@ -24,6 +24,7 @@ class AgentTextDelta(AgentEvent):
     """Incremental text fragment from the LLM."""
     type: str = field(default="text_delta", init=False)
     text: str = ""
+    frame_id: str | None = None
 
 
 @dataclass
@@ -36,6 +37,7 @@ class AgentThinkingDelta(AgentEvent):
     """
     type: str = field(default="thinking_delta", init=False)
     text: str = ""
+    frame_id: str | None = None
 
 
 @dataclass
@@ -45,6 +47,7 @@ class AgentToolStart(AgentEvent):
     tool_id: str = ""
     name: str = ""
     input: dict = field(default_factory=dict)
+    frame_id: str | None = None
 
 
 @dataclass
@@ -55,6 +58,7 @@ class AgentToolResult(AgentEvent):
     name: str = ""
     content: str = ""
     is_error: bool = False
+    frame_id: str | None = None
 
 
 @dataclass
@@ -62,6 +66,25 @@ class AgentDone(AgentEvent):
     """Emitted once, as the final event in every stream_message() call."""
     type: str = field(default="done", init=False)
     tool_calls_executed: int = 0
+    frame_id: str | None = None
+
+
+@dataclass
+class AgentHandoffStart(AgentEvent):
+    """A fresh target frame has taken over the caller's stream."""
+    type: str = field(default="handoff_start", init=False)
+    frame_id: str = ""
+    agent: str = ""
+
+
+@dataclass
+class AgentHandoffEnd(AgentEvent):
+    """A target frame has returned control to the caller."""
+    type: str = field(default="handoff_end", init=False)
+    frame_id: str = ""
+    agent: str = ""
+    status: str = ""
+    duration_s: float = 0.0
 
 
 __all__ = [
@@ -71,4 +94,6 @@ __all__ = [
     "AgentToolStart",
     "AgentToolResult",
     "AgentDone",
+    "AgentHandoffStart",
+    "AgentHandoffEnd",
 ]

@@ -70,6 +70,7 @@ STATUS_EXIT_CODES = {
     "escalation": 3,
     "timeout": 4,
     "error": 5,
+    "cancelled": 6,
 }
 
 
@@ -116,6 +117,7 @@ class DispatchEnvelope:
     exit_code: int
     duration_s: float
     message: str
+    frame_id: str = ""
     wrote: list[str] = field(default_factory=list)
     wrote_missing: list[str] = field(default_factory=list)
     raw_stdout: str = ""
