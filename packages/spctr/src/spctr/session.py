@@ -13,6 +13,7 @@ import sys
 import time
 import weakref
 from contextlib import suppress
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable
 
 if TYPE_CHECKING:
@@ -49,6 +50,26 @@ logger = logging.getLogger(__name__)
 
 def _ms_since(started: float) -> float:
     return round((time.monotonic() - started) * 1000, 3)
+
+
+@dataclass
+class HandoffHandle:
+    """The caller-visible controls for one running handoff."""
+
+    frame_id: str
+    agent: str
+    started: float
+    _cancel: Callable[[], None] = field(repr=False)
+    _cancel_requested: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancel_requested
+
+    def cancel(self) -> None:
+        if not self._cancel_requested:
+            self._cancel_requested = True
+            self._cancel()
 
 
 class Session:
@@ -106,7 +127,7 @@ class Session:
         self._turns_in_flight = 0
         self._close_requested = False
         self._handoff_events: asyncio.Queue[AgentEvent] = asyncio.Queue()
-        self.active_handoff: Any = None
+        self.active_handoff: HandoffHandle | None = None
         self.is_handoff_target = False
 
         # Run context — set by the Interface at start(); None until then.

@@ -60,6 +60,11 @@ agent:
     #     config_error: "cannot load {path}: {error}"
     #     run_error: "{error}"
 
+# REPL messages shown while a handoff frame is active.
+repl_handoff_start: "→ {agent} took over · {frame_id}"
+repl_handoff_end: "← {agent} · {status} · {duration}"
+repl_handoff_stop: "⏹ Stopping {agent}…"
+
 # LLM endpoints. "default" is required. Additional named endpoints are optional.
 models:
   default:

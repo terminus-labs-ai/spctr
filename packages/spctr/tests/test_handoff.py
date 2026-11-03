@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -475,3 +476,51 @@ async def test_timeout_keeps_partial_text_and_kills_terminal_process(tmp_path, m
     assert any(isinstance(event, AgentTextDelta) and event.text == "caller continues"
                for event in events)
     assert isinstance(events[-1], AgentDone)
+
+
+async def test_cancel_handle_keeps_partial_text_and_caller_turn_continues(tmp_path):
+    roles = tmp_path / "roles"
+    _write_roles(roles)
+    started = asyncio.Event()
+
+    class BlockingTarget(FakeTarget):
+        async def stream_message(self, prompt):
+            yield AgentTextDelta(text="partial target text")
+            started.set()
+            await asyncio.Future()
+
+    caller_llm = ScriptedLLM(
+        [StreamEvent(type="tool_use", tool_use_id="h1", tool_name="handoff",
+                     tool_input={"agent": "role-b", "prompt": "smoke", "frame_id": "fid"})],
+        [StreamEvent(type="text", text="caller continues")],
+    )
+    config = _model_config("caller", [{
+        "name": "handoff",
+        "class_path": "spctr.tools.builtins.handoff.HandoffTool",
+        "config": {"agents_root": str(roles)},
+    }])
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=caller_llm), patch(
+        "spctr.tools.builtins.handoff.Agent", BlockingTarget
+    ):
+        session = Runtime(config).new_session("caller-frame")
+
+        async def collect():
+            return [event async for event in session.stream_message("delegate")]
+
+        turn = asyncio.create_task(collect())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        handle = session.active_handoff
+        assert handle is not None
+        assert (handle.frame_id, handle.agent) == ("fid", "role-b")
+        handle.cancel()
+        events = await asyncio.wait_for(turn, timeout=2)
+
+    result = next(event for event in events if isinstance(event, AgentToolResult)
+                  and event.name == "handoff")
+    envelope = _payload(result)
+    assert (envelope["status"], envelope["exit_code"]) == ("cancelled", 6)
+    assert envelope["message"] == "partial target text"
+    assert any(isinstance(event, AgentTextDelta) and event.text == "caller continues"
+               for event in events)
+    assert isinstance(events[-1], AgentDone)
+    assert session.active_handoff is None

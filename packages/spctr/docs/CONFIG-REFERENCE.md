@@ -84,6 +84,14 @@ Built-in tools to register. Each entry:
 
 `handoff` resolves `<agents_root>/agents/<agent>.yaml` as a standalone spctr configuration with `SR2_HOME` set to `agents_root`, then runs it in a fresh frame. Its constructor also accepts these YAML-backed strings: `description` (the tool description); `agent_description`, `prompt_description`, `timeout_description`, and `frame_id_description` (input schema descriptions); `nested_error`, `active_error`, and `unavailable_error` (refusal messages); and `config_error` and `run_error` (error templates). `config_error` may use `{path}` and `{error}`; `run_error` may use `{error}`. Defaults are shown in `config.example.yaml`.
 
+#### REPL handoff messages
+
+| Field | Default | Template values |
+|---|---|---|
+| `repl_handoff_start` | `→ {agent} took over · {frame_id}` | `{agent}`, `{frame_id}` |
+| `repl_handoff_end` | `← {agent} · {status} · {duration}` | `{agent}`, upper-cased `{status}`, `{duration}` as minutes and seconds |
+| `repl_handoff_stop` | `⏹ Stopping {agent}…` | `{agent}` |
+
 ### `agent.mcp_servers` (list[McpServerConfig])
 
 External MCP (Model Context Protocol) servers to connect at startup. Tools from these servers are registered alongside built-in tools.
