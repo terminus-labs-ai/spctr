@@ -366,7 +366,9 @@ async def test_missing_invalid_nested_concurrent_and_target_error(tmp_path):
         "class_path": "spctr.tools.builtins.handoff.HandoffTool",
         "config": {"agents_root": str(roles)},
     }])
-    with patch("spctr.live_llm.LiteLLMCallable", return_value=caller_llm):
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=caller_llm), patch(
+        "spctr.tools.builtins.handoff.Agent", FakeTarget
+    ):
         session = Runtime(config).new_session("caller-frame")
         events = [event async for event in session.stream_message("delegate")]
     invalid = _payload(next(
