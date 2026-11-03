@@ -76,8 +76,13 @@ Built-in tools to register. Each entry:
 | `code_exec` | `spctr.tools.builtins.code_exec.CodeExecTool` | `timeout` (int, default: 10) |
 | `read_symbol` | `spctr.tools.builtins.read_symbol.ReadSymbolTool` | none |
 | `complete_step` | `spctr.tools.builtins.complete_step.CompleteStepTool` | `plans_root` (str, default: `~/.sr2/plans`) |
+| `handoff` | `spctr.tools.builtins.handoff.HandoffTool` | `agents_root` (absolute path, required), `default_timeout` (seconds, default: 5400), optional message/schema strings below |
 | `load_skill` | `spctr.tools.builtins.load_skill.LoadSkillTool` | none |
 | `test_guard` | `spctr.tools.builtins.test_guard.TestGuardTool` | none |
+
+#### `handoff` configuration
+
+`handoff` resolves `<agents_root>/agents/<agent>.yaml` as a standalone spctr configuration with `SR2_HOME` set to `agents_root`, then runs it in a fresh frame. Its constructor also accepts these YAML-backed strings: `description` (the tool description); `agent_description`, `prompt_description`, `timeout_description`, and `frame_id_description` (input schema descriptions); `nested_error`, `active_error`, and `unavailable_error` (refusal messages); and `config_error` and `run_error` (error templates). `config_error` may use `{path}` and `{error}`; `run_error` may use `{error}`. Defaults are shown in `config.example.yaml`.
 
 ### `agent.mcp_servers` (list[McpServerConfig])
 

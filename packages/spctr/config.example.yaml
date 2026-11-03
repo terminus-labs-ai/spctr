@@ -43,6 +43,23 @@ agent:
     #   config:
     #     plans_root: ~/.sr2/plans   # optional; defaults to ~/.sr2/plans
 
+    # Run another configured agent in a fresh, isolated frame.
+    # - name: handoff
+    #   class_path: spctr.tools.builtins.handoff.HandoffTool
+    #   config:
+    #     agents_root: /absolute/path/to/roles-root
+    #     default_timeout: 5400
+    #     description: Hand the session to another agent in a fresh frame and return its envelope when the frame ends.
+    #     agent_description: Agent config name under <agents_root>/agents/
+    #     prompt_description: Instructions for the target agent.
+    #     timeout_description: Seconds; default from tool config.
+    #     frame_id_description: Optional frame id; default handoff-<agent>-<unix seconds>.
+    #     nested_error: nested handoff refused
+    #     active_error: handoff already active
+    #     unavailable_error: handoff requires a caller session
+    #     config_error: "cannot load {path}: {error}"
+    #     run_error: "{error}"
+
 # LLM endpoints. "default" is required. Additional named endpoints are optional.
 models:
   default:
