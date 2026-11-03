@@ -123,9 +123,9 @@ class HandoffTool:
         frame_id = frame_id or f"handoff-{agent}-{int(time.time())}"
         if caller is None:
             return self._envelope(agent, frame_id, "error", 0.0, self._unavailable_error)
-        if caller.is_handoff_target:
+        if caller.is_handoff_target:  # (dec: dec-359)
             return self._envelope(agent, frame_id, "error", 0.0, self._nested_error)
-        if caller.active_handoff is not None:
+        if caller.active_handoff is not None:  # (dec: dec-359)
             return self._envelope(agent, frame_id, "error", 0.0, self._active_error)
 
         agents_dir = self.agents_root / "agents"

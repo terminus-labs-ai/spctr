@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from sr2.models import TextBlock, ToolResultBlock, ToolUseBlock
 from sr2.protocols.llm import StreamEvent
 from spctr.agent import Agent as RealAgent
 from spctr.config import SpctrConfig
@@ -43,11 +44,13 @@ class ScriptedLLM:
 
     def __init__(self, *rounds):
         self.rounds = list(rounds)
+        self.requests = []
 
     async def complete(self, request):
         raise NotImplementedError
 
     async def stream(self, request):
+        self.requests.append(request)
         for event in self.rounds.pop(0):
             yield event
         yield StreamEvent(type="end", meta={"finish_reason": "stop"})
@@ -117,6 +120,19 @@ class PrefixAgent:
 
     async def aclose(self):
         await self.inner.aclose()
+
+
+class RecordingTarget(RealAgent):
+    instances = []
+
+    def __init__(self, config, session_id):
+        super().__init__(config, session_id)
+        self.instances.append(self)
+
+    async def stream_message(self, prompt):
+        yield AgentThinkingDelta(text="working")
+        async for event in super().stream_message(prompt):
+            yield event
 
 
 def _model_config(name="agent", tools=None) -> SpctrConfig:
@@ -193,29 +209,30 @@ async def test_caller_tool_loop_forwards_target_events_and_returns_envelope(
     roles = tmp_path / "roles"
     _write_roles(roles)
     monkeypatch.chdir(tmp_path)
-    FakeTarget.instances.clear()
-    FakeTarget.events = [
-        AgentThinkingDelta(text="working"),
-        AgentTextDelta(text=f"hi\nVERDICT: DONE\nWROTE {tmp_path / 'missing.md'}"),
-        AgentToolStart(tool_id="t", name="file_read", input={"path": "x"}),
-        AgentToolResult(tool_id="t", name="file_read", content="x"),
-        AgentDone(),
-    ]
-    FakeTarget.error = None
+    RecordingTarget.instances.clear()
     caller_llm = ScriptedLLM(
         [StreamEvent(type="tool_use", tool_use_id="h1", tool_name="handoff",
                      tool_input={"agent": "role-b", "prompt": "smoke", "frame_id": "x"})],
         [StreamEvent(type="text", text="caller continues")],
+    )
+    target_llm = ScriptedLLM(
+        [
+            StreamEvent(type="text", text="hi\n"),
+            StreamEvent(type="tool_use", tool_use_id="t", tool_name="file_read",
+                        tool_input={"path": "x"}),
+        ],
+        [StreamEvent(
+            type="text", text=f"VERDICT: DONE\nWROTE {tmp_path / 'missing.md'}"
+        )],
     )
     config = _model_config("caller", [{
         "name": "handoff",
         "class_path": "spctr.tools.builtins.handoff.HandoffTool",
         "config": {"agents_root": str(roles)},
     }])
-
-    with patch("spctr.live_llm.LiteLLMCallable", return_value=caller_llm), patch(
-        "spctr.tools.builtins.handoff.Agent", FakeTarget
-    ):
+    with patch(
+        "spctr.live_llm.LiteLLMCallable", side_effect=[caller_llm, target_llm]
+    ), patch("spctr.tools.builtins.handoff.Agent", RecordingTarget):
         runtime = Runtime(config)
         session = runtime.new_session("caller-frame")
         events = [event async for event in session.stream_message("delegate")]
@@ -224,7 +241,8 @@ async def test_caller_tool_loop_forwards_target_events_and_returns_envelope(
     end = next(i for i, event in enumerate(events) if isinstance(event, AgentHandoffEnd))
     forwarded = events[start + 1:end]
     assert [type(event) for event in forwarded] == [
-        AgentThinkingDelta, AgentTextDelta, AgentToolStart, AgentToolResult
+        AgentThinkingDelta, AgentTextDelta, AgentToolStart, AgentToolResult,
+        AgentTextDelta,
     ]
     assert all(event.frame_id == "x" for event in forwarded)
     assert events[start] == AgentHandoffStart(frame_id="x", agent="role-b")
@@ -244,11 +262,34 @@ async def test_caller_tool_loop_forwards_target_events_and_returns_envelope(
             envelope["exit_code"]) == ("role-b", "x", "done", 0)
     assert envelope["wrote"] == [str(tmp_path / "missing.md")]
     assert envelope["wrote_missing"] == envelope["wrote"]
-    assert FakeTarget.instances[0].session_id == "x"
-    assert FakeTarget.instances[0].registry.list_names() == ["terminal", "file_read"]
-    assert FakeTarget.instances[0].config.agent.tool_result_max_bytes == 4321
-    assert "handoff" not in FakeTarget.instances[0].registry.list_names()
-    assert all("hi" not in repr(message) for message in session.history)
+    target = RecordingTarget.instances[0]
+    assert target.session_id == "x"
+    assert target.sr2 is not session.sr2
+    assert target.history is not session.history
+    assert target.registry is not runtime.registry
+    assert target.registry.list_names() == ["terminal", "file_read"]
+    assert target.config.agent.tool_result_max_bytes == 4321
+    assert "handoff" not in target.registry.list_names()
+    assert [(message.role, message.content) for message in target.history] == [
+        ("user", [TextBlock(text="smoke")]),
+        ("assistant", [TextBlock(
+            text=f"hi\nVERDICT: DONE\nWROTE {tmp_path / 'missing.md'}"
+        )]),
+    ]
+    assert [(message.role, message.content) for message in session.history] == [
+        ("user", [TextBlock(text="delegate")]),
+        ("assistant", [TextBlock(text="caller continues")]),
+    ]
+    handoff_blocks = [
+        block for message in caller_llm.requests[1].messages for block in message.content
+        if isinstance(block, (ToolUseBlock, ToolResultBlock))
+    ]
+    assert len(handoff_blocks) == 2
+    assert (handoff_blocks[0].id, handoff_blocks[0].name, handoff_blocks[0].input) == (
+        "h1", "handoff", {"agent": "role-b", "prompt": "smoke", "frame_id": "x"}
+    )
+    assert handoff_blocks[1].tool_use_id == "h1"
+    assert json.loads(handoff_blocks[1].content) == envelope
 
 
 async def test_verdict_classification_and_configurable_messages(tmp_path):
@@ -315,9 +356,28 @@ async def test_missing_invalid_nested_concurrent_and_target_error(tmp_path):
     assert FakeTarget.instances == []
 
     (roles / "agents/role-b.yaml").write_text("agent: []\n", encoding="utf-8")
-    invalid = await _call(tool, Caller(), agent="role-b", prompt="x")
+    caller_llm = ScriptedLLM(
+        [StreamEvent(type="tool_use", tool_use_id="h1", tool_name="handoff",
+                     tool_input={"agent": "role-b", "prompt": "x"})],
+        [StreamEvent(type="text", text="still running")],
+    )
+    config = _model_config("caller", [{
+        "name": "handoff",
+        "class_path": "spctr.tools.builtins.handoff.HandoffTool",
+        "config": {"agents_root": str(roles)},
+    }])
+    with patch("spctr.live_llm.LiteLLMCallable", return_value=caller_llm):
+        session = Runtime(config).new_session("caller-frame")
+        events = [event async for event in session.stream_message("delegate")]
+    invalid = _payload(next(
+        event for event in events
+        if isinstance(event, AgentToolResult) and event.name == "handoff"
+    ))
     assert invalid["status"] == "error" and "role-b.yaml" in invalid["message"]
     assert FakeTarget.instances == []
+    assert any(isinstance(event, AgentTextDelta) and event.text == "still running"
+               for event in events)
+    assert isinstance(events[-1], AgentDone)
 
     assert (await _call(tool, Caller(target=True), agent="role-b", prompt="x"))[
         "message"] == "nested handoff refused"
@@ -364,7 +424,11 @@ async def test_target_log_uses_process_directory(
     assert not list((roles / "logs/sessions").glob("*.jsonl"))
     assert [name for name, _ in caller.logs] == ["handoff.start", "handoff.end"]
     assert caller.logs[0][1] == {"frame_id": "target-frame", "agent": "role-b"}
-    assert caller.logs[1][1]["status"] == "done"
+    assert caller.logs[1][1] == {
+        "frame_id": "target-frame",
+        "status": "done",
+        "duration_ms": round(envelope["duration_s"] * 1000, 3),
+    }
 
 
 async def test_timeout_keeps_partial_text_and_kills_terminal_process(tmp_path, monkeypatch):
@@ -378,20 +442,34 @@ async def test_timeout_keeps_partial_text_and_kills_terminal_process(tmp_path, m
     monkeypatch.setenv("SR2_SESSION_LOG_DIR", "off")
     pid_file = tmp_path / "child.pid"
     marker = f"handoff-timeout-{tmp_path.name}"
-    llm = ScriptedLLM([
+    target_llm = ScriptedLLM([
         StreamEvent(type="tool_use", tool_use_id="t1", tool_name="terminal",
                     tool_input={"command": f"echo $$ > {pid_file}; sleep 10 # {marker}"}),
     ])
+    caller_llm = ScriptedLLM(
+        [StreamEvent(type="tool_use", tool_use_id="h1", tool_name="handoff",
+                     tool_input={"agent": "role-b", "prompt": "run", "timeout": 0.2})],
+        [StreamEvent(type="text", text="caller continues")],
+    )
+    config = _model_config("caller", [{
+        "name": "handoff",
+        "class_path": "spctr.tools.builtins.handoff.HandoffTool",
+        "config": {"agents_root": str(roles)},
+    }])
+    with patch(
+        "spctr.live_llm.LiteLLMCallable", side_effect=[caller_llm, target_llm]
+    ), patch("spctr.tools.builtins.handoff.Agent", PrefixAgent):
+        session = Runtime(config).new_session("caller-frame")
+        events = [event async for event in session.stream_message("delegate")]
 
-    with patch("spctr.live_llm.LiteLLMCallable", return_value=llm), patch(
-        "spctr.tools.builtins.handoff.Agent", PrefixAgent
-    ):
-        envelope = await _call(
-            HandoffTool(str(roles)), Caller(), agent="role-b", prompt="run",
-            timeout=0.2,
-        )
-
+    envelope = _payload(next(
+        event for event in events
+        if isinstance(event, AgentToolResult) and event.name == "handoff"
+    ))
     assert envelope["status"] == "timeout" and envelope["exit_code"] == 4
     assert envelope["message"] == "started"
     assert int(pid_file.read_text(encoding="utf-8")) > 0
     assert _surviving_pids(marker) == []
+    assert any(isinstance(event, AgentTextDelta) and event.text == "caller continues"
+               for event in events)
+    assert isinstance(events[-1], AgentDone)
