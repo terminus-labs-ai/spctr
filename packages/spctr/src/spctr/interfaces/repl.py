@@ -687,6 +687,7 @@ class REPLInterface:
             nonlocal stop_requested
             active_handoff = getattr(agent._session, "active_handoff", None)
             if isinstance(active_handoff, HandoffHandle):
+                # Ctrl-C cancels only the active handoff (dec: dec-357).
                 active_handoff.cancel()
                 message = agent.config.repl_handoff_stop.format(
                     agent=active_handoff.agent
