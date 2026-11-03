@@ -103,15 +103,27 @@ async def test_handoff_lines_and_foreign_events_stay_out_of_progress():
 
     await interface._run_turn(session, 2, "Build", message(), interface._config)
 
-    contents = [call["content"] for call in interface._client.sent]
-    assert contents == [
-        "⏳ Thinking...",
-        "→ role-c took over (fid)",
-        "← role-c: done in 23m 32s",
+    assert interface._client.sent == [
+        {
+            "type": "stream",
+            "to": 2,
+            "topic": "Build",
+            "content": "⏳ Thinking...",
+        },
+        {
+            "type": "stream",
+            "to": 2,
+            "topic": "Build",
+            "content": "→ role-c took over (fid)",
+        },
+        {
+            "type": "stream",
+            "to": 2,
+            "topic": "Build",
+            "content": "← role-c: done in 23m 32s",
+        },
     ]
-    assert (1, "mine...") in interface._client.updated
-    assert interface._client.updated[-1] == (1, "mine")
-    assert all("foreign" not in content for _, content in interface._client.updated)
+    assert interface._client.updated == [(1, "mine..."), (1, "mine")]
 
 
 async def test_configured_handoff_templates_are_used():
