@@ -47,10 +47,14 @@ from rich.markdown import Markdown
 from rich.text import Text
 
 from sr2.models import TextBlock
+from spctr.config import SpctrConfig
 from spctr.core import RunContext, RunMode
 from spctr.resume import load_resumable_history
+from spctr.session import HandoffHandle
 from spctr.events import (
     AgentDone,
+    AgentHandoffEnd,
+    AgentHandoffStart,
     AgentThinkingDelta,
     AgentTextDelta,
     AgentToolResult,
@@ -468,6 +472,39 @@ def render_takeover_line(
     )
 
 
+def _handoff_template(name: str) -> str:
+    return str(SpctrConfig.model_fields[name].default)
+
+
+def _format_handoff_duration(duration_s: float) -> str:
+    total_seconds = max(0, int(round(duration_s)))
+    minutes, seconds = divmod(total_seconds, 60)
+    return f"{minutes}m {seconds}s"
+
+
+def render_handoff_start(
+    agent: str, frame_id: str, template: str | None = None
+) -> str:
+    if template is None:
+        template = _handoff_template("repl_handoff_start")
+    return template.format(agent=agent, frame_id=frame_id)
+
+
+def render_handoff_end(
+    agent: str,
+    status: str,
+    duration_s: float,
+    template: str | None = None,
+) -> str:
+    if template is None:
+        template = _handoff_template("repl_handoff_end")
+    return template.format(
+        agent=agent,
+        status=status.upper(),
+        duration=_format_handoff_duration(duration_s),
+    )
+
+
 def _active_model_pointer() -> Path | None:
     """Path to the writable active-model pointer file, or None if unset.
 
@@ -648,6 +685,14 @@ class REPLInterface:
 
         def _on_sigint() -> None:
             nonlocal stop_requested
+            active_handoff = getattr(agent._session, "active_handoff", None)
+            if isinstance(active_handoff, HandoffHandle):
+                active_handoff.cancel()
+                message = agent.config.repl_handoff_stop.format(
+                    agent=active_handoff.agent
+                )
+                self.console.print(f"[yellow]{message}[/yellow]")
+                return
             if stop_requested:
                 # Second press: force quit.  Restore the default interrupt
                 # handler *before* re-raising so asyncio.run still cancels
@@ -770,7 +815,22 @@ class REPLInterface:
         with Live(_frame(), console=self.console, transient=True) as live:
             try:
                 async for ev in agent.stream_message(text):
-                    if isinstance(ev, AgentTextDelta):
+                    if isinstance(ev, AgentHandoffStart):
+                        _commit(live)
+                        self.console.print(render_handoff_start(
+                            ev.agent,
+                            ev.frame_id,
+                            agent.config.repl_handoff_start,
+                        ))
+                    elif isinstance(ev, AgentHandoffEnd):
+                        _commit(live)
+                        self.console.print(render_handoff_end(
+                            ev.agent,
+                            ev.status,
+                            ev.duration_s,
+                            agent.config.repl_handoff_end,
+                        ))
+                    elif isinstance(ev, AgentTextDelta):
                         text_acc.append(ev.text)
                         live.update(_frame())
                     elif isinstance(ev, AgentThinkingDelta):

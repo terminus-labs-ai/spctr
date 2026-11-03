@@ -270,6 +270,9 @@ class SpctrConfig(BaseModel):
         ),
     )
     continuity: ContinuityConfig = ContinuityConfig()
+    repl_handoff_start: str = "→ {agent} took over · {frame_id}"
+    repl_handoff_end: str = "← {agent} · {status} · {duration}"
+    repl_handoff_stop: str = "⏹ Stopping {agent}…"
     discord: DiscordConfig | None = None
     zulip: ZulipConfig | None = None
     provenance_store_path: str | None = Field(

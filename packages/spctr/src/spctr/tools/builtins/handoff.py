@@ -8,7 +8,7 @@ import os
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -23,6 +23,7 @@ from spctr.events import (
     AgentTextDelta,
 )
 from spctr.interfaces.single_shot import SingleShotInterface
+from spctr.session import HandoffHandle
 
 
 _caller_session: ContextVar[Any | None] = ContextVar("handoff_caller", default=None)
@@ -36,13 +37,6 @@ def bind_caller(session: Any) -> Iterator[None]:
         yield
     finally:
         _caller_session.reset(token)
-
-
-@dataclass
-class _ActiveHandoff:
-    frame_id: str
-    agent: str
-    started: float
 
 
 class HandoffTool:
@@ -145,22 +139,32 @@ class HandoffTool:
         target._session.is_handoff_target = True
         interface = SingleShotInterface(prompt=prompt)
         started = time.monotonic()
-        caller.active_handoff = _ActiveHandoff(frame_id, agent, started)
-        caller._log_event("handoff.start", {"frame_id": frame_id, "agent": agent})
-        caller.emit_handoff_event(AgentHandoffStart(frame_id=frame_id, agent=agent))
         message_parts: list[str] = []
-        status = "done"
-        try:
+
+        async def _run_target() -> None:
             await target.initialize()
             await interface.start(target)
+            limit = self.default_timeout if timeout is None else timeout
+            async with asyncio.timeout(limit):
+                async for event in target.stream_message(prompt):
+                    if isinstance(event, AgentTextDelta):
+                        message_parts.append(event.text)
+                    if not isinstance(event, AgentDone):
+                        caller.emit_handoff_event(replace(event, frame_id=frame_id))
+
+        target_task = asyncio.create_task(_run_target())
+        handle = HandoffHandle(frame_id, agent, started, target_task.cancel)
+        caller.active_handoff = handle
+        caller._log_event("handoff.start", {"frame_id": frame_id, "agent": agent})
+        caller.emit_handoff_event(AgentHandoffStart(frame_id=frame_id, agent=agent))
+        status = "done"
+        try:
             try:
-                limit = self.default_timeout if timeout is None else timeout
-                async with asyncio.timeout(limit):
-                    async for event in target.stream_message(prompt):
-                        if isinstance(event, AgentTextDelta):
-                            message_parts.append(event.text)
-                        if not isinstance(event, AgentDone):
-                            caller.emit_handoff_event(replace(event, frame_id=frame_id))
+                await target_task
+            except asyncio.CancelledError:
+                if not handle.cancel_requested:
+                    raise
+                status = "cancelled"
             except TimeoutError:
                 status = "timeout"
             else:
