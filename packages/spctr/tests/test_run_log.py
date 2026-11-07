@@ -171,6 +171,33 @@ class TestPaths:
         finally:
             log.close()
 
+    @pytest.mark.parametrize("value", ["1", "true", "YES"])
+    def test_shared_env_makes_directory_0755_and_file_0644(
+        self, home, monkeypatch, value
+    ):
+        monkeypatch.setenv("SR2_SESSION_LOG_SHARED", value)
+        _sessions_dir(home).mkdir(parents=True)
+        _sessions_dir(home).chmod(0o700)
+        log = SessionLogManager().open_session("shared", "edi")
+        try:
+            log.append("probe", {})
+            assert stat.S_IMODE(_sessions_dir(home).stat().st_mode) == 0o755
+            assert stat.S_IMODE(log.path.stat().st_mode) == 0o644
+        finally:
+            log.close()
+
+    @pytest.mark.parametrize("value", ["", "0", "no", "shared"])
+    def test_other_shared_values_keep_owner_only_modes(
+        self, home, monkeypatch, value
+    ):
+        monkeypatch.setenv("SR2_SESSION_LOG_SHARED", value)
+        log = SessionLogManager().open_session("private", "edi")
+        try:
+            assert stat.S_IMODE(_sessions_dir(home).stat().st_mode) == 0o700
+            assert stat.S_IMODE(log.path.stat().st_mode) == 0o600
+        finally:
+            log.close()
+
 
 # ---------------------------------------------------------------------------
 # Envelope, ordering, flush (FR3, FR4)

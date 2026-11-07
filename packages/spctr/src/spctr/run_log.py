@@ -42,6 +42,16 @@ _SECRET_KEYS = frozenset(
 _REDACTED = "[REDACTED]"
 _PROCESS_START = time.monotonic()
 _DIR_ENV = "SR2_SESSION_LOG_DIR"
+# Set to 1/true/yes to make session logs readable by other host users
+# (directory 0755, files 0644) instead of owner-only 0700/0600 (spc-1055).
+_SHARED_ENV = "SR2_SESSION_LOG_SHARED"
+
+
+def _log_modes() -> tuple[int, int]:
+    """(directory mode, file mode) for session logs."""
+    if os.environ.get(_SHARED_ENV, "").strip().lower() in {"1", "true", "yes"}:
+        return 0o755, 0o644
+    return 0o700, 0o600
 
 
 def _bound_text(text: str) -> Any:
@@ -158,25 +168,26 @@ class SessionLogManager:
             raise OSError(f"session logs disabled by {_DIR_ENV}=off")
         directory = self.directory
         directory.mkdir(parents=True, exist_ok=True)
-        directory.chmod(0o700)
+        directory.chmod(_log_modes()[0])
         return directory
 
     def open_session(self, session_id: str, agent_name: str) -> SessionLog:
         """Create and lock a new log file. Raises OSError if that is impossible."""
         directory = self._ensure_directory()
+        file_mode = _log_modes()[1]
         safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", session_id)[:64]
         stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         while True:
             path = directory / f"{stamp}-{safe_id}-{secrets.token_hex(4)}.jsonl"
             try:
                 fd = os.open(
-                    path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND, 0o600
+                    path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND, file_mode
                 )
                 break
             except FileExistsError:
                 continue
         try:
-            os.fchmod(fd, 0o600)
+            os.fchmod(fd, file_mode)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             log = SessionLog(path, fd, session_id)
         except BaseException:
