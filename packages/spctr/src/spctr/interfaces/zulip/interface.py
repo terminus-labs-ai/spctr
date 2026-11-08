@@ -74,8 +74,6 @@ import time
 import urllib.parse
 from typing import TYPE_CHECKING, Any, Callable
 
-from sr2.models import Message, TextBlock
-
 from spctr.core import RunContext, RunMode
 from spctr.events import (
     AgentHandoffEnd,
@@ -934,6 +932,8 @@ class ZulipInterface:
         # from it without the model ever being asked to act on it. An entry
         # whose text is unreadable carries no context: it is skipped rather
         # than ending the turn the amendment just admitted.
+        from sr2.models import Message, TextBlock
+
         history = getattr(session, "history", None)
         for entry in messages:
             if not _is_own_account(entry):
