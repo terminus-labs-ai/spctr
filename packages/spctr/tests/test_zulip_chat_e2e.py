@@ -1173,7 +1173,7 @@ async def test_own_account_classifier_at_probe_seam_ac16e(tmp_path, monkeypatch)
             batches[0].append(sibling)
         sent: list[dict] = []
         turns: list[tuple[str, list]] = []
-        probe_history: list = []
+        probe_answer: list = []
 
         class _Session:
             def __init__(self) -> None:
@@ -1223,7 +1223,7 @@ async def test_own_account_classifier_at_probe_seam_ac16e(tmp_path, monkeypatch)
                                     "message": m} for m in messages]}
 
             async def get_topic_messages(self, channel_id: int, topic: str):
-                probe_history.append(entry)
+                probe_answer.append(entry)
                 return {"messages": [entry]}
 
             async def send_message(self, **kwargs) -> int:
@@ -1254,7 +1254,7 @@ async def test_own_account_classifier_at_probe_seam_ac16e(tmp_path, monkeypatch)
             await interface.run(agent)
         finally:
             await interface.stop()
-        return turns, sent
+        return turns, sent, probe_answer
 
     # Admitted: the trigger's own id is excluded, a sibling's id is excluded
     # exactly when that sibling rode this poll batch, and no own-sender entry
@@ -1262,7 +1262,7 @@ async def test_own_account_classifier_at_probe_seam_ac16e(tmp_path, monkeypatch)
     # own id) — an own-sender entry enters history as assistant context.
     for name in ("trigger", "own_account", "own_foreign_id",
                  "own_at_trigger_id"):
-        turns, sent = await _probe_case(name)
+        turns, sent, probes = await _probe_case(name)
         assert len(turns) == 1, (
             f"{name}: expected exactly one admitted turn; turns={turns!r}")
         refused = [s for s in sent
@@ -1273,12 +1273,14 @@ async def test_own_account_classifier_at_probe_seam_ac16e(tmp_path, monkeypatch)
         text, history = turns[0]
         assert text == "AC16E-TRIGGER"
         if name == "sibling_in_batch":
-            # Both triggers of the batch admitted off one probe, in order.
+            # Both triggers of the batch admitted off one probe, in order —
+            # that one probe is the single fetched entry (the ledger the case
+            # returns), with the sibling excluded by its batch id.
             assert [t for t, _ in turns] == [
                 "AC16E-TRIGGER", "AC16E-SECOND-TRIGGER"], (
                 f"batch pair did not both run off the one probe: {turns!r}")
-            assert probe_history == [entries["sibling_in_batch"]], (
-                f"the batch pair probed more than once: {probe_history!r}")
+            assert probes == [entries["sibling_in_batch"]], (
+                f"batch pair probed more than once: {probes!r}")
         elif name in ("own_account", "own_foreign_id", "own_at_trigger_id"):
             assert [(m.role, "".join(b.text for b in m.content))
                     for m in history] == [("assistant", own_content)], (
@@ -1292,7 +1294,7 @@ async def test_own_account_classifier_at_probe_seam_ac16e(tmp_path, monkeypatch)
     # nor an id this batch never admitted turns a foreign sender into context.
     for name in ("foreign", "foreign_human", "foreign_own_id",
                  "sibling_not_in_batch"):
-        turns, sent = await _probe_case(name)
+        turns, sent, probes = await _probe_case(name)
         assert turns == [], f"{name}: foreign sender was admitted"
         assert len(sent) == 1, f"{name}: expected exactly one refusal reply"
         assert any(phrase in str(sent[0].get("content", "")).lower()
