@@ -36,12 +36,14 @@ area.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
 import sys
 import time
 import pytest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -53,6 +55,7 @@ from zulip_e2e_support import (  # noqa: E402
     DECOY_MARKER,
     DIEGO_ID,
     OTHER_ID,
+    OWN_ID,
     REPLY_MARKER,
     SECOND_CONFIGURED_CHANNEL,
     SHARED_TOPIC,
@@ -63,6 +66,15 @@ from zulip_e2e_support import (  # noqa: E402
 )
 
 BOT_SEND_USER = "bot@e2e.local"  # synthetic zuliprc identity
+
+# AC16 (FR 9a, spc-1056).  Pinned here — as the frozen
+# ``test_existing_topic_refusal`` pins the refusal by its topic vocabulary —
+# because a bare ``len(replies) == N`` cannot tell "admitted and answered"
+# from "blocked by an explicit message": both send exactly one reply.  The
+# admission rows assert the block texts are absent and the model answered;
+# the block rows assert the block text itself landed.
+REFUSAL_VOCABULARY = ("history", "earlier", "saved conversation", "new topic")
+PROBE_FAILURE_VOCABULARY = ("could not check", "history", "try again")
 
 
 # ---------------------------------------------------------------------------
@@ -881,3 +893,402 @@ def test_supported_area_starts_and_routes(tmp_path):
         _assert_fresh_no_work(run, UNCONFIGURED_CHANNEL, "offch", 1, 1)
     finally:
         harness.close(run)
+
+
+# ---------------------------------------------------------------------------
+# AC16 (FR 9a, amendment 2026-11-07) — messages from the bot's OWN
+# registration account are context, not prior content.
+#
+# These journeys run with archive restore disabled
+# (``Harness(resume_enabled=False)``): the restore short-circuit inside
+# ``_ensure_session`` admits (and short-circuits) whenever a restore reports
+# failure, which every cold-topic turn of this harness hit once
+# ``provenance_store_path`` went empty — the probe, i.e. the FR 9a path,
+# would never run.  Disabling restore reproduces the cold-topic state the
+# probe was built for; every existing journey keeps its own config bytes and
+# its own tracked outcome (spc-965).  The fixture's own registration id is
+# OWN_ID, distinct from BOT_ID, the author the fake records for the bot's
+# sends — see the constant's comment in ``zulip_e2e_support``.
+# ---------------------------------------------------------------------------
+
+
+def _non_system_turns(request: list[dict]) -> list[tuple[str, str]]:
+    """(role, content) of every non-system message, request order."""
+    return [(m.get("role"), str(m.get("content") or ""))
+            for m in request if isinstance(m, dict)
+            and m.get("role") != "system"]
+
+
+def _blocked_reply(reply: dict, vocabulary: tuple[str, ...]) -> None:
+    """One blocking reply: the model's own answer marker absent, and explicit
+    about why it blocked (vocabulary, as the frozen refusal test phrases it)."""
+    assert REPLY_MARKER not in reply["content"], (
+        f"the model answered anyway: {reply!r}")
+    text = reply["content"].lower()
+    assert any(phrase in text for phrase in vocabulary), (
+        f"reply is not explicit about blocking: {reply!r}")
+
+
+def test_own_account_cold_topic_admitted_with_context_ac16a(tmp_path):
+    """AC16-a: own-account seeds are placed before the trigger as assistant
+    context, the turn is admitted, the reply lands, nothing refuses.
+
+    The request must carry the seeds verbatim, in seed order, before the
+    trigger, as assistant role (never user), and exactly once. The request
+    is read under a model-response gate, so the assertions run while the
+    turn is the topic's only activity.
+    """
+    harness = Harness(workdir=tmp_path / "ac16a", resume_enabled=False)
+    run, cwd, env = harness.build()
+    try:
+        first = run.zulip.seed_message(CONFIGURED_CHANNEL, "ask",
+                                       OWN_ID, "AC16A_OWN_ONE")
+        second = run.zulip.seed_message(CONFIGURED_CHANNEL, "ask",
+                                        OWN_ID, "AC16A_OWN_TWO")
+        assert first < second  # the fixture's chronological order: ONE, then TWO
+        harness.launch(run, cwd, env)
+        assert run.wait_started(), _startup_failure(run)
+
+        held = _HeldTurn(run, CONFIGURED_CHANNEL, "ask", "AC16A_TRIGGER")
+        held.arm_and_trigger()
+        request = run.model_messages()[held.model_gen - 1]
+
+        turns = _non_system_turns(request)
+        asst = [text for role, text in turns if role == "assistant"]
+        users = [text for role, text in turns if role == "user"]
+        assert "AC16A_OWN_ONE" in asst and "AC16A_OWN_TWO" in asst, (
+            f"own-account seeds missing from the request as assistant context: "
+            f"{turns!r}")
+        assert users.count("AC16A_TRIGGER") == 1, (
+            f"trigger missing or duplicated as a user turn: {users!r}")
+        assert "AC16A_TRIGGER" not in asst and "AC16A_OWN_ONE" not in users \
+            and "AC16A_OWN_TWO" not in users, (
+            f"a seed entered as a command or the trigger as context: {turns!r}")
+        trigger_at = next(i for i, turn in enumerate(turns)
+                          if turn[1] == "AC16A_TRIGGER")
+        assert trigger_at == len(turns) - 1, (
+            f"the trigger is not the current input: {turns!r}")
+        # Chronological order pinned on (role, text) pairs: exactly the two
+        # seeds, assistant-role, in seed order, before the trigger.
+        seed_turns = [turn for turn in turns if turn[1] in
+                      ("AC16A_OWN_ONE", "AC16A_OWN_TWO")]
+        assert seed_turns == [("assistant", "AC16A_OWN_ONE"),
+                              ("assistant", "AC16A_OWN_TWO")], (
+            f"seeds not assistant-role, ordered and unique: {turns!r}")
+        assert turns.index(seed_turns[0]) < trigger_at, (
+            f"seeds not placed before the trigger: {turns!r}")
+        flat = _flatten(request)
+        for seed in ("AC16A_OWN_ONE", "AC16A_OWN_TWO"):
+            assert _occurrences(flat, seed) == 1, (
+                f"{seed} appears more than once in the request: {turns!r}")
+
+        held.release()
+        assert run.wait_idle(expected_replies=2), _fail(
+            run, "admitted own-account topic never got its answer")
+        replies = _reply_for(run, CONFIGURED_CHANNEL, "ask")
+        assert len(replies) == 1, _fail(
+            run, f"expected exactly the answer in 'ask', got {replies!r}")
+        assert REPLY_MARKER in replies[0]["content"], (
+            f"the reply is not the model's answer: {replies[0]!r}")
+        text = replies[0]["content"].lower()
+        assert not any(phrase in text for phrase in REFUSAL_VOCABULARY), (
+            f"refusal text sent for an admitted topic: {replies[0]!r}")
+        assert run.zulip.history_calls.count(
+            (CONFIGURED_CHANNEL, "ask")) == 1, run.zulip.history_calls
+        # The admitted context is this topic's, not a global facade: a second
+        # cold topic answered after it carries none of it.
+        run.zulip.push_message(CONFIGURED_CHANNEL, "other", DIEGO_ID,
+                               "AC16A_ISOLATION")
+        assert run.wait_idle(expected_replies=3), _fail(
+            run, "the isolation topic never got its reply")
+        other_request = run.model_messages()[-1]
+        other_text = _flatten(other_request)
+        assert "AC16A_ISOLATION" in other_text, _fail(
+            run, f"isolation topic's trigger missing: {other_request!r}")
+        for seed in ("AC16A_OWN_ONE", "AC16A_OWN_TWO"):
+            assert seed not in other_text, (
+                f"own-account context leaked across topics: {other_request!r}")
+    finally:
+        harness.close(run)
+
+
+def test_own_account_plus_foreign_message_refused_ac16b(tmp_path):
+    """AC16-b: one own-account seed plus a prior Diego message is still
+    refused with the unsupported-history reply and no model work."""
+    harness = Harness(workdir=tmp_path / "ac16b", resume_enabled=False)
+    run, cwd, env = harness.build()
+    try:
+        run.zulip.seed_message(CONFIGURED_CHANNEL, "mixed",
+                               OWN_ID, "AC16B_OWN_ASK")
+        run.zulip.seed_message(CONFIGURED_CHANNEL, "mixed",
+                               DIEGO_ID, "AC16B_PRIOR_DIEGO")
+        harness.launch(run, cwd, env)
+        assert run.wait_started(), _startup_failure(run)
+
+        run.zulip.push_message(CONFIGURED_CHANNEL, "mixed",
+                               DIEGO_ID, "AC16B_TRIGGER")
+        assert run.wait_idle(expected_replies=1), _fail(
+            run, "mixed own-account + foreign topic produced no refusal reply")
+        replies = _reply_for(run, CONFIGURED_CHANNEL, "mixed")
+        assert len(replies) == 1, _fail(run, f"expected 1 refusal: {replies!r}")
+        _blocked_reply(replies[0], REFUSAL_VOCABULARY)
+        assert len(run.model.requests) == 0, (
+            _fail(run, "model work was performed for a foreign prior message"))
+        # A refusal blocks; it never seeds. Nothing of the refused topic
+        # reaches the next fresh topic's turn.
+        run.zulip.push_message(CONFIGURED_CHANNEL, "fresh", DIEGO_ID,
+                               "AC16B_FRESH")
+        assert run.wait_idle(expected_replies=2), _fail(
+            run, "fresh topic after the AC16-b refusal never got its reply")
+        fresh = _reply_for(run, CONFIGURED_CHANNEL, "fresh")
+        assert len(fresh) == 1 and REPLY_MARKER in fresh[0]["content"], (
+            f"fresh topic after AC16-b refusal was not answered: {fresh!r}")
+        fresh_text = _flatten(run.model_messages()[-1])
+        assert "AC16B_OWN_ASK" not in fresh_text \
+            and "AC16B_PRIOR_DIEGO" not in fresh_text, (
+            "the refused topic's content entered the fresh turn")
+    finally:
+        harness.close(run)
+
+
+def test_other_bot_message_refused_ac16c(tmp_path):
+    """AC16-c: another BOT's message is not own-account context — refused,
+    no model work (FR 9 unchanged for foreign senders)."""
+    harness = Harness(workdir=tmp_path / "ac16c", resume_enabled=False)
+    run, cwd, env = harness.build()
+    try:
+        run.zulip.seed_message(CONFIGURED_CHANNEL, "otherbot",
+                               BOT_ID, "AC16C_OTHER_BOT_ALERT")
+        harness.launch(run, cwd, env)
+        assert run.wait_started(), _startup_failure(run)
+
+        run.zulip.push_message(CONFIGURED_CHANNEL, "otherbot",
+                               DIEGO_ID, "AC16C_TRIGGER")
+        assert run.wait_idle(expected_replies=1), _fail(
+            run, "other-bot-populated topic produced no refusal reply")
+        replies = _reply_for(run, CONFIGURED_CHANNEL, "otherbot")
+        assert len(replies) == 1, _fail(run, f"expected 1 refusal: {replies!r}")
+        _blocked_reply(replies[0], REFUSAL_VOCABULARY)
+        assert len(run.model.requests) == 0, (
+            _fail(run, "model work was performed for another bot's message"))
+    finally:
+        harness.close(run)
+
+
+def test_probe_failure_blocks_ac16d(tmp_path):
+    """AC16-d: a malformed probe answer blocks the turn with the probe-failure
+    reply and no model work (unchanged for the FR 9a code path)."""
+    harness = Harness(workdir=tmp_path / "ac16d", resume_enabled=False)
+    run, cwd, env = harness.build()
+    try:
+        harness.launch(run, cwd, env)
+        assert run.wait_started(), _startup_failure(run)
+
+        attempts: list[dict] = []
+        run.zulip.on_send = lambda form: attempts.append(dict(form))
+        run.zulip.fail_history = True
+        run.zulip.push_message(CONFIGURED_CHANNEL, "probebroken",
+                               DIEGO_ID, "AC16D_TRIGGER")
+        assert run.wait_idle(expected_replies=1), _fail(
+            run, "broken probe produced no explicit blocking reply")
+        replies = _reply_for(run, CONFIGURED_CHANNEL, "probebroken")
+        assert len(replies) == 1, _fail(run, f"expected 1 block reply: {replies!r}")
+        _blocked_reply(replies[0], PROBE_FAILURE_VOCABULARY)
+        assert len(run.model.requests) == 0, (
+            _fail(run, "model work was performed after a broken probe"))
+        assert len(attempts) == 1, (
+            f"expected exactly one blocking send attempt: {attempts}")
+    finally:
+        run.zulip.on_send = None
+        harness.close(run)
+
+
+async def test_own_account_classifier_at_probe_seam_ac16e(tmp_path, monkeypatch):
+    """AC16-e: the real cold-topic classifier over mixed senders — trigger id,
+    an admitted id, the bot's own registration id and a foreign sender.
+
+    Drives the shipped ``ZulipInterface`` once per entry, with that entry as
+    the sole probe result, and reads the outcome only through observable
+    behavior: admitted (the turn's model call runs, no reply) or refused
+    (``_REFUSAL_TEXT`` sent, no model call).  The three exclusions are
+    independent, so an entry carrying every other id still refuses.
+    """
+    import spctr.interfaces.zulip.client as client_mod
+    import spctr.interfaces.zulip.interface as iface_mod
+    from spctr.interfaces.zulip import ZulipConfig, ZulipInterface
+    from spctr.interfaces.zulip.client import ZulipCredentials
+
+    trigger_id, admitted_id = 1001, 1002
+    own_content = "AC16E-OWN-CONTEXT"
+    entries = {
+        # Each case probes a fetch holding ONLY this entry, so the outcome
+        # shows what that entry alone is: an excluded id (the trigger, or a
+        # sibling this batch admitted), own-account context, or prior
+        # content.  "sibling_*" entries carry an id that is a trigger only
+        # when a second message rides in the same poll batch.
+        "trigger": {"id": trigger_id, "sender_id": DIEGO_ID,
+                    "content": "AC16E-TRIGGER-TEXT"},
+        "sibling_in_batch": {"id": admitted_id, "sender_id": DIEGO_ID,
+                             "content": "AC16E-SIBLING-IN-BATCH"},
+        "sibling_not_in_batch": {"id": admitted_id, "sender_id": DIEGO_ID,
+                                 "content": "AC16E-SIBLING-ELSEWHERE"},
+        "own_account": {"id": 1003, "sender_id": OWN_ID,
+                        "content": own_content},
+        "foreign": {"id": 1004, "sender_id": BOT_ID,
+                    "content": "AC16E-FOREGN-PRIOR"},
+        "foreign_human": {"id": 1006, "sender_id": DIEGO_ID,
+                          "content": "AC16E-FOREGN-HUMAN"},
+        "own_foreign_id": {"id": 1005, "sender_id": OWN_ID,
+                           "trigger_id": trigger_id,
+                           "admitted_ids": [admitted_id, trigger_id],
+                           "content": own_content},
+        "foreign_own_id": {"id": 1007, "sender_id": BOT_ID,
+                           "content": "AC16E-FOREGN-AT-ADMITTED-ID"},
+        "own_at_trigger_id": {"id": trigger_id, "sender_id": OWN_ID,
+                              "content": own_content},
+    }
+
+    async def _probe_case(name: str):
+        entry = entries[name]
+        # The batch-exclusion half of the classifier needs a real second
+        # trigger riding the same poll batch — admitted IDs come from the
+        # batch itself, never from a hand-written set.  Both sibling cases
+        # probe the SAME entry (a foreign prior message at the sibling's id):
+        # delivered in the batch it is excluded, absent from it it is prior.
+        sibling = {"id": admitted_id, "type": "stream",
+                   "stream_id": CONFIGURED_CHANNEL,
+                   "display_recipient": "sandbox", "subject": "probe",
+                   "sender_id": DIEGO_ID, "content": "AC16E-SECOND-TRIGGER"}
+        batches = [[{"id": trigger_id, "type": "stream",
+                     "stream_id": CONFIGURED_CHANNEL,
+                     "display_recipient": "sandbox", "subject": "probe",
+                     "sender_id": DIEGO_ID, "content": "AC16E-TRIGGER"}]]
+        if name == "sibling_in_batch":
+            batches[0].append(sibling)
+        sent: list[dict] = []
+        turns: list[tuple[str, list]] = []
+        probe_history: list = []
+
+        class _Session:
+            def __init__(self) -> None:
+                self.history = []
+
+            async def restore_history(self):
+                from spctr.resume import ResumeResult
+                return ResumeResult([], interrupted=False, restore_failed=False)
+
+            def set_run_context(self, ctx) -> None:
+                pass
+
+            async def stream_message(self, text: str):
+                turns.append((text, list(self.history)))
+                from spctr.events import AgentDone, AgentTextDelta
+                yield AgentTextDelta(text="model answered")
+                yield AgentDone(tool_calls_executed=0)
+
+            def close(self) -> None:
+                pass
+
+        class _Agent:
+            config = SimpleNamespace(agent=SimpleNamespace(name="miranda"))
+
+            def create_session(self, frame_id: str):
+                return _Session()
+
+            def apply_config(self, config) -> None:
+                pass
+
+        class _Client:
+            async def register(self) -> dict:
+                # The registration contract's own-account identity: user_id.
+                return {"queue_id": "q", "last_event_id": 0,
+                        "user_id": OWN_ID,
+                        "realm_users": [{"user_id": DIEGO_ID,
+                                         "is_bot": False},
+                                        {"user_id": OWN_ID, "is_bot": True}]}
+
+            async def get_events(self, queue_id: str, last_event_id: int):
+                if not batches:
+                    interface._running = False
+                    await asyncio.sleep(0)
+                    return {"events": []}
+                messages = batches.pop(0)
+                return {"events": [{"id": m["id"], "type": "message",
+                                    "message": m} for m in messages]}
+
+            async def get_topic_messages(self, channel_id: int, topic: str):
+                probe_history.append(entry)
+                return {"messages": [entry]}
+
+            async def send_message(self, **kwargs) -> int:
+                sent.append(kwargs)
+                return len(sent)
+
+            async def update_message(self, message_id: int,
+                                     content: str) -> None:
+                sent[message_id - 1] = {**sent[message_id - 1],
+                                        "content": content}
+
+            async def aclose(self) -> None:
+                pass
+
+        monkeypatch.setattr(iface_mod, "ZulipClient", client_mod.ZulipClient)
+        monkeypatch.setattr(iface_mod, "load_zulip_credentials",
+                            lambda path: ZulipCredentials(
+                                email="bot@test.local", api_key="k",
+                                site="http://127.0.0.1:1"))
+        interface = ZulipInterface(ZulipConfig(
+            zuliprc="/unused.zuliprc", users=[DIEGO_ID],
+            channels=[CONFIGURED_CHANNEL]))
+        client = _Client()
+        monkeypatch.setattr(iface_mod, "ZulipClient", lambda **kw: client)
+        agent = _Agent()
+        await interface.start(agent)
+        try:
+            await interface.run(agent)
+        finally:
+            await interface.stop()
+        return turns, sent
+
+    # Admitted: the trigger's own id is excluded, a sibling's id is excluded
+    # exactly when that sibling rode this poll batch, and no own-sender entry
+    # is prior content (fresh id, the admitted sibling id, even the trigger's
+    # own id) — an own-sender entry enters history as assistant context.
+    for name in ("trigger", "own_account", "own_foreign_id",
+                 "own_at_trigger_id"):
+        turns, sent = await _probe_case(name)
+        assert len(turns) == 1, (
+            f"{name}: expected exactly one admitted turn; turns={turns!r}")
+        refused = [s for s in sent
+                   if any(phrase in str(s.get("content", "")).lower()
+                          for phrase in REFUSAL_VOCABULARY)]
+        assert refused == [], (
+            f"{name}: admitted turn also sent the unsupported-history text")
+        text, history = turns[0]
+        assert text == "AC16E-TRIGGER"
+        if name == "sibling_in_batch":
+            # Both triggers of the batch admitted off one probe, in order.
+            assert [t for t, _ in turns] == [
+                "AC16E-TRIGGER", "AC16E-SECOND-TRIGGER"], (
+                f"batch pair did not both run off the one probe: {turns!r}")
+            assert probe_history == [entries["sibling_in_batch"]], (
+                f"the batch pair probed more than once: {probe_history!r}")
+        elif name in ("own_account", "own_foreign_id", "own_at_trigger_id"):
+            assert [(m.role, "".join(b.text for b in m.content))
+                    for m in history] == [("assistant", own_content)], (
+                f"own-account context not assistant-authored before the turn: "
+                f"{history!r}")
+        else:
+            assert history == [], (
+                f"{name}: excluded entry wrongly entered history: {history!r}")
+
+    # Refused: foreign senders stay prior content, and neither the trigger id
+    # nor an id this batch never admitted turns a foreign sender into context.
+    for name in ("foreign", "foreign_human", "foreign_own_id",
+                 "sibling_not_in_batch"):
+        turns, sent = await _probe_case(name)
+        assert turns == [], f"{name}: foreign sender was admitted"
+        assert len(sent) == 1, f"{name}: expected exactly one refusal reply"
+        assert any(phrase in str(sent[0].get("content", "")).lower()
+                   for phrase in REFUSAL_VOCABULARY), (
+            f"{name}: refusal reply not the unsupported-history text: {sent!r}")

@@ -35,6 +35,14 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DIEGO_ID = 8          # spec Dependencies: Diego user ID
 BOT_ID = 9            # spec Dependencies: Miranda bot user ID
 OTHER_ID = 7          # disallowed human user
+# FR 9a (spc-1056): the registration identity of the RUNNING process.  The
+# fake Zulip answers POST /register with this top-level ``user_id`` — the
+# register-queue contract's own-account id — while it keeps authoring bot
+# replies as BOT_ID (the send-response id, the ``realm_bots`` entry and the
+# allowlisted id everywhere today).  A distinct constant is deliberate:
+# nothing in the existing fixtures seeds a message from it, so every test
+# that predates FR 9a classifies exactly the same messages as before.
+OWN_ID = 15
 CONFIGURED_CHANNEL = 42
 UNCONFIGURED_CHANNEL = 43
 SECOND_CONFIGURED_CHANNEL = 44   # second admitted no-area channel
@@ -249,7 +257,8 @@ class ZulipServer:
     from "prior content" by ID, as the frozen journey requires.
     """
 
-    def __init__(self, *, bot_id: int, user_ids: list[int]):
+    def __init__(self, *, bot_id: int, user_ids: list[int],
+                 own_user_id: int | None = None):
         self._handler = _ServingHandler(self._dispatch)
         self.queue_id = "q-00000000-0000-0000-0000-000000000000"
         self._events: list[dict] = []
@@ -258,6 +267,10 @@ class ZulipServer:
         self._messages: dict[tuple[int, str], list[dict]] = {}
         self._bot_id = bot_id
         self._user_ids = user_ids
+        # Top-level register-queue ``user_id``: the running process's own
+        # account (FR 9a).  None keeps the response key-free, as it was
+        # before that identity existed.
+        self._own_user_id = own_user_id
         self.register_calls = 0
         self.events_calls = 0
         self.history_calls: list[tuple[int, str]] = []
@@ -375,13 +388,19 @@ class ZulipServer:
         realm_users = [
             {"user_id": uid, "is_bot": False} for uid in self._user_ids
         ] + [{"user_id": self._bot_id, "is_bot": True}]
-        return 200, json.dumps({
+        payload = {
             "result": "success",
             "queue_id": self.queue_id,
             "last_event_id": 0,
             "realm_users": realm_users,
             "realm_bots": [{"bot_id": self._bot_id}],
-        })
+        }
+        if self._own_user_id is not None:
+            # Real register-queue answers carry the authenticated user's id
+            # top-level; this is the only place the process's own account id
+            # reaches it (https://zulip.com/api/register-queue).
+            payload["user_id"] = self._own_user_id
+        return 200, json.dumps(payload)
 
     def _events_call(self, parsed):
         held = not self._poll_gate.is_set()
@@ -880,7 +899,7 @@ agent:
   skills: []
   skills_dirs: []
   mcp_servers: []
-
+{resume_block}
 models:
   default:
     model: e2e-synthetic-model
@@ -937,6 +956,13 @@ class Harness:
     # and the rendered config file, which edit_config rewrites in place.
     topic_docs: Callable[[Path], None] | None = None
     config_file: Path | None = None
+    # FR 9a (spc-1056): archive restore runs before the cold-topic probe and
+    # short-circuits it whenever a restore failure is reported, so a journey
+    # that must exercise the probe (a topic's own-account context) renders
+    # ``resume: {enabled: false}`` here — the pre-restore cold-topic state.
+    # None (the default) renders NO resume block at all, leaving every
+    # existing journey's config bytes unchanged.
+    resume_enabled: bool | None = None
 
     def edit_config(self, edits: dict[str, str]) -> None:
         """Replace literal segments of the running CLI's config file; each
@@ -956,7 +982,8 @@ class Harness:
         (sr2_home / "logs" / "sessions").mkdir(parents=True, exist_ok=True)
         cwd.mkdir(parents=True, exist_ok=True)
 
-        zulip = ZulipServer(bot_id=BOT_ID, user_ids=[DIEGO_ID, OTHER_ID])
+        zulip = ZulipServer(bot_id=BOT_ID, user_ids=[DIEGO_ID, OTHER_ID],
+                            own_user_id=OWN_ID)
         model = ModelServer(answer=REPLY_MARKER)
         try:
             return self._build_started(workdir, sr2_home, cwd, zulip, model)
@@ -1001,6 +1028,10 @@ class Harness:
         channels_yaml = "\n".join(f"    - {ch}" for ch in channels)
         channel_areas_yaml = "\n".join(
             f'    "{ch}": {area!r}' for ch, area in channels.items())
+        resume_block = (
+            "" if self.resume_enabled is None else
+            f"  resume:\n    enabled: {'true' if self.resume_enabled else 'false'}"
+        )
         config_text = _CONFIG_TEMPLATE.format(
             base_url=f"{model.base_url}/v1",
             topics_root=str(topics_root),
@@ -1009,6 +1040,7 @@ class Harness:
             diego_id=DIEGO_ID,
             channels_yaml=channels_yaml,
             channel_areas_yaml=channel_areas_yaml,
+            resume_block=resume_block,
         )
         config_path = workdir / "config.yaml"
         config_path.write_text(config_text, encoding="utf-8")

@@ -31,11 +31,17 @@ whole-config reload:
 - A triggered cold topic is probed through the topic history API
   (https://zulip.com/api/get-messages, narrow JSON-encoded). The current
   trigger and eligible siblings from the same event batch are already in
-  that fetch, so their message IDs are excluded; ANY other message — including bot-only alerts — refuses the
-  topic with an explicit unsupported-history reply and NO model/tool work
-  until complete history restoration ships. Fresh messages this process
-  already admitted in-process never make a new topic look populated. A probe
-  failure or malformed answer blocks the model turn with an explicit error.
+  that fetch, so their message IDs are excluded. Of what is left, a message
+  sent from this process's own registration account (the response's
+  ``user_id``) is context, not prior content (FR 9a): when every remaining
+  message carries that sender, the turn is admitted and those messages are
+  placed in the new Session's history in chronological order before the
+  trigger as assistant-authored context — never as commands. Any other
+  sender's message, another bot's included, refuses the topic with an
+  explicit unsupported-history reply and NO model/tool work until complete
+  history restoration ships. Fresh messages this process already admitted
+  in-process never make a new topic look populated. A probe failure or
+  malformed answer blocks the model turn with an explicit error.
 - Humans the ``users`` list admits (empty = any human) in admitted
   channels trigger turns; bots and the bot's own account (registration
   ``realm_users``/``user_id``) never do, and unadmitted channels are
@@ -67,6 +73,8 @@ import re
 import time
 import urllib.parse
 from typing import TYPE_CHECKING, Any, Callable
+
+from sr2.models import Message, TextBlock
 
 from spctr.core import RunContext, RunMode
 from spctr.events import (
@@ -892,13 +900,24 @@ class ZulipInterface:
             return None
         # The trigger (and any trigger this process already admitted to a
         # Session) appears in the fetch without being prior content; each is
-        # excluded by its unique id. Anything else — a bot alert included —
+        # excluded by its unique id. Of the rest, a message from this
+        # process's own registration account is context (FR 9a) — never a
+        # command — while any other sender's message, another bot's included,
         # is prior content.
+        def _is_own_account(entry: Any) -> bool:
+            return (
+                isinstance(entry, dict)
+                and self._bot_user_id is not None
+                and entry.get("sender_id") == self._bot_user_id
+            )
+
         def _is_prior(entry: Any) -> bool:
             if not isinstance(entry, dict):
                 return True
             entry_id = entry.get("id")
-            return entry_id != trigger_id and entry_id not in candidate_ids
+            if entry_id == trigger_id or entry_id in candidate_ids:
+                return False
+            return not _is_own_account(entry)
 
         if any(_is_prior(entry) for entry in messages):
             logger.info(
@@ -909,6 +928,20 @@ class ZulipInterface:
             await self._send_reply(channel_id, topic, _REFUSAL_TEXT)
             session.close()
             return None
+        # FR 9a: what the probe found besides the trigger is this account's
+        # own writing. It enters the new Session as assistant-authored context
+        # in chronological order — never a user turn — so the trigger answers
+        # from it without the model ever being asked to act on it. An entry
+        # whose text is unreadable carries no context: it is skipped rather
+        # than ending the turn the amendment just admitted.
+        history = getattr(session, "history", None)
+        for entry in messages:
+            if not _is_own_account(entry):
+                continue  # the trigger, an admitted sibling, or a malformed entry
+            content = entry.get("content")
+            if not isinstance(content, str) or not isinstance(history, list):
+                continue
+            history.append(Message(role="assistant", content=[TextBlock(text=content)]))
         session.set_run_context(
             RunContext(
                 interface="zulip",
