@@ -982,8 +982,14 @@ def test_own_account_cold_topic_admitted_with_context_ac16a(tmp_path):
             assert _occurrences(flat, seed) == 1, (
                 f"{seed} appears more than once in the request: {turns!r}")
 
+        # Release: the parked HTTP request IS answered afterwards (the fake
+        # blocks on the release gate, then returns its answer), so the held
+        # turn delivers its own reply: its placeholder was posted pre-model
+        # and edited into the answer (spc-1014).  The fixture's ledger records
+        # each bot message as the topic finally shows it, hence exactly one
+        # reply here.
         held.release()
-        assert run.wait_idle(expected_replies=2), _fail(
+        assert run.wait_idle(expected_replies=1), _fail(
             run, "admitted own-account topic never got its answer")
         replies = _reply_for(run, CONFIGURED_CHANNEL, "ask")
         assert len(replies) == 1, _fail(
@@ -995,11 +1001,11 @@ def test_own_account_cold_topic_admitted_with_context_ac16a(tmp_path):
             f"refusal text sent for an admitted topic: {replies[0]!r}")
         assert run.zulip.history_calls.count(
             (CONFIGURED_CHANNEL, "ask")) == 1, run.zulip.history_calls
-        # The admitted context is this topic's, not a global facade: a second
-        # cold topic answered after it carries none of it.
+        # A turn on a warm second topic after an admitted own-account topic:
+        # the admission and the seeded context never leak across topics.
         run.zulip.push_message(CONFIGURED_CHANNEL, "other", DIEGO_ID,
                                "AC16A_ISOLATION")
-        assert run.wait_idle(expected_replies=3), _fail(
+        assert run.wait_idle(expected_replies=2), _fail(
             run, "the isolation topic never got its reply")
         other_request = run.model_messages()[-1]
         other_text = _flatten(other_request)
