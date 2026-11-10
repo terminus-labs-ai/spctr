@@ -117,7 +117,6 @@ def test_cli_agents_dir_default_follows_sr2_home():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-@pytest.mark.baseline_debt("spc-1017")
 async def test_run_command_does_not_write_under_real_sr2_home(tmp_path):
     """run_command() mkdirs its log dir eagerly; that dir must be in SR2_HOME."""
     probe_agent = "spc1004probe"

@@ -3,9 +3,10 @@
 A ``baseline_debt`` marker cites the bead that tracks the known failure.
 This guard fails when any collected ``baseline_debt`` marker carries no bead
 id or a malformed one (not matching ``^(spc|sr2)-\\d+$``), so a marker can
-never silently lose its ticket.  It also asserts that each of the five beads
-FR5 names (spc-1017, spc-1029, spc-1030, spc-179, spc-965) has at least one
-test carrying the marker, so a re-marking pass cannot quietly drop one.
+never silently lose its ticket. It also asserts that each still-open bead FR5
+names (spc-1029, spc-1030, spc-965; spc-1017 and spc-179 closed
+2026-11-10) has at least one test carrying the marker, so a re-marking pass
+cannot quietly drop one.
 
 The marker report is produced by a small pytest plugin
 (``_synthetic_baseline_debt_plugin.py``) that a child ``pytest --collect-only
@@ -25,8 +26,8 @@ from pathlib import Path
 
 import pytest
 
-# The beads FR5 names; each must have >= 1 test marked baseline_debt.
-REQUIRED_BEADS = ("spc-1017", "spc-1029", "spc-1030", "spc-179", "spc-965")
+# The still-open FR5 beads; each must have >= 1 test marked baseline_debt.
+REQUIRED_BEADS = ("spc-1029", "spc-1030", "spc-965")
 
 BEAD_ID = r"(spc|sr2)-\d+"
 
@@ -93,9 +94,9 @@ def _markers_from_report(proc: subprocess.CompletedProcess[str]) -> list[dict]:
 
 
 @pytest.mark.baseline_debt("spc-1040")
-def test_real_suite_markers_are_valid_and_cover_the_five_beads() -> None:
+def test_real_suite_markers_are_valid_and_cover_the_still_open_beads() -> None:
     """AC6-r1: the collected suite carries only valid bead ids and at least
-    one marked test per bead of the five FR5 names."""
+    one marked test per still-open FR5 bead."""
     markers: list[dict] = []
     for member in (PACKAGES / "sr2", PACKAGES / "spctr"):
         proc = _run_pytest_collect(

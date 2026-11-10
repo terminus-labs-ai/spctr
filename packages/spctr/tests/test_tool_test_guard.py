@@ -204,7 +204,6 @@ class TestCheck:
 
 class TestRealCollection:
     @pytest.mark.asyncio
-    @pytest.mark.baseline_debt("spc-179")
     async def test_collects_real_tests(self, tmp_path: Path):
         """Verify _collect_tests actually runs pytest and parses output."""
         (tmp_path / "test_real.py").write_text(
@@ -218,7 +217,6 @@ class TestRealCollection:
         assert "test_alpha" in collected or len(collected) >= 2
 
     @pytest.mark.asyncio
-    @pytest.mark.baseline_debt("spc-179")
     async def test_collected_includes_method(self, tmp_path: Path):
         """pytest collects methods in test classes too."""
         (tmp_path / "test_class.py").write_text(
