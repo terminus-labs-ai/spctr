@@ -8,6 +8,7 @@ content into a CompletionRequest and collects per-layer metrics.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -54,11 +55,16 @@ class PipelineEngine:
         tracer: "Tracer | None" = None,
         bus: EventBus | None = None,
         ladder: "DegradationLadder | None" = None,
+        session_frame_provider: Callable[[str], str | None] | None = None,
     ) -> None:
         self.token_counter = token_counter
         self._max_cycles = max_cycles
         self._token_budget = token_budget
         self._tracer = tracer
+        # sr2-158: origin-aware active-frame provider (Dependencies plumbing);
+        # the orchestrator resolves it once per turn via set_session_frame().
+        # None (default) keeps every entry on the "default" session fallback.
+        self._session_frame_provider = session_frame_provider
         self._turn_seq: int = -1
         self._firing_seq: int = -1
         self._bus = bus if bus is not None else EventBus()
@@ -92,6 +98,27 @@ class PipelineEngine:
                     continue
                 subscribed_names.add(subscription.event_name)
                 self._bus.subscribe(subscription, layer.handle_event)
+
+    def set_session_frame(self, origin: str = "") -> None:
+        """Resolve the active session frame for *origin* and stamp it on the layers.
+
+        sr2-158: called once per turn (before the turn's entries are
+        synthesized) so every pipeline-layer provenance entry built during
+        the turn carries the frame id the provider resolves for the turn's
+        origin. When no provider is set, or it resolves no frame, the
+        layers fall back to ``""`` and entry synthesis keeps the "default"
+        session id — unchanged behaviour. The public ``start_turn`` API is
+        intentionally not widened; the orchestrator calls this right
+        before it.
+        """
+        frame = (
+            self._session_frame_provider(origin or "")
+            if self._session_frame_provider is not None
+            else None
+        )
+        session_id = frame or ""
+        for layer in self._layers:
+            layer.session_id = session_id
 
     async def start_turn(self, turn_seq: int) -> None:
         """Begin a new turn: reset state, emit turn_start, and drain the bus.

@@ -578,6 +578,10 @@ class SR2:
             tracer=tracer,
             bus=shared_bus,
             ladder=ladder,
+            # sr2-158: origin-aware active-frame provider (the same
+            # Dependencies plumbing _stamp_block uses) — the engine resolves
+            # it once per turn and stamps pipeline-layer entries.
+            session_frame_provider=deps.active_frame_provider,
         )
 
     # ------------------------------------------------------------------
@@ -1162,6 +1166,9 @@ class SR2:
 
         # Start the turn via the new engine API.
         next_seq = self._engine.turn_seq + 1
+        # sr2-158: resolve the turn's active frame for its origin once,
+        # before any layer synthesizes provenance entries this turn.
+        self._engine.set_session_frame(origin)
         await self._engine.start_turn(turn_seq=next_seq)
         # sr2-93 (FR3): per-turn archive ordering follows the engine turn.
         self._turn_archivist.turn_seq = next_seq

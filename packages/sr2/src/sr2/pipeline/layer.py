@@ -312,6 +312,7 @@ def _synthesize_entries(
     origin_kind: str,
     source_layer: str,
     default_sources: tuple[str, ...] = (),
+    session_id: str = "",
 ) -> list[Entry]:
     """Build one provenance Entry per raw content item (FR1).
 
@@ -320,6 +321,11 @@ def _synthesize_entries(
     causal fields are derived. ``default_sources`` applies only to origins
     that require sources (transformer); resolver-origin entries stay
     genesis.
+
+    ``session_id`` (sr2-158): the active frame id resolved for the turn's
+    origin, when the turn runs under a session frame. Precedence per item:
+    a declaration's explicit ``session_id`` wins, then the active frame id,
+    then the "default" fallback (unchanged for frame-less runs).
     """
     entries: list[Entry] = []
     for index, item in enumerate(items):
@@ -350,7 +356,7 @@ def _synthesize_entries(
                 sources=sources,
                 origin=origin,
                 layer=source_layer,
-                session_id=(declared or {}).get("session_id") or "default",
+                session_id=(declared or {}).get("session_id") or session_id or "default",
                 created_at=datetime.now(tz=timezone.utc),
                 scope=ContextScope(owner_id="default"),
                 meta=fields.pop("meta", {}),
@@ -383,6 +389,7 @@ class Layer:
         priority: int = 0,
         condition: str | None = None,
         run_context_provider: Callable[[], dict[str, str] | None] | None = None,
+        session_id: str = "",
     ) -> None:
         self.name = name
         self.target = target
@@ -421,6 +428,9 @@ class Layer:
 
         self.condition: str | None = condition
         self._run_context_provider = run_context_provider
+        # sr2-158: active frame id for this run (see _synthesize_entries);
+        # the engine sets it once per turn from the origin-aware provider.
+        self.session_id: str = session_id
 
     # -- wiring ---------------------------------------------------------------
 
@@ -731,6 +741,7 @@ class Layer:
                             origin_kind="transformer",
                             source_layer=result.source_layer,
                             default_sources=raw_sources,
+                            session_id=self.session_id,
                         )
                     )
                 # Queue events emitted by transformer
@@ -790,6 +801,7 @@ class Layer:
                     origin_name=resolved.resolver_name,
                     origin_kind="resolver",
                     source_layer=resolved.source_layer,
+                    session_id=self.session_id,
                 )
             )
         # Queue any events emitted by the resolver onto the bus
