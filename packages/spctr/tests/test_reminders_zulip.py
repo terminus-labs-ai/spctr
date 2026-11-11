@@ -775,10 +775,11 @@ class TestAC9RetryPolicy:
         _seed(store, "flaky", NOW)
 
         def stored_due():
-            with store._connect() as conn:
-                return tuple(conn.execute(
-                    "SELECT due_at, next_attempt_at FROM reminders WHERE id = 'r1'"
-                ).fetchone())
+            got = store.get("r1")
+            return (
+                _ts(got.due_at) if got is not None else None,
+                _ts(got.next_attempt_at) if got is not None and got.next_attempt_at is not None else None,
+            )
 
         original_due, original_next = stored_due()
         dues = []
@@ -867,11 +868,17 @@ class TestAC9RetryPolicy:
 
 
 def _seed(store: ReminderStore, text: str, due_at: datetime,
-          created_at: datetime | None = None, agent: str = "miranda") -> str:
-    """Insert one row directly (bypasses tool validation)."""
-    return store.create(
+          created_at: datetime | None = None, agent: str = "miranda",
+          status: str = "pending", id: str | None = None) -> str:
+    """Insert one row directly (bypasses tool validation), then move it to
+    *status* through the store's public write API: 'sending' via claim(),
+    'delivered' via claim() + mark_delivered() (a delivered row must carry
+    a delivered_at, which mark_delivered sets), 'failed' via the bounded
+    retry policy of due_with_retry() run to its terminal state,
+    'cancelled' via cancel()."""
+    rid = store.create(
         Reminder(
-            id="r0", agent=agent, platform="zulip",
+            id=id or "r0", agent=agent, platform="zulip",
             requester_id="8", requester_mention="@8",
             origin_channel_id="42", dest_channel_id="42",
             dest_channel_name="spctr", dest_topic="reminders",
@@ -880,15 +887,22 @@ def _seed(store: ReminderStore, text: str, due_at: datetime,
             delivered_at=None, status="pending", attempts=0, last_error=None,
         )
     )
-
-
-def _mark(store: ReminderStore, reminder_id: str, status: str) -> None:
-    conn = store._connect()
-    conn.execute(
-        "UPDATE reminders SET status = ? WHERE id = ?", (status, reminder_id)
-    )
-    conn.commit()
-    conn.close()
+    if status == "sending":
+        assert store.claim(rid) is True
+    elif status == "delivered":
+        assert store.claim(rid) is True
+        store.mark_delivered(rid, NOW)
+    elif status == "failed":
+        # due_with_retry() returns to pending until the attempt budget
+        # (max_attempts=3) runs out: the third failure is terminal.
+        assert store.due_with_retry(rid, "seed", NOW) == "pending"
+        assert store.due_with_retry(rid, "seed", NOW) == "pending"
+        assert store.due_with_retry(rid, "seed", NOW) == "failed"
+    elif status == "cancelled":
+        assert store.cancel(rid) is True
+    elif status != "pending":
+        raise ValueError(f"unknown seed status: {status!r}")
+    return rid
 
 
 def _ts(value: datetime) -> str:
@@ -910,19 +924,16 @@ class TestAC10ListCancel:
         r_second = _seed(store, "second", NOW + timedelta(minutes=30))
         r_first = _seed(store, "first", NOW + timedelta(minutes=10))
         r_long = _seed(store, "x" * 100, NOW + timedelta(minutes=20))
-        r_recent = _seed(store, "recent failed", NOW - timedelta(days=1))
-        _mark(store, r_recent, "failed")
+        # Failed 1 day ago (its due_at is its last attempt): inside the
+        # 7-day window.
+        r_recent = _seed(store, "recent failed", NOW - timedelta(days=1), status="failed")
         # Failed 6 days ago (its due_at is its last attempt): inside the
         # window, and first in due order.
-        r_old = _seed(store, "old failed", NOW - timedelta(days=6))
-        _mark(store, r_old, "failed")
+        r_old = _seed(store, "old failed", NOW - timedelta(days=6), status="failed")
         # Failed 8 days ago: outside the 7-day window, stays out.
-        r_stale = _seed(store, "stale failed", NOW - timedelta(days=8))
-        _mark(store, r_stale, "failed")
-        r_gone = _seed(store, "gone", NOW + timedelta(minutes=40))
-        _mark(store, r_gone, "cancelled")
-        r_done = _seed(store, "delivered one", NOW + timedelta(minutes=15))
-        _mark(store, r_done, "delivered")
+        r_stale = _seed(store, "stale failed", NOW - timedelta(days=8), status="failed")
+        r_gone = _seed(store, "gone", NOW + timedelta(minutes=40), status="cancelled")
+        r_done = _seed(store, "delivered one", NOW + timedelta(minutes=15), status="delivered")
         _seed(store, "other agent", NOW + timedelta(minutes=5), agent="anna")
 
         tool = _tool(store, origin=_origin())
@@ -971,11 +982,13 @@ class TestAC10ListCancel:
 
         err = await tool(action="cancel", id="r99")
         assert err.startswith("Error:")
+        # create() allocates the next free r<N>; a terminal/cancelled row
+        # is parked and out of the way, so each seed gets a fresh ID.
         for status in ("delivered", "failed", "cancelled"):
-            _mark(store, "r1", status)
-            err = await tool(action="cancel", id="r1")
+            rid = _seed(store, "b", NOW + timedelta(minutes=10), status=status)
+            err = await tool(action="cancel", id=rid)
             assert err.startswith("Error:"), status
-            assert store.get("r1").status == status
+            assert store.get(rid).status == status
 
     async def test_cancel_sending_reports_being_delivered(self, store):
         """AC10 (FR20): a reminder already claimed for sending completes
