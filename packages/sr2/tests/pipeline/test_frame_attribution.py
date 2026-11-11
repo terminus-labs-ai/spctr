@@ -417,26 +417,36 @@ def _inject_stub_resolvers(sr2) -> None:
 
 class TestR3DeclaredSessionIdWins:
     async def test_declared_session_id_wins(self):
-        """R3 (preserved semantics): a provenance declaration carrying an
-        explicit session_id keeps its current winning behavior — it is what
-        persists, over the fallback today and over the active frame once
-        frames participate."""
+        """R3 (preserved semantics), per item, no frame: the entry built from
+        the declaration carrying an explicit session_id keeps its declared
+        id — the declaration wins over the no-frame fallback — while the
+        undeclared sibling entry keeps the 'default' fallback (R2's
+        territory)."""
         store = InMemoryProvenanceStore()
         await _run_sr2_turn(
             store, config=_declared_pair_config(), after_build=_inject_stub_resolvers
         )
 
-        entries = [
-            e
+        by_text = {
+            e.content.text: e
             for e in store._store.values()
-            if _is_run_entry(e) and e.layer != TURN_ARCHIVE_LAYER
-        ]
-        assert entries, "the compiled turn must persist provenance entries"
-        for entry in entries:
-            assert entry.session_id == DECLARED_SESSION, (
-                "the declared session_id must keep winning; got "
-                f"{entry.session_id!r}"
-            )
+            if _is_run_entry(e)
+            and e.layer != TURN_ARCHIVE_LAYER
+            and isinstance(e.content, TextBlock)
+        }
+        assert by_text, "the compiled turn must persist provenance entries"
+        declared = by_text.get("declared item")
+        assert declared is not None, "the declared item's entry is missing"
+        assert declared.session_id == DECLARED_SESSION, (
+            "the declared session_id must win over the no-frame fallback; "
+            f"got {declared.session_id!r}"
+        )
+        sibling = by_text.get("undeclared item")
+        assert sibling is not None, "the undeclared sibling's entry is missing"
+        assert sibling.session_id == "default", (
+            "without a frame the undeclared entry keeps the 'default' "
+            f"fallback; got {sibling.session_id!r}"
+        )
 
     async def test_declared_item_wins_and_sibling_takes_frame(self):
         """R3 precedence: on a framed turn, an item whose declaration carries
