@@ -67,3 +67,4 @@ class Scenario:
     prompt_budget: int
     agent_policy: str
     runner_mode: str
+    meta: dict = field(default_factory=dict)

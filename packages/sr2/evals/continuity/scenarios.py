@@ -17,8 +17,9 @@ history, matching current behavior.
 
 from __future__ import annotations
 
-from evals.continuity.models import Block, Scenario, ScenarioTurn
 from sr2.continuity.consolidation import _content_words
+
+from evals.continuity.models import Block, Scenario, ScenarioTurn
 
 _REPLAY = "continuity_replay"
 
