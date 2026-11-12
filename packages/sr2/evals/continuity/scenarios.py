@@ -18,8 +18,17 @@ history, matching current behavior.
 from __future__ import annotations
 
 from evals.continuity.models import Block, Scenario, ScenarioTurn
+from sr2.continuity.consolidation import _content_words
 
 _REPLAY = "continuity_replay"
+
+#: The FR40 scenario id: A (a settled backend decision), its finishing turn,
+#: B (an unrelated trip), then a paraphrased reference to A sharing no
+#: content word with A's records. Its gold labels declare the gold close
+#: turn (``gold_close_turn``) and A's decision string as the expected answer
+#: on the reference turn. The recorded embedding vectors for its inputs are
+#: committed under ``fixtures/episode_close_paraphrase_return/``.
+EPISODE_CLOSE_PARAPHRASE_RETURN = "episode_close_paraphrase_return"
 
 #: Tag vocabularies. Tag values never reach the delivered answer text —
 #: tags drive policy-leak / irrelevant-context attribution only.
@@ -75,23 +84,29 @@ def _turn(
     *,
     extras: tuple[Block, ...] = (),
     delivered: tuple[str, ...] | None = None,
+    meta: dict | None = None,
 ) -> ScenarioTurn:
     """One retrieval turn: its question plus its gold declaration.
 
     ``extras`` carries tagged restored-context blocks; the current and
     superseded value blocks are appended in observation order
-    (superseded-then-current, newest source last).
+    (superseded-then-current, newest source last). ``meta`` adds
+    scenario-specific declarations (e.g. the FR40 gold close turn) on top
+    of the default ``{"question": ...}``.
     """
     blocks: list[Block] = [_old(v) for v in superseded]
     blocks += [Block(text=v, layer=_REPLAY) for v in current]
     blocks += list(extras)
+    turn_meta = {"question": question}
+    if meta:
+        turn_meta.update(meta)
     return ScenarioTurn(
         gold_answers=gold,
         current_values=current,
         superseded_values=superseded,
         blocks=blocks,
         delivered=delivered,
-        meta={"question": question},
+        meta=turn_meta,
     )
 
 
@@ -262,6 +277,84 @@ _SCENARIOS: list[Scenario] = [
             delivered=("backend: PostgreSQL",),
         ),
     ]),
+    # FR40 — paraphrase-return scenario (sr2-163 / AC27). Seven turns:
+    #   A (turns 1-3): a settled storage-backend decision — the decision
+    #     string "Postgres" is settled in the A record's text;
+    #   the finishing turn (turn 4): the gold close (declared in meta
+    #     ``gold_close_turn`` = 4); A's verbatim turns leave the window here;
+    #   B (turns 5-6): an unrelated trip, sharing no content word with A;
+    #   the reference turn (turn 7): a retrieval turn whose gold answer is A's
+    #     decision string while its own text shares no content word with A's
+    #     records — the paraphrased mention only the semantic (embedding)
+    #     candidate can match.
+    # A and B records are plain context blocks (no tags) so the double reads
+    # them as facts; the reference turn declares no delivered values — its
+    # decision string must reach the request through the index.
+    _scenario(
+        EPISODE_CLOSE_PARAPHRASE_RETURN,
+        [
+            _turn(
+                "We settled the side project backend: Postgres, a managed "
+                "instance with nightly backups.",
+                gold=(),
+                current=(),
+                extras=(
+                    Block(text="backend: Postgres", layer=_REPLAY,
+                          observed_at=EARLY_AT),
+                ),
+            ),
+            _turn(
+                "That settles it: Postgres is the database for the side "
+                "project; the storage layout can wait.",
+                gold=(),
+                current=(),
+                extras=(
+                    Block(text="database: Postgres", layer=_REPLAY,
+                          observed_at=EARLY_AT),
+                ),
+            ),
+            _turn(
+                "Decided: Postgres for the side project, a managed instance; "
+                "the storage layout can wait.",
+                gold=(),
+                current=(),
+                extras=(
+                    Block(text="decision: Postgres", layer=_REPLAY,
+                          observed_at=LATE_AT),
+                ),
+            ),
+            _turn(
+                "Okay, that's settled. On to the next thing.",
+                gold=(),
+                current=(),
+                meta={"gold_close_turn": 4,
+                      "episode_title": "side project backend"},
+            ),
+            _turn(
+                "Planning the trip: which flight window works best?",
+                gold=(),
+                current=(),
+                extras=(
+                    Block(text="flight window: midweek morning", layer=_REPLAY,
+                          observed_at=EARLY_AT),
+                ),
+            ),
+            _turn(
+                "Booking the lodging near the airport, not the old town.",
+                gold=(),
+                current=(),
+                extras=(
+                    Block(text="lodging: airport side", layer=_REPLAY,
+                          observed_at=EARLY_AT),
+                ),
+            ),
+            _turn(
+                "Why did we pick that option from before, again?",
+                gold=("decision: Postgres",),
+                current=(),
+            ),
+        ],
+    ),
 ]
 
 #: The versioned corpus, keyed by scenario id (FR31 ids + composition).
@@ -271,3 +364,67 @@ CORPUS: dict[str, Scenario] = {s.id: s for s in _SCENARIOS}
 def gold_turns(scenario: Scenario) -> list[ScenarioTurn]:
     """The retrieval turns of *scenario*: turns declaring gold answers."""
     return [t for t in scenario.turns if tuple(t.gold_answers)]
+
+
+def _scenario_a_record_texts(scenario: Scenario) -> list[str]:
+    """A's record texts for the FR40 content-word contract: every turn whose
+    own text or blocks state the decision, plus the reference turn's blocks
+    (what a candidate delivered to the reference, if the scenario declares
+    any)."""
+    texts: list[str] = []
+    for turn in scenario.turns:
+        own = _turn_text(turn)
+        if "Postgres" in own:
+            texts.append(own)
+            texts.extend(_turn_block_texts(turn))
+    return texts
+
+
+def _turn_text(turn: ScenarioTurn) -> str:
+    question = (turn.meta or {}).get("question")
+    return question if isinstance(question, str) and question else ""
+
+
+def _turn_block_texts(turn: ScenarioTurn) -> list[str]:
+    return [b.text for b in turn.blocks
+            if isinstance(b.text, str) and b.text]
+
+
+def _reference_turns(scenario: Scenario) -> list[ScenarioTurn]:
+    """The retrieval turns whose gold names A's decision while their own
+    text does not — the paraphrased reference turns."""
+    return [
+        turn for turn in scenario.turns
+        if turn.gold_answers
+        and any("Postgres" in g for g in turn.gold_answers)
+        and "Postgres" not in _turn_text(turn)
+    ]
+
+
+def validate_scenario(scenario: Scenario) -> list[str]:
+    """Corpus validator (FR40).
+
+    For a scenario that declares a paraphrased reference to a settled
+    decision (a retrieval turn whose gold names the decision while its own
+    text does not), prove the reference shares no content word with A's
+    records: the paraphrase contract is that a semantic match — never a
+    shared surface word — is what brings A back. Returns an empty list when
+    the scenario satisfies the contract; on violation, one error naming each
+    shared content word (the shared words are the exact overlap the mutation
+    must surface). Scenarios with no such reference turn validate empty."""
+    references = _reference_turns(scenario)
+    if not references:
+        return []
+    a_words = set().union(*(_content_words(t) for t in
+                            _scenario_a_record_texts(scenario)))
+    errors: list[str] = []
+    for turn in references:
+        ref_words = set(_content_words(_turn_text(turn)))
+        shared = sorted(a_words & ref_words)
+        if shared:
+            errors.append(
+                f"{scenario.id}: the reference turn shares content word(s) "
+                f"{shared} with A's records — the paraphrase must share no "
+                "content word with A's records (FR40)"
+            )
+    return errors
