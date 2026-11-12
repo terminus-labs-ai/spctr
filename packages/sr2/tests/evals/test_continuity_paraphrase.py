@@ -39,6 +39,12 @@ shapes, fixture file layout, judge-double wiring, extra exports):
         ``turn_index``, ``flags``). The run uses the judge double that
         replays the fixture's gold close turn and performs no network
         access ("the judge is a double that replays the gold close turn").
+    ``run_scenario_candidate(scenario, candidate_id: str, output_root: Path)
+        -> Path``
+        Same deterministic run, but over a scenario object directly
+        (row r6: the only way to feed a test-only copy through the
+        runner, since ``run_candidate`` takes an id — ratified by B in
+        review pass 2). Same published outputs, same judge double.
     ``metrics.json`` publishes the new FR40 metric ``closed_residency``
         (A's verbatim-turn tokens delivered after the close turn; the
         target for this scenario is 0), and the per-scenario results of
@@ -379,6 +385,28 @@ def _run_candidate(output_root: Path, candidate_id: str) -> Path:
              f"candidate run at {out} publishes no observations.jsonl")
     _require((out / "metrics.json").is_file(),
              f"candidate run at {out} publishes no metrics.json")
+    return out
+
+
+def _run_scenario_candidate(scenario: Any, output_root: Path,
+                            candidate_id: str) -> Path:
+    """Deterministic run of one registry candidate over a scenario
+    object (row r6's copy run) via the public per-scenario entry point;
+    returns the run directory publishing observations + metrics."""
+    runner = _mod("evals.continuity.runner")
+    exec_fn = getattr(runner, "run_scenario_candidate", None)
+    _require(
+        callable(exec_fn),
+        "evals.continuity.runner exposes no "
+        "run_scenario_candidate(scenario, candidate_id, output_root) entry "
+        "point — row r6 requires running a test-only scenario copy through "
+        "the runner (run_candidate takes an id, not a scenario)",
+    )
+    out = Path(exec_fn(scenario, candidate_id, output_root))
+    _require((out / "observations.jsonl").is_file(),
+             f"scenario run at {out} publishes no observations.jsonl")
+    _require((out / "metrics.json").is_file(),
+             f"scenario run at {out} publishes no metrics.json")
     return out
 
 
@@ -944,6 +972,13 @@ def test_ac27_r6_judge_double_replays_declared_gold_close_turn(
         f"no per-turn judge decisions (close/continue) published for "
         f"{SCENARIO_ID!r}; required to assert continue on the other turns",
     )
+    _require(
+        any(rec["decision"] == "continue"
+            and rec["turn"] not in declared_turns for rec in stream1),
+        f"run 1: no 'continue' decision observed on a non-close turn — the "
+        f"double must return continue on the other turns "
+        f"(observed: {stream1!r})",
+    )
     for rec in stream1:
         if rec["decision"] == "close":
             _require(
@@ -996,30 +1031,52 @@ def test_ac27_r6_judge_double_replays_declared_gold_close_turn(
         f"discoverably (meta); got {getattr(copy, 'meta', None)!r}",
     )
 
-    # Run the copy when the runner exposes a public per-scenario entry
-    # (the same entry r6's copy run drives); without one the copy's
-    # declaration is still asserted mechanically distinct below.
-    runner_mod = _mod("evals.continuity.runner")
-    exec_fn = None
-    for name in ("run_scenario_candidate",):
-        fn = getattr(runner_mod, name, None)
-        if callable(fn):
-            exec_fn = fn
-            break
-    if exec_fn is not None:
-        with _NetworkBlocker() as net2:
-            try:
-                out2 = Path(exec_fn(copy, candidate_id, tmp_path / "r6b"))
-            except TypeError:
-                out2 = Path(exec_fn(scenario=copy, candidate_id=candidate_id,
-                                    output_root=tmp_path / "r6b"))
-        assert net2.external == []
-        closes2 = _close_events(out2)
-        _require(
-            bool(closes2) and any(c["close_turn"] == alt_n for c in closes2),
-            f"run 2: with the copy declaring gold close turn {alt_n}, the "
-            f"observed close {closes2} must follow that declaration",
-        )
+    # -- Run 2 (mandatory): the test-only copy, via the public
+    # per-scenario entry point; the observed close must follow the
+    # copy's declaration (row r6: "in both runs"). --
+    with _NetworkBlocker() as net2:
+        run2 = _run_scenario_candidate(copy, tmp_path / "r6b", candidate_id)
+    assert net2.external == [], "run with the judge disabled reached the network"
+
+    closes2 = _close_events(run2)
+    _require(
+        bool(closes2),
+        f"run 2: no episode-close event observed for {SCENARIO_ID!r}; the "
+        "judge double's close must be observable in the run output",
+    )
+    _require(
+        any(c["close_turn"] == alt_n for c in closes2),
+        f"run 2: with the copy declaring gold close turn {alt_n}, the "
+        f"observed close {[c['close_turn'] for c in closes2]} must follow "
+        "that declaration",
+    )
+    stream2 = _decision_stream(run2)
+    _require(
+        bool(stream2),
+        f"run 2: no per-turn judge decisions (close/continue) published for "
+        f"{SCENARIO_ID!r}; required to assert continue on the other turns",
+    )
+    _require(
+        any(rec["decision"] == "continue"
+            and rec["turn"] not in declared2 for rec in stream2),
+        f"run 2: no 'continue' decision observed on a non-close turn — the "
+        f"double must return continue on the other turns "
+        f"(observed: {stream2!r})",
+    )
+    for rec in stream2:
+        if rec["decision"] == "close":
+            _require(
+                rec["turn"] in declared2,
+                f"run {rec['run_index']}: the double closed on turn "
+                f"{rec['turn']}, not the copy's declared gold close turn "
+                f"{sorted(declared2)}",
+            )
+        else:
+            _require(
+                rec["turn"] not in declared2,
+                f"run {rec['run_index']}: the double returned continue on "
+                "the copy's declared gold close turn — close must return there",
+            )
 
     # The committed scenario is untouched.
     assert _find_gold_close(scenario) == declaration
@@ -1064,6 +1121,42 @@ def test_ac27_r7_vector_fixture_replayed_without_live_embedding_call(
         f"capture evidence must record the endpoint and/or capture time of "
         f"the one-time capture: {evidence!r}",
     )
+    # Per-input vector agreement with the capture evidence (row r7: "the
+    # fixture's model identity and per-input vector values agree with the
+    # capture evidence"). The evidence must carry the per-input → vector
+    # association the contract's fixture capture retains ("Fixture capture
+    # must retain the input/model/vector association"); each committed
+    # fixture entry's vector must equal the vector the evidence recorded
+    # for that input — so fabricated or drifted fixture vectors are
+    # rejected even though fixture and evidence are both C-owned.
+    evidence_vectors: dict[str, list[float]] = {}
+    for d in _walk_dicts(evidence):
+        text = next((d[k] for k in ("input", "text", "content")
+                     if isinstance(d.get(k), str)), None)
+        vector = next((d[k] for k in ("vector", "embedding")
+                       if isinstance(d.get(k), list) and d[k]
+                       and all(isinstance(x, (int, float)) and not isinstance(x, bool)
+                               for x in d[k])), None)
+        if text is not None and vector is not None:
+            evidence_vectors.setdefault(text, [float(x) for x in vector])
+    _require(
+        bool(evidence_vectors),
+        "the retained capture evidence must carry the per-input → vector "
+        "association (input/model/vector association); no input paired with "
+        f"a recorded vector was found in it: {evidence!r}",
+    )
+    missing = [e["input"] for e in entries if e["input"] not in evidence_vectors]
+    _require(
+        not missing,
+        f"capture evidence records no vector for fixture input(s) "
+        f"{missing!r} — the per-input association is incomplete",
+    )
+    for e in entries:
+        _require(
+            e["vector"] == evidence_vectors[e["input"]],
+            f"fixture vector for input {e['input'][:120]!r} differs from "
+            f"the vector the capture evidence recorded for that input",
+        )
 
     # Replay: deterministic execution with live embedding access disabled,
     # observing the embedding-call boundary.
@@ -1080,8 +1173,10 @@ def test_ac27_r7_vector_fixture_replayed_without_live_embedding_call(
     _require(
         probe.embedding_count > 0,
         "the embedding candidate made no embedding-boundary call at all — "
-        "vector replay cannot be observed (the candidate must embed; the "
-        "fixture replays the vectors at this boundary)",
+        "vector replay must pass through the embedding boundary so committed "
+        "vectors can be observed (a deterministic replay must keep the "
+        "endpoint call with the committed vectors, or expose the replayed "
+        "vectors in the observation stream)",
     )
     for call in probe.embedding_calls:
         matched = by_text.get(call["text"])
@@ -1095,6 +1190,22 @@ def test_ac27_r7_vector_fixture_replayed_without_live_embedding_call(
             call["vector"] == matched,
             f"replayed vector for input {call['text'][:120]!r} differs from "
             "the committed fixture vector",
+        )
+    # No silent drops: every committed fixture entry appears among the
+    # observed embedding calls exactly once with its committed vector
+    # (row r7: "every embedding input receives its matching committed
+    # vector" — the set of inputs a deterministic run embeds is fixed by
+    # the scenario, so the replay must cover all fixture entries).
+    call_counts = {}
+    for call in probe.embedding_calls:
+        call_counts[call["text"]] = call_counts.get(call["text"], 0) + 1
+    for e in entries:
+        _require(
+            call_counts.get(e["input"], 0) == 1,
+            f"fixture input {e['input'][:120]!r} is embedded "
+            f"{call_counts.get(e['input'], 0)} times in the replay — every "
+            "committed fixture entry must be embedded exactly once with its "
+            "committed vector (no silent drops, no duplicate embeddings)",
         )
 
 
