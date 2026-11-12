@@ -202,14 +202,13 @@ def _get_scenario():
 
 
 def _validator(scenarios) -> Callable:
-    for name in ("validate_scenario", "validate_corpus", "validate"):
-        candidate = getattr(scenarios, name, None)
-        if callable(candidate):
-            return candidate
-    raise AssertionError(
+    validator = getattr(scenarios, "validate_scenario", None)
+    _require(
+        callable(validator),
         "evals.continuity.scenarios exposes no corpus validator "
-        "(validate_scenario / validate_corpus / validate)"
+        "validate_scenario(scenario) -> list[str]",
     )
+    return validator
 
 
 _TURN_TEXT_ATTRS = ("question", "input", "user_text", "prompt", "text")
@@ -370,8 +369,6 @@ def _run_candidate(output_root: Path, candidate_id: str) -> Path:
     point; returns the run directory publishing observations + metrics."""
     runner = _mod("evals.continuity.runner")
     run_candidate = getattr(runner, "run_candidate", None)
-    if run_candidate is None:
-        run_candidate = getattr(runner, "run_bakeoff_candidate", None)
     _require(
         callable(run_candidate),
         "evals.continuity.runner exposes no run_candidate(candidate_id, "
@@ -999,14 +996,12 @@ def test_ac27_r6_judge_double_replays_declared_gold_close_turn(
         f"discoverably (meta); got {getattr(copy, 'meta', None)!r}",
     )
 
-    # Run the copy when the runner exposes a public per-scenario entry;
-    # either way the copy's declaration is mechanically distinct from the
-    # committed one, pinning that the replayed close follows the
-    # declaration rather than a hard-coded turn.
+    # Run the copy when the runner exposes a public per-scenario entry
+    # (the same entry r6's copy run drives); without one the copy's
+    # declaration is still asserted mechanically distinct below.
     runner_mod = _mod("evals.continuity.runner")
     exec_fn = None
-    for name in ("run_scenario_candidate", "execute_scenario",
-                 "run_candidate_scenario"):
+    for name in ("run_scenario_candidate",):
         fn = getattr(runner_mod, name, None)
         if callable(fn):
             exec_fn = fn
