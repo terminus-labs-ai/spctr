@@ -118,6 +118,7 @@ async def _run_turn(
     script: dict[str, Any],
     *,
     final_text: str = "FINAL",
+    repeat_last: bool = False,
 ):
     """Drive a turn: scripted LLM sequences, then a text reply ending the
     turn (appended unless the caller's sequences already end in text).
@@ -131,7 +132,7 @@ async def _run_turn(
         # that never stop simply never reach the second one.
         seqs = seqs + [_text_reply(final_text)] * 2
     executor = ScriptedExecutor(script)
-    llm = SequentialMockLLM(seqs)
+    llm = SequentialMockLLM(seqs, repeat_last=repeat_last)
     sr2 = _build_sr2(llm, executor, config)
     events = [e async for e in sr2.turn(make_user_input())]
     return events, llm, executor
@@ -662,6 +663,7 @@ class TestAC9StopKeepsExecutedResults:
                 _iter_text_events("wrapping up", _x("c4"), y),
             ],
             script,
+            repeat_last=True,
         )
 
         assert executor.order == ["c1", "c2", "c3", "c4", "c5"], "both calls ran"
