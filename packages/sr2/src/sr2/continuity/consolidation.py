@@ -30,9 +30,9 @@ Subjects
 Supersession (AC7)
     A CORRECTION names the current record id of its subject in
     ``supersedes``. Current records resolve against a continuity store: the
-    injected one first, else this module's in-process current-projection
-    cache (``supersedes=()`` when the subject is unknown to both). It
-    appends; it never mutates (FR4).
+    injected one first, else this consolidator instance's own in-process
+    current-projection cache (``supersedes=()`` when the subject is unknown
+    to both). It appends; it never mutates (FR4).
 
 Scope (FR11)
     ``owner_id``/``agent_id`` come from the request. Personal-scope kinds
@@ -475,7 +475,7 @@ def _event_id(event_kind: ContinuityEventKind, entry_id: str) -> str:
 
 
 class _CurrentProjectionCache:
-    """In-process view of the subjects consolidation has recorded.
+    """Per-consolidator view of the subjects that consolidator has recorded.
 
     FR14 single-flights consolidation (turn N's post_process completes
     before turn N+1 starts), so this needs no lock and deliberately takes
@@ -484,6 +484,10 @@ class _CurrentProjectionCache:
     fallback that keeps subject resolution working for a consolidator
     constructed without one. It is a cache — never truth, and nothing is
     recorded here that the ledger does not already hold.
+
+    It lives on the consolidator instance, never at module scope: another
+    consolidator's subjects are not this one's knowledge, and the ledger is
+    the only thing shared across instances (the leak sr2-142 removed).
     """
 
     def __init__(self) -> None:
@@ -523,8 +527,6 @@ class _CurrentProjectionCache:
         self._superseded.clear()
 
 
-_CURRENT_PROJECTIONS = _CurrentProjectionCache()
-
 #: Memoized content-word sets by record id (records are immutable, so an id
 #: always denotes the same content). Bounded so a long session cannot grow
 #: it without limit.
@@ -533,7 +535,7 @@ _CONTENT_CACHE_LIMIT = 4096
 
 #: Claim object-words -> the subject they named, so a later confirmation or
 #: correction that carries no subject link still finds the subject its own
-#: words are about. Cleared with the projection cache.
+#: words are about.
 _CLAIM_INDEX: dict[str, list[tuple[str, str]]] = {}
 
 
@@ -545,17 +547,6 @@ def _remember_claim(subject_id: str, text: str) -> None:
             bucket.append((subject_id, text))
     if len(_CLAIM_INDEX) > _CONTENT_CACHE_LIMIT:
         _CLAIM_INDEX.clear()
-
-
-def reset_current_projection_cache() -> None:
-    """Drop the module-level projection caches.
-
-    Tests want a clean slate; production consolidation never calls this —
-    the durable ledger, not these caches, is truth.
-    """
-    _CURRENT_PROJECTIONS.clear()
-    _CLAIM_INDEX.clear()
-    _CONTENT_CACHE.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -575,10 +566,11 @@ class RuleBasedContinuityConsolidator:
     one turn of lag behind, FR14).
 
     Current-subject resolution (supersession + promotion) consults the
-    injected continuity store when one is supplied and otherwise the
-    module-level current-projection cache, so a correction links the record
-    it replaces and a confirmation promotes the claim it confirms in both
-    wirings.
+    injected continuity store when one is supplied and otherwise this
+    instance's own current-projection cache, so a correction links the
+    record it replaces and a confirmation promotes the claim it confirms in
+    both wirings. A store-less instance sees only what it consolidated
+    itself: no state crosses instances (sr2-142).
     """
 
     def __init__(
@@ -588,6 +580,7 @@ class RuleBasedContinuityConsolidator:
     ) -> None:
         self._provenance = provenance
         self._store = store
+        self._projections = _CurrentProjectionCache()
 
     async def consolidate(
         self, request: ConsolidationRequest
@@ -605,7 +598,7 @@ class RuleBasedContinuityConsolidator:
             record = await self._consolidate_entry(entry, request)
             if record is not None:
                 records.append(record)
-                _CURRENT_PROJECTIONS.record(record)
+                self._projections.record(record)
                 _remember_claim(record.subject_id, record.content)
         return records
 
@@ -764,7 +757,7 @@ class RuleBasedContinuityConsolidator:
                 logger.exception("continuity projection read failed during consolidation")
                 return []
             return [view.current_record for view in views.values()]
-        return _CURRENT_PROJECTIONS.current_records()
+        return self._projections.current_records()
 
     async def _match_current_record(self, text: str) -> ContinuityRecord | None:
         """Current record an entry is about, or None.
@@ -811,7 +804,7 @@ class RuleBasedContinuityConsolidator:
     async def _subject_current_id(self, subject_id: str) -> str | None:
         """Current-projection record id for a subject, or None if unknown.
 
-        The injected ledger is authoritative when present; the current-
+        The injected ledger is authoritative when present; this instance's
         projection cache backs a store-less consolidator. Reads frozen
         public surfaces only; a read failure degrades to "nothing to link"
         rather than losing the turn's consolidation (FR14).
@@ -829,7 +822,7 @@ class RuleBasedContinuityConsolidator:
                 view = views.get(subject_id)
                 if view is not None:
                     return view.current_record.id
-        current = _CURRENT_PROJECTIONS.current_id(subject_id)
+        current = self._projections.current_id(subject_id)
         if current is not None:
             return current
         # An unknown subject link can still abbreviate a recorded one

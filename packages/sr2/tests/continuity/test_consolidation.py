@@ -91,6 +91,7 @@ whose entries resolve to nothing returns [].
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 
 import pytest
@@ -252,6 +253,31 @@ def kind_map(records: list[ContinuityRecord]) -> dict[str, ContinuityKind]:
     """{record.id: kind} — record ids are unique because each derives from a
     unique source entry id; raises (via the caller's assertions) otherwise."""
     return {r.id: r.kind for r in records}
+
+
+#: Words that frame a claim instead of naming what it is about — speech-act
+#: verbs and the shared scaffolding of "the <thing> <verb> <thing>". Pinned
+#: here (not imported from the module under test) so the disjointness check
+#: below cannot certify agreement with the rules it is checking.
+_FIXTURE_FRAMING = frozenset(
+    {
+        "believe", "claim", "confirmed", "correction", "decide", "default",
+        "defaults", "deny", "needs", "prefer", "say", "said", "suppose",
+        "think", "use", "used", "want", "wants",
+    }
+)
+
+
+def _fixture_object_words(text: str) -> set[str]:
+    """What this cage reads a claim as being about: its 4+ letter tokens minus
+    framing words.
+
+    Two claims whose sets are disjoint share nothing a later entry could be
+    matched on, so the two fixtures below cannot be joined by any module-level
+    word cache, whatever that cache's own vocabulary.
+    """
+    words = {w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) >= 4}
+    return {w for w in words if w not in _FIXTURE_FRAMING}
 
 
 def builder_store(builder: TurnArchiveBuilder) -> InMemoryProvenanceStore:
@@ -648,8 +674,12 @@ class TestPromotion:
             confirmation_entry.content.content[0].text
         ), "the fixture's confirmation text must match the public pattern"
 
+        # The ledger is the only thing a promotion reads: this consolidator
+        # gets the store holding the tentative claim (sr2-142 — it used to
+        # reach a module-global another consolidator had populated, and
+        # promotion was observable only through that cross-instance leak).
         promoted = await RuleBasedContinuityConsolidator(
-            provenance=builder_store(builder)
+            provenance=builder_store(builder), store=store
         ).consolidate(request_for([confirm_id], project_hints=("sr2",)))
         assert len(promoted) == 1
         verification = promoted[0]
@@ -833,3 +863,295 @@ class TestSupersessionHistory:
             correction.id,
         )
         assert rebuilt["subject-db-backend"].current_record.id == correction.id
+
+
+# ---------------------------------------------------------------------------
+# sr2-142 — no module-global projection state (AC1, AC2): the ledger is the
+#           only thing two consolidators share. A confirmation vouches for a
+#           claim recorded in ITS OWN store, and never for one held by a
+#           different instance's store.
+#
+# Both rows pin their own fixtures first (disjoint subjects, disjoint record
+# ids, no shared matchable word, non-empty ledgers) so a passing "B promoted
+# nothing" cannot come from a store that loaded nothing, and a promotion is
+# attributable to exactly one side.
+# ---------------------------------------------------------------------------
+
+
+class TestNoSharedProjectionState:
+    async def test_no_module_global_projection_state(self):
+        """AC1 — current-projection state belongs to an instance, not the module.
+
+        The leak was a module-level ``_CurrentProjectionCache`` (and a
+        ``reset_…`` helper around it) that a store-less consolidator fell
+        back to, so one instance promoted another instance's claims. This
+        row pins the replacement on the only two surfaces that matter:
+
+        * every consolidator owns exactly one projection cache, and two
+          consolidators do not hold the same cache object — the bead's own
+          "no module-global state" condition, stated where a rename cannot
+          hide it;
+        * the cache is real state the readers consult, not a stub.
+        """
+        import importlib
+
+        module = importlib.import_module("sr2.continuity.consolidation")
+        cache_class = getattr(module, "_CurrentProjectionCache", None)
+        assert cache_class is not None, (
+            "the projection-cache implementation disappeared; a store-less "
+            "consolidator still needs one to resolve subjects"
+        )
+
+        consolidators = [
+            module.RuleBasedContinuityConsolidator(
+                provenance=InMemoryProvenanceStore()
+            )
+            for _ in range(2)
+        ]
+
+        def caches_of(instance: object) -> list:
+            return [
+                value
+                for value in vars(instance).values()
+                if isinstance(value, cache_class)
+            ]
+
+        for instance in consolidators:
+            assert len(caches_of(instance)) == 1, (
+                "a consolidator must hold exactly one projection cache of "
+                f"its own; it holds {len(caches_of(instance))}"
+            )
+        assert caches_of(consolidators[0])[0] is not caches_of(consolidators[1])[
+            0
+        ], (
+            "two consolidators share one projection cache object — that is "
+            "the module-global leak under another name"
+        )
+
+        # the per-instance cache is the state the readers actually consult
+        record = make_record(
+            "rec-sr2142-probe",
+            "subject-sr2142-probe",
+            ContinuityEventKind.FORMED,
+        )
+        cache = caches_of(consolidators[0])[0]
+        assert cache.current_id("subject-sr2142-probe") is None
+        cache.record(record)
+        assert cache.current_id("subject-sr2142-probe") == record.id
+        assert [r.id for r in cache.current_records()] == [record.id]
+        assert (
+            caches_of(consolidators[1])[0].current_id("subject-sr2142-probe")
+            is None
+        ), "recording on one consolidator made a subject known to another"
+
+    async def test_two_consolidators_over_two_stores_share_no_projections(
+        self, tmp_path
+    ):
+        """AC2 — consolidator B promotes nothing for store A's tentative claim.
+
+        Ledger-as-source-of-truth (spec AC6-r4): a confirmation vouches only
+        for a claim recorded in the ledger handed to the consolidator it is
+        consolidated with. Store A holds a tentative claim about redis
+        caching, store B its own about orchid repotting: subjects that share
+        no word and no record id, so a promotion is attributable to exactly
+        one ledger and no module-level word cache can join the fixtures.
+
+        One confirmation entry — the same entry id in both turn archives —
+        names A's subject outright and is consolidated once per side. A
+        VERIFIED record for that subject can then only have come from store
+        A, and B must mint no record at all for a turn whose only entry
+        vouches for nothing in the ledger B was given.
+        """
+        claim_a = "The cache defaults to redis."
+        claim_b = "The orchid needs repotting."
+        confirmation = "Confirmed: the cache defaults to redis."
+
+        # -- store A's ledger: a tentative claim on its own subject --------
+        builder_a = TurnArchiveBuilder(InMemoryProvenanceStore(), "sess-sr2142-a")
+        await builder_a.next_turn()
+        entry_a = await builder_a.assistant(claim_a)
+        tentative_a, store_a, _ = await consolidate_fixture(
+            tmp_path, builder_a, [entry_a], project_hints=("sr2",),
+            db_name="sr2-142-a.db",
+        )
+        tentative_a = tentative_a[0]
+        assert tentative_a.authority is ContextAuthority.AGENT_TENTATIVE
+        subject_a = tentative_a.subject_id
+        assert subject_a.startswith("subject-cache-"), subject_a
+        views_a = await store_a.current_views()
+        assert views_a[subject_a].current_record.id == tentative_a.id
+
+        # -- store B's ledger: a different subject, a different store file --
+        builder_b = TurnArchiveBuilder(InMemoryProvenanceStore(), "sess-sr2142-b")
+        await builder_b.next_turn()
+        entry_b = await builder_b.assistant(claim_b)
+        tentative_b, store_b, _ = await consolidate_fixture(
+            tmp_path, builder_b, [entry_b], project_hints=("sr2",),
+            db_name="sr2-142-b.db",
+        )
+        tentative_b = tentative_b[0]
+        subject_b = tentative_b.subject_id
+        assert subject_b.startswith("subject-orchid-"), subject_b
+        views_b = await store_b.current_views()
+        assert views_b[subject_b].current_record.id == tentative_b.id
+
+        # -- (invariants) disjoint fixtures, and both ledgers really loaded.
+        #    One subject each, no record id in common, and the two claims
+        #    share no matchable word — so no cross-fixture join is possible,
+        #    and "B promoted nothing" cannot be a store that read nothing.
+        assert set(views_a) == {subject_a} and set(views_b) == {subject_b}
+        ids_a = {r.id for r in await store_a.get_events()}
+        ids_b = {r.id for r in await store_b.get_events()}
+        assert ids_a == {tentative_a.id} and ids_b == {tentative_b.id}
+        assert _fixture_object_words(claim_a) == {"cache", "redis"}
+        assert _fixture_object_words(claim_b) == {"orchid", "repotting"}
+        assert _fixture_object_words(confirmation) == {"cache", "redis"}
+        assert not (
+            _fixture_object_words(claim_a) & _fixture_object_words(claim_b)
+        ), "the two fixtures must share no matchable word"
+
+        # -- one confirmation turn naming A's subject, archived on both
+        #    sides; the archivist's ids derive from the sequence, so it is
+        #    one entry id in two archives.
+        await builder_a.next_turn()
+        confirm_a = await builder_a.user(confirmation, {"about_subject": subject_a})
+        await builder_b.next_turn()
+        confirm_b = await builder_b.user(confirmation, {"about_subject": subject_a})
+        assert confirm_a == confirm_b, (
+            "this row hands both sides the same confirmation entry id; the "
+            "turn archivist's ids are sequence-derived"
+        )
+
+        # -- consolidator B / store B: A's claim is not in B's ledger, so a
+        #    confirmation of it promotes nothing at all (FR12: a confirmation
+        #    that vouches for nothing recorded mints nothing).
+        promoted_b = await RuleBasedContinuityConsolidator(
+            provenance=builder_store(builder_b), store=store_b
+        ).consolidate(request_for([confirm_b], project_hints=("sr2",)))
+        assert promoted_b == [], (
+            "consolidator B minted "
+            f"{[(r.subject_id, r.event_kind) for r in promoted_b]} for a turn "
+            f"whose only entry confirms {subject_a}; store B holds only "
+            f"{subject_b}, so that subject came from state B does not own"
+        )
+        assert {r.id for r in await store_b.get_events()} == ids_b, (
+            "store B gained rows from a promotion consolidator B must not make"
+        )
+
+        # -- consolidator A / store A: the same entry DOES promote VERIFIED -
+        promoted_a = await RuleBasedContinuityConsolidator(
+            provenance=builder_store(builder_a), store=store_a
+        ).consolidate(request_for([confirm_a], project_hints=("sr2",)))
+        assert [
+            (r.subject_id, r.event_kind, r.authority, r.supersedes, r.provenance_ids)
+            for r in promoted_a
+        ] == [
+            (
+                subject_a,
+                ContinuityEventKind.VERIFIED,
+                ContextAuthority.VERIFIED,
+                (),
+                (confirm_a,),
+            )
+        ]
+        for record in promoted_a:
+            await store_a.append(record)
+        assert (
+            await store_a.current_views()
+        )[subject_a].current_record.authority is ContextAuthority.VERIFIED
+        assert (
+            await store_b.current_views()
+        )[subject_b].current_record.authority is ContextAuthority.AGENT_TENTATIVE
+
+    async def test_a_consolidator_promotes_only_its_own_ledgers_claims(
+        self, tmp_path
+    ):
+        """Positive control for the row above: consolidator B *does* promote a
+        claim held by the store it was given.
+
+        Without this, "consolidator B promotes nothing" would pass for a
+        consolidator whose store read is simply broken — the pair of rows
+        together pins that B promotes what its own ledger holds and nothing
+        that only another instance's ledger holds.
+        """
+        builder = TurnArchiveBuilder(InMemoryProvenanceStore(), "sess-sr2142-own")
+        await builder.next_turn()
+        entry = await builder.assistant("The orchid needs repotting.")
+        records, store, _ = await consolidate_fixture(
+            tmp_path, builder, [entry], project_hints=("sr2",),
+            db_name="sr2-142-own.db",
+        )
+        subject = records[0].subject_id
+        assert subject.startswith("subject-orchid-"), subject
+
+        await builder.next_turn()
+        confirm_own = await builder.user(
+            "Confirmed: the orchid needs repotting.", {"about_subject": subject}
+        )
+        confirm_theirs = await builder.user(
+            "Confirmed: the cache defaults to redis.",
+            {"about_subject": "subject-cache-backend"},
+        )
+        consolidator = RuleBasedContinuityConsolidator(
+            provenance=builder_store(builder), store=store
+        )
+        promoted = await consolidator.consolidate(
+            request_for([confirm_own, confirm_theirs], project_hints=("sr2",))
+        )
+        assert [
+            (r.subject_id, r.event_kind, r.authority) for r in promoted
+        ] == [(subject, ContinuityEventKind.VERIFIED, ContextAuthority.VERIFIED)]
+
+        # pinning where the match came from: the second confirmation's object
+        # words are cache/redis. An implementation that read projections from
+        # somewhere other than the injected store would find that subject and
+        # mint a second VERIFIED record; the assertions above reject it.
+        assert _fixture_object_words("Confirmed: the cache defaults to redis.") == {
+            "cache",
+            "redis",
+        }
+
+    async def test_storeless_consolidator_sees_only_its_own_recorded_projections(
+        self, tmp_path
+    ):
+        """AC1 — with no store at all, a consolidator still reads no other's state.
+
+        A fresh store-less instance knows nothing, so a confirmation naming a
+        subject a *different* store-less instance consolidated mints nothing;
+        the instance that recorded the claim itself still promotes it from
+        its own per-instance cache.
+        """
+        builder = TurnArchiveBuilder(InMemoryProvenanceStore(), "sess-sr2142-solo")
+        await builder.next_turn()
+        claim_id = await builder.assistant("The cache defaults to redis.")
+        records = await RuleBasedContinuityConsolidator(
+            provenance=builder_store(builder)
+        ).consolidate(request_for([claim_id], project_hints=("sr2",)))
+        assert [r.authority for r in records] == [ContextAuthority.AGENT_TENTATIVE]
+        subject = records[0].subject_id
+        assert subject.startswith("subject-cache-"), subject
+
+        await builder.next_turn()
+        confirm_id = await builder.user(
+            "Confirmed: the cache defaults to redis.", {"about_subject": subject}
+        )
+        fresh = await RuleBasedContinuityConsolidator(
+            provenance=builder_store(builder)
+        ).consolidate(request_for([confirm_id], project_hints=("sr2",)))
+        assert fresh == [], (
+            "a fresh store-less consolidator promoted a claim it never "
+            "consolidated — it read another instance's projections"
+        )
+
+        # the instance that recorded the claim itself still promotes it
+        recorder = RuleBasedContinuityConsolidator(provenance=builder_store(builder))
+        assert [
+            r.subject_id
+            for r in await recorder.consolidate(request_for([claim_id]))
+        ] == [subject]
+        promoted = await recorder.consolidate(
+            request_for([confirm_id], project_hints=("sr2",))
+        )
+        assert [
+            (r.subject_id, r.event_kind, r.authority) for r in promoted
+        ] == [(subject, ContinuityEventKind.VERIFIED, ContextAuthority.VERIFIED)]
