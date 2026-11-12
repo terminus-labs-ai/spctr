@@ -1135,6 +1135,12 @@ def _install_embedding_replay() -> None:
     if getattr(EmbeddingContinuityIndex, "_evals_replay", None):
         return
     committed = load_vector_fixture(_FR40)["entries"]
+    # The true endpoint: every call whose input has no committed FR40 vector
+    # (i.e. a test exercising the index against its own fake endpoint, e.g.
+    # the AC26 suite) falls through to the real ``litellm.aembedding``. Only
+    # the FR40 deterministic run — whose inputs are all committed — is served
+    # from the fixture with no network.
+    true_endpoint = getattr(litellm, "aembedding", None)
 
     class _ReplayEmbeddingResponse:
         def __init__(self, items, model, usage):
@@ -1145,13 +1151,14 @@ def _install_embedding_replay() -> None:
     async def _replay_endpoint(model, custom_llm_provider, api_base,
                                api_key, input, **kwargs):
         texts = [input] if isinstance(input, str) else list(input or [])
+        if any(text not in committed for text in texts):
+            # Not an FR40 replay input: hand off to the real endpoint.
+            return await true_endpoint(
+                model, custom_llm_provider=custom_llm_provider,
+                api_base=api_base, api_key=api_key, input=input, **kwargs)
         items = []
         for i, text in enumerate(texts):
-            vector = committed.get(text)
-            if vector is None:
-                raise EmbeddingIndexError(
-                    "deterministic replay: no committed vector for the "
-                    f"embedding input {text[:80]!r} (no live recapture)")
+            vector = committed[text]
             # Dict-shaped exactly like an OpenAI /v1/embeddings item so the
             # index's ``item["index"]`` / ``item["embedding"]`` reads work.
             items.append({"index": i, "embedding": vector, "model": model})
@@ -1164,8 +1171,10 @@ def _install_embedding_replay() -> None:
 
 # Install the deterministic embedding replay at import so any embedding-boundary
 # spy a test installs (wrapping ``litellm.aembedding``) wraps the replay, not
-# a live endpoint. The replay is pure — it reads the committed fixture and
-# performs no network — so importing it has no side effects beyond that.
+# a live endpoint. The replay is pure for the FR40 run (it reads the committed
+# fixture and performs no network); calls for any other input fall through to
+# the real endpoint, so suites exercising the index against their own fake
+# endpoint (e.g. the AC26 contract tests) are unaffected.
 _install_embedding_replay()
 
 

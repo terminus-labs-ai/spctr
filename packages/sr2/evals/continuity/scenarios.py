@@ -349,10 +349,22 @@ _SCENARIOS: list[Scenario] = [
                           observed_at=EARLY_AT),
                 ),
             ),
+            # The reference turn declares A's decision as its gold answer and
+            # current value. In the plain full-history baseline sweep (run_
+            # baseline) that value travels as a delivered block; in the FR40
+            # candidate run it re-enters through the selected index instead
+            # (the paraphrase shares no content word with A's records, so the
+            # lexical candidates cannot match it and only the embedding
+            # candidate delivers it — AC27's point).
             _turn(
                 "Why did we pick that option from before, again?",
                 gold=("decision: Postgres",),
-                current=(),
+                current=("decision: Postgres",),
+                superseded=("decision: SQLite",),
+                extras=(
+                    _overheard("favorite snack: salted licorice"),
+                    _noise("unrelated chatter from the sprint room"),
+                ),
             ),
         ],
     ),
