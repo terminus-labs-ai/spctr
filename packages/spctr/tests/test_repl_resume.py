@@ -145,6 +145,25 @@ def _rows(lines: list[str]) -> list[str]:
         r"^\s*\d{1,2}  \d{4}-\d{2}-\d{2} \d{2}:\d{2}", _plain([ln]))]
 
 
+def _listings(lines: list[str]) -> list[list[str]]:
+    """Each rendered listing as its own block of lines, in render order.
+
+    A block runs from one rendered window header ("Sessions … of … (newest
+    first):") to the next, so a listing of any page size or row count stays
+    whole and countable — the split keys off the renderer's own line instead
+    of a counted offset.
+    """
+    heads = [k for k, ln in enumerate(lines) if "Sessions " in ln]
+    assert heads, "no rendered listing header to split on"
+    bounds = heads + [len(lines)]
+    return [lines[bounds[k] : bounds[k + 1]] for k in range(len(heads))]
+
+
+def _last_listing(lines: list[str]) -> list[str]:
+    """The final rendered listing, header first, as its own block of lines."""
+    return _listings(lines)[-1]
+
+
 def _local(ts: datetime) -> str:
     return ts.astimezone().strftime("%Y-%m-%d %H:%M")
 
@@ -686,11 +705,12 @@ def test_ac13_current_key_outside_visible_page_is_not_marked(tmp_path, monkeypat
 
     async def scenario():
         await iface._cmd_resume(agent, None)
-        await iface._cmd_resume(agent, "more")  # page 2: rows 16–20
+        await iface._cmd_resume(agent, "more")  # page 2: the rows page 1 omits
 
     asyncio.run(scenario())
 
-    first_listing, second_listing = lines[:17], lines[17:]
+    # The two listings split on the second rendered window header.
+    first_listing, second_listing = _listings(lines)[:2]
     # Page 1 carries the marker, on sess-16's row and nowhere else.
     assert any("4  " + _local(BASE) + "  1  sess-16  → current" in ln for ln in first_listing)
     assert sum("→ current" in ln for ln in first_listing) == 1
@@ -698,7 +718,7 @@ def test_ac13_current_key_outside_visible_page_is_not_marked(tmp_path, monkeypat
     # nothing marks it.
     assert all("→ current" not in ln for ln in second_listing)
     # (The key itself still appears in the takeover surface's window text
-    # only via rows; page 2 holds rows 16–20 — sess-04 … sess-00.)
+    # only via rows; page 2 holds the rows page 1 did not show.)
     assert all("sess-16" not in ln for ln in second_listing)
 
 
@@ -976,6 +996,33 @@ def _window_of(lines_out):
     return headers[0]
 
 
+def _strip_markup(line: str) -> str:
+    """A console line without its ANSI escapes or Rich markup tags."""
+    line = re.sub(r"\x1b\[[0-9;]*m", "", line)
+    return re.sub(r"\[/?(?:bold|dim|green|red)\]", "", line)
+
+
+def _page_window(total, page, limit=None):
+    """Plain text of the page-``page`` window indicator (0-based).
+
+    The arithmetic the renderer owns (repl.py: ``start = page * limit``,
+    ``end = start + len(visible)``), applied to the fixture's session count
+    *total* and the shipped page size ``_RESUME_LIST_LIMIT`` — so a page-size
+    change moves the expectation with the renderer instead of breaking tests.
+    """
+    size = _RESUME_LIST_LIMIT if limit is None else limit
+    start = page * size
+    end = min(total, start + size)
+    return f"Sessions {start + 1}–{end} of {total} (newest first):"
+
+
+def _page_indices(total, page, limit=None):
+    """First and last global row numbers page ``page`` (0-based) shows."""
+    size = _RESUME_LIST_LIMIT if limit is None else limit
+    start = page * size
+    return start + 1, min(total, start + size)
+
+
 @contextmanager
 def _no_store_reads():
     """Blow up loudly if the block touches the store's listing contract."""
@@ -993,34 +1040,54 @@ def _no_store_reads():
 
 def test_render_page_result_pure():
     """Pure paging decision: windowed render, one-line end notices, back guard."""
-    summaries = _snapshot(37)
-    result = render_page_result(summaries, "nobody", 1, limit=15)
+    total = 37
+    summaries = _snapshot(total)
+    page = 1  # the first `more`
+    first_no, last_no = _page_indices(total, page)
+    result = render_page_result(summaries, "nobody", page, limit=_RESUME_LIST_LIMIT)
     lines, rows = result
-    # Page 2 shows 15 rows: global indices 16–30 (31 opens page 3).
-    assert "Sessions 16–30 of 37" in lines[0][0]
-    assert rows[0].startswith("16  ") and rows[14].startswith("30  ")
-    # Page 3 is the last one: seven rows through 37.
-    third, third_rows = render_page_result(summaries, "nobody", 2, limit=15)
-    assert "Sessions 31–37 of 37" in third[0][0] and len(third_rows) == 7
+    # The renderer's own window line is exactly the derived one, and the rows
+    # it returned are that window's rows — change the page size and both
+    # sides move together (the scratch-copy control: this match fails if the
+    # expectation stops tracking the renderer).
+    assert _strip_markup(lines[0][0]) == _page_window(total, page)
+    assert len(rows) == last_no - first_no + 1
+    assert rows[0].startswith(f"{first_no}  ")
+    assert rows[-1].startswith(f"{last_no}  ")
+    # A different page size really does derive a different window, so the
+    # match above is not a tautology over any constant.
+    assert _page_window(total, page, limit=_RESUME_LIST_LIMIT + 1) != _page_window(
+        total, page
+    )
+    # The last page is a partial one: through the snapshot's end.
+    last_page = -(-total // _RESUME_LIST_LIMIT) - 1
+    third, third_rows = render_page_result(
+        summaries, "nobody", last_page, limit=_RESUME_LIST_LIMIT
+    )
+    assert _strip_markup(third[0][0]) == _page_window(total, last_page)
+    assert len(third_rows) == total - last_page * _RESUME_LIST_LIMIT
     # A `more` past the snapshot's end is one line, not a listing.
-    notice = render_page_result(summaries, "nobody", 3, limit=15)
+    notice = render_page_result(summaries, "nobody", last_page + 1, limit=_RESUME_LIST_LIMIT)
     assert len(notice) == 2 and isinstance(notice[0], str) and isinstance(notice[1], str)
     assert "end" in notice[0]
     # A `back` before the first page is one line too — never a wrap-around
     # to the snapshot's end (the negative-slice trap).
-    guard = render_page_result(summaries, "nobody", -1, limit=15)
+    guard = render_page_result(summaries, "nobody", -1, limit=_RESUME_LIST_LIMIT)
     assert len(guard) == 2 and isinstance(guard[0], str)
     assert "Start" in guard[0]
     # An empty snapshot is "nothing cached" — a decision error, not a render.
     with pytest.raises(ValueError):
-        render_page_result([], "nobody", 1, limit=15)
+        render_page_result([], "nobody", 1, limit=_RESUME_LIST_LIMIT)
 
 
 def test_ac16_c1_bare_resume_window_marker_and_more_footer(tmp_path, monkeypatch):
-    """AC16-c1: 37 sessions → page 1 under ``1–15 of 37``, shipped row
+    """AC16-c1: 37 sessions → page 1 under its derived window, shipped row
     shape, the current key's row marked, footer names /resume more."""
-    store, reads = _watched_store(_fixture_lines(37))
-    agent = _TakeoverAgent("sess-36", store)  # newest row, and the current key
+    total = 37
+    _first_no, last_no = _page_indices(total, 0)
+    newest = f"sess-{total - 1:02d}"
+    store, reads = _watched_store(_fixture_lines(total))
+    agent = _TakeoverAgent(newest, store)  # newest row, and the current key
     iface, lines = _capturing_iface(tmp_path, monkeypatch)
 
     async def scenario():
@@ -1029,14 +1096,15 @@ def test_ac16_c1_bare_resume_window_marker_and_more_footer(tmp_path, monkeypatch
     asyncio.run(scenario())
 
     out = _plain(lines)
-    assert _window_of(lines) == "Sessions 1–15 of 37 (newest first):"
+    assert _window_of(lines) == _page_window(total, 0)
     assert "/resume more" in out
     assert "/resume back" not in out  # page 1: no earlier page to name
     rows = _rows(lines)
-    assert len(rows) == 15
-    assert rows[0] == "1  " + _local(BASE) + "  1  sess-36  → current"
-    assert rows[1] == "2  " + _local(BASE) + "  1  sess-35"
-    assert rows[14] == "15  " + _local(BASE) + "  1  sess-22"
+    assert len(rows) == _RESUME_LIST_LIMIT
+    assert rows[0] == "1  " + _local(BASE) + f"  1  {newest}  → current"
+    # Each row N of the page is the fixture's entry for global number N, in
+    # store order (sess-(total-1) down to sess-00).
+    assert rows[-1] == f"{last_no}  " + _local(BASE) + f"  1  sess-{total - last_no:02d}"
     # The marker appears exactly once, on the current key's row.
     assert sum("→ current" in row for row in rows) == 1
     assert reads == [(TURN_ARCHIVE_LAYER, _RESUME_SNAPSHOT_LIMIT)]
@@ -1044,8 +1112,15 @@ def test_ac16_c1_bare_resume_window_marker_and_more_footer(tmp_path, monkeypatch
 
 def test_ac16_c1_current_row_marked_on_its_page(tmp_path, monkeypatch):
     """AC16-c1 (marker clause): the current key is marked on the row shown."""
-    store, _reads = _watched_store(_fixture_lines(37))
-    agent = _TakeoverAgent("sess-19", store)  # global row 18: page 2
+    total = 37
+    store, _reads = _watched_store(_fixture_lines(total))
+    current = "sess-19"  # store order is newest-first: sess-36 … sess-00
+    page = 1
+    # Where the current key's row lands, derived from the fixture and the
+    # page size — global row 18, i.e. page 2's third row at the shipped 15.
+    idx = total - int(current.removeprefix("sess-"))
+    assert page * _RESUME_LIST_LIMIT < idx <= (page + 1) * _RESUME_LIST_LIMIT
+    agent = _TakeoverAgent(current, store)
     iface, lines = _capturing_iface(tmp_path, monkeypatch)
 
     async def scenario():
@@ -1055,18 +1130,21 @@ def test_ac16_c1_current_row_marked_on_its_page(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
     # Page 1 shows no marker (the current row is not on it); page 2 marks it.
-    first_listing, second_listing = lines[:17], lines[17:]
+    # The two listings split on the second rendered window header.
+    first_listing, second_listing = _listings(lines)[:2]
     assert all("→ current" not in ln for ln in first_listing)
     page2 = _rows(second_listing)
-    assert len(page2) == 15
-    # Store order is sess-36 … sess-00, so global row 18 is sess-19.
-    assert page2[2] == "18  " + _local(BASE) + "  1  sess-19  → current"
+    assert len(page2) == _RESUME_LIST_LIMIT
+    assert page2[idx - page * _RESUME_LIST_LIMIT - 1] == (
+        f"{idx}  " + _local(BASE) + f"  1  {current}  → current"
+    )
 
 
 def test_ac16_c2_c3_more_back_sequence_no_rerefresh(tmp_path, monkeypatch):
-    """AC16-c2/c3: 37 sessions → pages 16–30 and 31–37; back returns to
-    16–30; zero store reads across the whole more/back sequence."""
-    store, reads = _watched_store(_fixture_lines(37))
+    """AC16-c2/c3: 37 sessions → the derived windows for pages 2 and 3; back
+    returns to page 2; zero store reads across the whole sequence."""
+    total = 37
+    store, reads = _watched_store(_fixture_lines(total))
     agent = _TakeoverAgent("sess-00", store)
     iface, lines = _capturing_iface(tmp_path, monkeypatch)
 
@@ -1074,29 +1152,42 @@ def test_ac16_c2_c3_more_back_sequence_no_rerefresh(tmp_path, monkeypatch):
         await iface._cmd_resume(agent, None)
         await iface._cmd_resume(agent, "more")
         await iface._cmd_resume(agent, "more")
-        await iface._cmd_resume(agent, "more")  # past page 3: end notice
+        await iface._cmd_resume(agent, "more")  # past the last page: end notice
         await iface._cmd_resume(agent, "back")
 
     asyncio.run(scenario())
 
     # The window sequence: pages 1, 2, 3 — the third `more` answers the
-    # one-line end notice (no listing), and `back` re-renders page 2.
+    # one-line end notice (no listing), and `back` re-renders page 2.  Each
+    # window is derived from the fixture length and the page size.
+    last_page = -(-total // _RESUME_LIST_LIMIT) - 1
     windows = [re.sub(r"\x1b\[[0-9;]*m", "", ln) for ln in lines if "Sessions " in ln]
     assert windows == [
-        "Sessions 1–15 of 37 (newest first):",
-        "Sessions 16–30 of 37 (newest first):",
-        "Sessions 31–37 of 37 (newest first):",
-        "Sessions 16–30 of 37 (newest first):",
+        _page_window(total, 0),
+        _page_window(total, 1),
+        _page_window(total, last_page),
+        _page_window(total, 1),
     ]
-    # Row 16 keeps its global number on page 2 (rendered on the second page).
+    # The first row of page 2 keeps its global number (rendered on the
+    # second page), and it is the fixture's row for that global index.
+    page2_first = 1 * _RESUME_LIST_LIMIT + 1
     halves = _rows(lines)
-    assert halves[15] == "16  " + _local(BASE) + "  1  sess-21"
-    # Somewhere in the rendered pages the snapshot's last row appears as 37,
-    # the oldest session (rendered on page 3): global indices run to 37.
-    # (sess-00 is the agent's current key, so its row carries the marker.)
-    assert "37  " + _local(BASE) + "  1  sess-00  → current" in halves
-    # Page 3 rendered exactly seven rows (31–37): count rows numbered ≥31.
-    assert sum(1 for r in halves if re.match(r"3[1-7]  ", r)) == 7
+    assert halves[_RESUME_LIST_LIMIT] == (
+        f"{page2_first}  "
+        + _local(BASE)
+        + f"  1  sess-{total - page2_first:02d}"
+    )
+    # Somewhere in the rendered pages the snapshot's final row appears under
+    # its global number — the total — with the current key's marker on it
+    # (rendered on the last page): global indices run across the snapshot.
+    assert f"{total}  " + _local(BASE) + "  1  sess-00  → current" in halves
+    # Pages 2 and 3 together rendered exactly the rows after page 1's: the
+    # rows from the start of page 2 through the snapshot's end.
+    listings = _listings(lines)
+    rows_after_page1 = sum(len(_rows(blk)) for blk in listings[1:] if _rows(blk))
+    assert rows_after_page1 == (last_page * _RESUME_LIST_LIMIT) + (
+        total - last_page * _RESUME_LIST_LIMIT
+    )
     notices = [ln for ln in _plain(lines).split("\n") if "end of list" in ln]
     assert len(notices) == 1
     assert reads == [(TURN_ARCHIVE_LAYER, _RESUME_SNAPSHOT_LIMIT)]  # one fetch
@@ -1107,6 +1198,7 @@ def test_ac17_c1_row20_is_page2_fifth_visible_row(tmp_path, monkeypatch):
     exactly the fifth row page 2 renders — paging and resolution agree."""
     fixtures = [("s-new", 1, BASE + timedelta(hours=5))]
     fixtures += [(f"sess-{i:02d}", 1, BASE) for i in range(36)]
+    total = len(fixtures)
     store, _reads = _watched_store(fixtures)
     agent = _TakeoverAgent("miranda-repl-20261030-120000", store)
     iface, lines = _capturing_iface(tmp_path, monkeypatch)
@@ -1117,11 +1209,19 @@ def test_ac17_c1_row20_is_page2_fifth_visible_row(tmp_path, monkeypatch):
 
     asyncio.run(scenario())
 
+    # The two pages split on the second rendered window header; the rendered
+    # rows are exactly those the derived page-2 window ends at.
+    page2_lines = _last_listing(lines)
+    assert _window_of(page2_lines) == _page_window(total, 1)
     rows = _rows(lines)
-    assert len(rows) == 30  # page 1 (1–15) + page 2 (16–30)
-    # The fifth row of page 2 (entries[15+4]) is the row numbered 20 and
-    # keyed sess-17 — the same row /resume 20 resolves.
-    assert rows[19] == "20  " + _local(BASE) + "  1  sess-17"
+    assert len(rows) == _page_indices(total, 1)[1]
+    # The fifth row of page 2 (that page's own offset 4) carries its global
+    # number — 20 at the shipped page size — and is keyed sess-17, the same
+    # row /resume 20 resolves.
+    fifth_of_page2 = _RESUME_LIST_LIMIT + 4
+    assert rows[fifth_of_page2] == (
+        f"{fifth_of_page2 + 1}  " + _local(BASE) + "  1  sess-17"
+    )
 
 
 def test_ac16_c2_footer_drops_more_on_final_partial_page(tmp_path, monkeypatch):
@@ -1181,8 +1281,13 @@ def test_ac16_c4_snapshot_cap_reads_200_plus(tmp_path, monkeypatch):
     asyncio.run(scenario())
 
     out = _plain(cmd_lines)
-    assert "Sessions 16–30 of 200+" in out  # later pages carry the capped total
-    store.list_sessions.assert_awaited_once_with(TURN_ARCHIVE_LAYER, 200)
+    # Later pages carry the capped total: the derived window for page 2 over
+    # a snapshot fetched exactly to the cap reads "<start>–<end> of 200+".
+    cap_start, cap_end = _page_indices(len(summaries), 1)
+    assert (
+        f"Sessions {cap_start}–{cap_end} of {_RESUME_SNAPSHOT_LIMIT}+" in out
+    )
+    store.list_sessions.assert_awaited_once_with(TURN_ARCHIVE_LAYER, _RESUME_SNAPSHOT_LIMIT)
 
 
 def test_ac16_c5_small_store_end_notice_without_store_read(tmp_path, monkeypatch):
@@ -1200,7 +1305,10 @@ def test_ac16_c5_small_store_end_notice_without_store_read(tmp_path, monkeypatch
     asyncio.run(scenario())
 
     out = _plain(lines)
-    assert "Sessions 1–10 of 10 (newest first):" in out
+    # All ten rows fit one page: the derived page-1 window already names the
+    # full count and no window tail is appended.
+    assert _page_window(10, 0) == "Sessions 1–10 of 10 (newest first):"
+    assert _window_of(lines) == _page_window(10, 0)
     assert "/resume more" not in out  # footer stays at the shipped line
     ends = [ln for ln in out.split("\n") if "end of list" in ln]
     assert len(ends) == 1 and ends[0].startswith("No more sessions")
@@ -1223,11 +1331,16 @@ def test_ac16_c6_bare_resume_after_paging_refetches(tmp_path, monkeypatch):
 
     asyncio.run(scenario())
 
-    assert _window_of(lines[-17:]) == "Sessions 1–15 of 38 (newest first):"
+    # The freshly fetched listing is the one after the last rendered header;
+    # its window comes from the new snapshot's length and the page size.
+    fresh_listing = _last_listing(lines)
+    total = len(iface._listing)  # the fresh snapshot: 37 cached + the new row
+    assert total == 38
+    assert _window_of(fresh_listing) == _page_window(total, 0)
     # The fresh snapshot's row 1 is the newly archived session (its own
     # helper computes the expected timestamp, independent of the renderer).
-    fresh_rows = _rows(lines[-17:])
-    assert len(fresh_rows) == 15
+    fresh_rows = _rows(fresh_listing)
+    assert len(fresh_rows) == _RESUME_LIST_LIMIT
     assert fresh_rows[0] == "1  " + _local(BASE + timedelta(hours=5)) + "  1  s-new"
     assert iface._listing_page == 0
     assert len(reads) == 2  # the paging in between fetched nothing
@@ -1256,7 +1369,7 @@ def test_ac17_c1_index_resolves_across_pages_without_display(tmp_path, monkeypat
     report = [ln for ln in lines if "Resumed" in ln]
     assert len(report) == 1 and "sess-17" in report[0]
     # No page-2 window was ever printed: page 1, then the takeover line.
-    assert _window_of(lines) == "Sessions 1–15 of 37 (newest first):"
+    assert _window_of(lines) == _page_window(len(fixtures), 0)
     assert len(reads) == 1  # the listing fetch; the takeover read is get_session
 
 
@@ -1284,7 +1397,8 @@ def test_ac17_c3_more_back_with_no_listing_fetch_page_one(tmp_path, monkeypatch)
     """AC17-c3: on a fresh repl, /resume more and /resume back each behave
     as a bare /resume — one fresh fetch, page 1 shown."""
     for word in ("more", "back"):
-        store, reads = _watched_store(_fixture_lines(37))
+        total = 37
+        store, reads = _watched_store(_fixture_lines(total))
         agent = _TakeoverAgent("sess-00", store)
         iface, lines = _capturing_iface(tmp_path, monkeypatch)
 
@@ -1293,8 +1407,8 @@ def test_ac17_c3_more_back_with_no_listing_fetch_page_one(tmp_path, monkeypatch)
 
         asyncio.run(scenario())
 
-        assert _window_of(lines) == "Sessions 1–15 of 37 (newest first):"
-        assert iface._listing_page == 0 and len(iface._listing) == 37
+        assert _window_of(lines) == _page_window(total, 0)
+        assert iface._listing_page == 0 and len(iface._listing) == total
         assert reads == [(TURN_ARCHIVE_LAYER, _RESUME_SNAPSHOT_LIMIT)]
 
 
@@ -1320,7 +1434,9 @@ def test_ac17_c4_navigation_never_a_session_lookup(tmp_path, monkeypatch):
 
     out = _plain(lines)
     assert "No session" not in out and "Resumed" not in out
-    assert "Sessions 1–3 of 3 (newest first):" in out
+    # 3 sessions: one page, its derived window naming the exact count.
+    assert _page_window(3, 0) == "Sessions 1–3 of 3 (newest first):"
+    assert _window_of(lines) == _page_window(3, 0)
     assert iface._listing_page == 0
     # Exactly one listing fetch (the first navigation; the second pages the
     # cache), zero archive lookups — the words were never session ids.
