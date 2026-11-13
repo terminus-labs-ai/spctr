@@ -1019,8 +1019,66 @@ def test_own_account_cold_topic_admitted_with_context_ac16a(tmp_path):
         harness.close(run)
 
 
-@pytest.mark.baseline_debt("spc-965")
-def test_own_account_plus_foreign_message_refused_ac16b(tmp_path):
+def test_cold_topic_history_id_sorted_when_probe_out_of_order_ac1(tmp_path):
+    """spc-1058 AC1: the FR 9a admitted history is built id-ascending.
+
+    Three own-account seeds are recorded with ascending ids and then
+    deliberately reordered (rotate) inside the fake's ledger, so the topic
+    probe hands over NON-chronological entries — here the ids arrive as
+    third, first, second.  The Session history the trigger answers from is
+    still the id order: assistant-authored, first, second, third, with the
+    trigger itself the current input and never context.
+    """
+    harness = Harness(workdir=tmp_path / "ac1-sort", resume_enabled=False)
+    run, cwd, env = harness.build()
+    try:
+        first = run.zulip.seed_message(CONFIGURED_CHANNEL, "sortask",
+                                       OWN_ID, "AC1SORT_ONE")
+        second = run.zulip.seed_message(CONFIGURED_CHANNEL, "sortask",
+                                        OWN_ID, "AC1SORT_TWO")
+        third = run.zulip.seed_message(CONFIGURED_CHANNEL, "sortask",
+                                       OWN_ID, "AC1SORT_THREE")
+        assert first < second < third  # the fixture's chronological order
+        ledger = run.zulip._messages[(CONFIGURED_CHANNEL, "sortask")]
+        assert [m["id"] for m in ledger] == [first, second, third]
+        # Scramble the recorded order while each entry keeps its own id:
+        # the probe now returns the list as third, first, second.
+        ledger[:] = [ledger[2], ledger[0], ledger[1]]
+        harness.launch(run, cwd, env)
+        assert run.wait_started(), _startup_failure(run)
+
+        held = _HeldTurn(run, CONFIGURED_CHANNEL, "sortask", "AC1SORT_TRIGGER")
+        held.arm_and_trigger()
+        request = run.model_messages()[held.model_gen - 1]
+
+        turns = _non_system_turns(request)
+        # The exact ordered (role, text) sequence of the admitted context:
+        # assistant-authored, id order (ONE, TWO, THREE), never the scrambled
+        # fetch order (THREE, ONE, TWO).  ``==`` on the whole list also pins
+        # uniqueness and that the trigger closes the conversation.
+        context_turns = [turn for turn in turns
+                         if turn[1].startswith("AC1SORT_")]
+        assert context_turns == [("assistant", "AC1SORT_ONE"),
+                                 ("assistant", "AC1SORT_TWO"),
+                                 ("assistant", "AC1SORT_THREE"),
+                                 ("user", "AC1SORT_TRIGGER")], (
+            f"probe-return order leaked into the Session history: {turns!r}")
+        # The trigger is the current input; its seeds precede it as context.
+        assert turns[-1] == ("user", "AC1SORT_TRIGGER"), (
+            f"the trigger is not the current input: {turns!r}")
+
+        # Release: the held turn delivers its own answer, admitted —
+        # nothing about the scrambled probe order blocks or refuses.
+        held.release()
+        assert run.wait_idle(expected_replies=1), _fail(
+            run, "id-sorted admitted topic never got its answer")
+        replies = _reply_for(run, CONFIGURED_CHANNEL, "sortask")
+        assert len(replies) == 1 and REPLY_MARKER in replies[0]["content"], (
+            _fail(run, f"expected exactly the answer, got {replies!r}"))
+        assert run.zulip.history_calls.count(
+            (CONFIGURED_CHANNEL, "sortask")) == 1, run.zulip.history_calls
+    finally:
+        harness.close(run)
     """AC16-b: one own-account seed plus a prior Diego message is still
     refused with the unsupported-history reply and no model work."""
     harness = Harness(workdir=tmp_path / "ac16b", resume_enabled=False)

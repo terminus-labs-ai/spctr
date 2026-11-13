@@ -910,13 +910,16 @@ class ZulipInterface:
         # FR 9a: what the probe found besides the trigger is this account's
         # own writing. It enters the new Session as assistant-authored context
         # in chronological order — never a user turn — so the trigger answers
-        # from it without the model ever being asked to act on it. An entry
-        # whose text is unreadable carries no context: it is skipped rather
-        # than ending the turn the amendment just admitted.
+        # from it without the model ever being asked to act on it. The
+        # chronological list is built by sorting the probe answer ascending on
+        # the message id, so context order never depends on the order the
+        # probe happened to return. An entry whose text is unreadable carries
+        # no context: it is skipped rather than ending the turn the amendment
+        # just admitted.
         from sr2.models import Message, TextBlock
 
         history = getattr(session, "history", None)
-        for entry in messages:
+        for entry in sorted(messages, key=lambda e: int(e.get("id", 0))):
             if not _is_own_account(entry):
                 continue  # the trigger, an admitted sibling, or a malformed entry
             content = entry.get("content")
