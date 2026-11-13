@@ -82,4 +82,4 @@ In a channel a bot watches, send (replace `@edi` with a real bot):
 
 ## Next real action unlocked
 
-All slash commands (`/hb`, `/reset`, `/help`, `/status`) now work via `@bot /cmd` in mention_only mode, not just bare `/cmd` in open channels.
+All slash commands (`/hb`, `/new`, `/help`, `/status`) now work via `@bot /cmd` in mention_only mode, not just bare `/cmd` in open channels.

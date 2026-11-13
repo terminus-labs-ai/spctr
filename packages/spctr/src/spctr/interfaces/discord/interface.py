@@ -1026,7 +1026,7 @@ class DiscordInterface:
       await self._run_agent(prompt, channel_id)
       return
 
-    # Text-producing commands: /reset, /status, /help.
+    # Text-producing commands: /new, /status, /help.
     ctx = self._command_context(channel_id)
     response = handle_command(name, text, ctx)
 

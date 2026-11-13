@@ -2,7 +2,7 @@
 
 ``cli.py`` builds ``Agent(tracer=CollectingTracer())`` for ``--trace`` and
 prints ``tracer.get_trace()`` at shutdown. When the Agent replaces its Session
-— REPL/TUI ``/reset`` via ``Agent.new_session()``, or Discord via the
+— REPL/TUI ``/new`` via ``Agent.new_session()``, or Discord via the
 ``session_id`` setter — turns run on the replacement must still reach that same
 tracer, or they are missing from the printed trace.
 

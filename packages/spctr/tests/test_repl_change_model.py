@@ -1,4 +1,4 @@
-"""Tests for the REPL /change-model command (spc-956).
+"""Tests for the REPL /model command (spc-956).
 
 Terminal counterpart of Discord's /model: list configured models and switch
 the session's active model mid-session.  Covers the pure decision logic
@@ -167,7 +167,7 @@ def test_render_matches_model_names_case_sensitively() -> None:
 
 
 # ---------------------------------------------------------------------------
-# AC1 — bare /change-model lists models; nothing changes
+# AC1 — bare /model lists models; nothing changes
 # ---------------------------------------------------------------------------
 
 
@@ -182,7 +182,7 @@ async def test_bare_change_model_lists_models_without_side_effects(
     interface = REPLInterface()
     buf = _console_capturing(interface)
 
-    await interface._handle_command(agent, "/change-model", None)
+    await interface._handle_command(agent, "/model", None)
 
     text = _plain_text(buf)
     assert "default" in text and "fast" in text
@@ -206,7 +206,7 @@ async def test_switch_applies_config_and_writes_pointer(tmp_path, monkeypatch) -
     interface = REPLInterface()
     buf = _console_capturing(interface)
 
-    await interface._handle_command(agent, "/change-model", "fast")
+    await interface._handle_command(agent, "/model", "fast")
 
     # Applied in-process through apply_config with a copied config
     # (the Runtime re-seats the LLM through LiveLLM.retarget).
@@ -230,7 +230,7 @@ async def test_switch_passes_copied_config_to_apply(tmp_path, monkeypatch) -> No
     interface = REPLInterface()
     _console_capturing(interface)
 
-    await interface._handle_command(agent, "/change-model", "fast")
+    await interface._handle_command(agent, "/model", "fast")
 
     applied = agent.apply_config.call_args[0][0]
     assert applied is not config
@@ -251,7 +251,7 @@ async def test_switch_without_pointer_is_session_only(monkeypatch) -> None:
     interface = REPLInterface()
     buf = _console_capturing(interface)
 
-    await interface._handle_command(agent, "/change-model", "fast")
+    await interface._handle_command(agent, "/model", "fast")
 
     assert agent.config.active_model == "fast"
     text = _plain_text(buf)
@@ -272,7 +272,7 @@ async def test_pointer_write_failure_changes_nothing(monkeypatch) -> None:
     interface = REPLInterface()
     buf = _console_capturing(interface)
 
-    await interface._handle_command(agent, "/change-model", "fast")
+    await interface._handle_command(agent, "/model", "fast")
 
     text = _plain_text(buf)
     assert "Could not persist" in text
@@ -297,7 +297,7 @@ async def test_unknown_model_lists_available_and_changes_nothing(
     interface = REPLInterface()
     buf = _console_capturing(interface)
 
-    await interface._handle_command(agent, "/change-model", "ghost")
+    await interface._handle_command(agent, "/model", "ghost")
 
     text = _plain_text(buf)
     assert "Unknown model" in text
@@ -321,7 +321,7 @@ async def test_selecting_active_model_is_a_noop(tmp_path, monkeypatch) -> None:
     interface = REPLInterface()
     buf = _console_capturing(interface)
 
-    await interface._handle_command(agent, "/change-model", "default")
+    await interface._handle_command(agent, "/model", "default")
 
     assert "Already using" in _plain_text(buf)
     agent.apply_config.assert_not_called()
@@ -336,7 +336,7 @@ async def test_selecting_active_model_is_a_noop(tmp_path, monkeypatch) -> None:
 def test_change_model_in_commands_list() -> None:
     from spctr.interfaces.repl import _COMMANDS
 
-    assert "/change-model" in _COMMANDS
+    assert "/model" in _COMMANDS
 
 
 def test_change_model_offered_by_completer() -> None:
@@ -350,7 +350,7 @@ def test_change_model_offered_by_completer() -> None:
         c.text
         for c in _SlashCompleter(_COMMANDS).get_completions(doc, CompleteEvent(""))
     ]
-    assert texts == ["/change-model"]
+    assert texts == ["/model"]
 
 
 @pytest.mark.asyncio
@@ -360,13 +360,13 @@ async def test_help_lists_change_model() -> None:
 
     await interface._handle_command(MagicMock(), "/help", None)
 
-    assert "/change-model" in _plain_text(buf)
+    assert "/model" in _plain_text(buf)
 
 
 def test_module_docstring_lists_change_model() -> None:
     import spctr.interfaces.repl as repl_mod
 
-    assert "/change-model" in (repl_mod.__doc__ or "")
+    assert "/model" in (repl_mod.__doc__ or "")
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +381,7 @@ async def test_command_dispatched_case_insensitively() -> None:
     interface = REPLInterface()
     buf = _console_capturing(interface)
 
-    await interface._handle_command(monkey, "/change-model", None)
+    await interface._handle_command(monkey, "/model", None)
 
     assert "Models:" in _plain_text(buf)
 

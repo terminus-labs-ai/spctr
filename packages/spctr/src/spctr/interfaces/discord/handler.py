@@ -173,7 +173,7 @@ def _handle_ask(rest: str, ctx: CommandContext) -> str | None:
 
 
 def _handle_reset(rest: str, ctx: CommandContext) -> str | None:
-    """ /reset — resets the conversation for this channel."""
+    """ /new — resets the conversation for this channel."""
     return "Conversation reset for this channel."
 
 

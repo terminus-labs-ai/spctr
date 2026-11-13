@@ -1,6 +1,6 @@
 """A replaced Session's log closes at the swap, not at cyclic GC (obsidian-ckst).
 
-When an Agent replaces its Session — REPL/TUI ``/reset`` via
+When an Agent replaces its Session — REPL/TUI ``/new`` via
 ``Agent.new_session()``, or Discord via the ``session_id`` setter — the
 outgoing Session's log must be closed right away: its file descriptor is
 released and its exclusive ``flock`` dropped, so retention cleanup can treat

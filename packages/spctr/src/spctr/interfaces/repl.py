@@ -13,11 +13,11 @@ work exactly like a normal shell session:
   rendered as Markdown.
 
 Slash commands (identical semantics to the TUI):
-  /quit /exit /reset /help /tools /history /context /save [path] /load <path>
+  /quit /exit /new /help /tools /history /context /save [path] /load <path>
   /resume [| <idx> | <session-id>]
 
 Terminal counterpart of Discord's /model (spc-956):
-  /change-model [name]
+  /model [name]
 
 Ctrl-C during a turn stops the turn (twice in quick succession force-quits);
 Ctrl-C at the prompt abandons the half-typed input.
@@ -86,7 +86,7 @@ _HELP = """\
 Commands:
   /quit     — exit the REPL
   /exit     — exit the REPL
-  /reset    — start a new session
+  /new    — start a new session
   /help     — show this help
   /tools    — list available tools
   /history  — show conversation history
@@ -95,7 +95,7 @@ Commands:
   /load <path>  — load session from JSON
   /resume [| <idx> | <session-id>]  — list archived sessions, or take one over
   /resume more | /resume back  — page through the last /resume listing
-  /change-model [name]  — list models, or switch the active one
+  /model [name]  — list models, or switch the active one
 
 Multiline input: Enter sends the message, Shift+Enter (or Alt+Enter) adds a
 newline.  Shift+Enter only reaches the REPL if your terminal is set to send a
@@ -108,7 +108,7 @@ persisted between runs.
 _COMMANDS = [
     "/quit",
     "/exit",
-    "/reset",
+    "/new",
     "/help",
     "/tools",
     "/history",
@@ -118,7 +118,7 @@ _COMMANDS = [
     "/resume",
     "/resume more",
     "/resume back",
-    "/change-model",
+    "/model",
 ]
 
 
@@ -269,7 +269,7 @@ def _mint_repl_key(name: str, now: datetime | None = None) -> str:
     """Fresh unique REPL session key: ``<name>-repl-<YYYYmmdd-HHMMSS>`` (FR 9).
 
     Local time, as the listing shows local time.  Uniqueness comes from the
-    clock: one mint per REPL start (and one per ``/reset``) can only collide
+    clock: one mint per REPL start (and one per ``/new``) can only collide
     with another inside the same second.
     """
     moment = now if now is not None else datetime.now()
@@ -287,9 +287,9 @@ def _needs_repl_key(session_id: str, name: str) -> bool:
 
 
 def _is_repl_minted_key(session_id: str, name: str) -> bool:
-    """True when ``session_id`` was minted by this interface (``/reset``).
+    """True when ``session_id`` was minted by this interface (``/new``).
 
-    ``/reset`` replaces a key the REPL minted (``<name>-repl-<stamp>``) with a
+    ``/new`` replaces a key the REPL minted (``<name>-repl-<stamp>``) with a
     fresh stamp; a key the operator supplied keeps the shipped fallback.
     """
     return re.match(rf"^{re.escape(name)}-repl-\d{{8}}-\d{{6}}$", session_id) is not None
@@ -522,14 +522,14 @@ def render_change_model_command(
     active_model: str,
     pointer_configured: bool,
 ) -> tuple[list[tuple[str, str]], str | None]:
-    """Pure decision logic for /change-model — no I/O.
+    """Pure decision logic for /model — no I/O.
 
     Mirrors ``interfaces.discord.handler.render_model_command``; the REPL
     renders Rich markup lines instead of Discord markdown, so the two stay
     deliberately separate (the duplication is a dozen lines).
 
     Args:
-        arg: Model name after "/change-model"; None lists the models.
+        arg: Model name after "/model"; None lists the models.
         model_names: Keys of the configured ``models`` map.
         active_model: The model name currently in force.
         pointer_configured: Whether ``SR2_ACTIVE_MODEL_FILE`` is set, i.e.
@@ -581,7 +581,7 @@ class REPLInterface:
         self._stop_event: asyncio.Event | None = None
         # Snapshot fetched by the last /resume listing, so /resume <idx>
         # refers to the listing the operator just looked at and paging never
-        # re-fetches (FR 14); /reset clears it along with the page.
+        # re-fetches (FR 14); /new clears it along with the page.
         self._listing: list = []
         # 0-based page in view within self._listing (FR 14).
         self._listing_page: int = 0
@@ -891,7 +891,7 @@ class REPLInterface:
         handlers = {
             "/quit": self._cmd_quit,
             "/exit": self._cmd_exit,
-            "/reset": lambda a: self._cmd_reset(agent),
+            "/new": lambda a: self._cmd_reset(agent),
             "/help": self._cmd_help,
             "/tools": lambda a: self._cmd_tools(agent),
             "/history": lambda a: self._cmd_history(agent),
@@ -899,7 +899,7 @@ class REPLInterface:
             "/save": lambda a: self._cmd_save(agent, arg),
             "/load": lambda a: self._cmd_load(agent, arg),
             "/resume": lambda a: self._cmd_resume(agent, arg),
-            "/change-model": lambda a: self._cmd_change_model(agent, arg),
+            "/model": lambda a: self._cmd_change_model(agent, arg),
         }
         handler = handlers.get(cmd)
         if handler is None:
@@ -915,7 +915,7 @@ class REPLInterface:
 
     async def _cmd_reset(self, agent: "Agent") -> None:
         # A key matching <name>-repl-\d{8}-\d{6} is this interface's own
-        # mint, so /reset replaces it with a fresh stamp (FR 9) — never the
+        # mint, so /new replaces it with a fresh stamp (FR 9) — never the
         # shared <name>-default.  A stamp cannot be reused inside its own
         # second: the key in force may already have archived a turn under
         # exactly that stamp since the mint, so the fresh mint is checked
@@ -1215,7 +1215,7 @@ class REPLInterface:
             self.console.print(f"[red]Error loading session: {e}[/red]")
 
     async def _cmd_change_model(self, agent: "Agent", arg: str | None) -> None:
-        """Handle /change-model — list models or switch the active one.
+        """Handle /model — list models or switch the active one.
 
         Terminal counterpart of Discord's /model (spc-956).  A switch is
         applied in-process through ``agent.apply_config`` — the Runtime

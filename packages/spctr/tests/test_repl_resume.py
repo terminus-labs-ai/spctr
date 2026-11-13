@@ -3,7 +3,7 @@
 AC10 — unique keys: a REPL start on the constructed default identity mints a
 fresh ``<name>-repl-<YYYYmmdd-HHMMSS>`` key (collision-guarded against
 already-archived keys via ``list_sessions``); an explicit ``--session-id``
-survives; ``/reset`` mints a new key and the old key's archive stays frozen.
+survives; ``/new`` mints a new key and the old key's archive stays frozen.
 AC12 — takeover: ``/resume <n|key>`` restores the target's resumable history
 through the increment-1 reconstruction (interrupted marker included), adopts
 the key as the agent's identity, re-seeds the next turn's ``turn_seq`` to the
@@ -417,7 +417,7 @@ def test_ac10_c2_explicit_session_id_survives_start(tmp_path, monkeypatch):
 
 
 def test_ac10_c3_reset_mints_new_key_and_freezes_old_archive(tmp_path, monkeypatch):
-    """AC10-c3: /reset mid-run moves to a new unique key; the old key's
+    """AC10-c3: /new mid-run moves to a new unique key; the old key's
     archive (two completed turns) is read, never written to."""
     agent = Agent(_config())
     store = asyncio.run(_seeded_store([("miranda-default", 2, BASE)]))
@@ -453,7 +453,7 @@ def test_ac10_c3_reset_mints_new_key_and_freezes_old_archive(tmp_path, monkeypat
 
 def test_ac10_c3_reset_on_non_default_key_falls_back_to_default(tmp_path, monkeypatch):
     """Outside AC10-c3's scope: a run on an explicit --session-id keeps the
-    shipped /reset semantics (back to <name>-default), which the REPL only
+    shipped /new semantics (back to <name>-default), which the REPL only
     overrides for keys it minted itself."""
     agent = Agent(_config(), session_id="explicit-choice")
     iface, _ = _capturing_iface(tmp_path, monkeypatch)
@@ -901,7 +901,7 @@ def test_ac15_c4_failed_and_empty_takeovers_print_no_replay(tmp_path, monkeypatc
 
 
 def test_ac15_reset_does_not_replay(tmp_path, monkeypatch):
-    """/reset starts fresh: the notice prints, no ``You:`` label or replay."""
+    """/new starts fresh: the notice prints, no ``You:`` label or replay."""
     agent = Agent(_config())
     agent.history[:] = [_msg("user", "old"), _msg("assistant", "prior")]
     iface, lines = _capturing_iface(tmp_path, monkeypatch)
@@ -1329,7 +1329,7 @@ def test_ac17_c4_navigation_never_a_session_lookup(tmp_path, monkeypatch):
 
 
 def test_reset_clears_snapshot_and_page(tmp_path, monkeypatch):
-    """FR 14: /reset clears the page state along with the snapshot it clears
+    """FR 14: /new clears the page state along with the snapshot it clears
     today."""
     store, _reads = _watched_store(_fixture_lines(37))
     agent = Agent(_config(), session_id="sess-00")

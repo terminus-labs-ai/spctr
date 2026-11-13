@@ -220,7 +220,7 @@ def test_new_session_preserves_run_context() -> None:
     """Calling new_session() carries the run context to the replacement Session.
 
     The new Session has fresh history but inherits the run context already in
-    force, so interfaces that reset (REPL/TUI /reset) need not re-set it.
+    force, so interfaces that reset (REPL/TUI /new) need not re-set it.
     """
     from spctr.agent import Agent
 

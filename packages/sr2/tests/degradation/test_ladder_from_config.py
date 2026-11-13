@@ -1,7 +1,7 @@
 """Tests for DegradationLadder.from_config — FR3 (sr2-83).
 
 Replaces the hardcoded DegradationLevel enum + _ACTIVE_PROVIDERS map
-with a config-driven level table.  The ladder keeps step_down/reset/
+with a config-driven level table.  The ladder keeps step_down/new/
 current_level/is_at_full semantics but is constructed from DegradationConfig.
 
 The legacy constructor __init__(initial_level=...) still works for backwards

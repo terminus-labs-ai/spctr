@@ -1,7 +1,7 @@
 """Replacement Sessions keep their session log (obsidian-gb5j, spec FR1/FR2).
 
 Every Session created by Runtime owns a log. When an Agent replaces its
-Session — REPL/TUI ``/reset`` via ``Agent.new_session()``, or Discord via the
+Session — REPL/TUI ``/new`` via ``Agent.new_session()``, or Discord via the
 ``session_id`` setter — the replacement inherits the run context already in
 force, so it opens its own log, records ``session.start`` with the interface,
 and announces the new path on stderr exactly as the original Session did.
@@ -199,7 +199,7 @@ class TestSessionIdSetterOpensLog:
 
 
 # ---------------------------------------------------------------------------
-# AC 3 — REPL and TUI /reset produce a logged new session
+# AC 3 — REPL and TUI /new produce a logged new session
 # ---------------------------------------------------------------------------
 
 class TestInterfaceResetCommands:
@@ -209,10 +209,10 @@ class TestInterfaceResetCommands:
         (first,) = _files(log_dir)
         capsys.readouterr()
 
-        await repl._handle_command(agent, "/reset", None)
+        await repl._handle_command(agent, "/new", None)
 
         new = _new_files(log_dir, [first])
-        assert len(new) == 1, "REPL /reset left the new session without a log"
+        assert len(new) == 1, "REPL /new left the new session without a log"
         _assert_fresh_log(new[0], "repl", agent.session_id)
         assert str(new[0]) in capsys.readouterr().err
 
@@ -224,10 +224,10 @@ class TestInterfaceResetCommands:
         (first,) = _files(log_dir)
         capsys.readouterr()
 
-        await SpctrTUI(agent)._handle_command("/reset", None, MagicMock())
+        await SpctrTUI(agent)._handle_command("/new", None, MagicMock())
 
         new = _new_files(log_dir, [first])
-        assert len(new) == 1, "TUI /reset left the new session without a log"
+        assert len(new) == 1, "TUI /new left the new session without a log"
         _assert_fresh_log(new[0], "tui", agent.session_id)
         assert str(new[0]) in capsys.readouterr().err
 

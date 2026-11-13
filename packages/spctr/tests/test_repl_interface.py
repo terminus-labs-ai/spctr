@@ -264,7 +264,7 @@ async def test_reset_starts_new_session(make_mock_agent) -> None:
     interface = REPLInterface()
     buf = _console_capturing(interface)
 
-    await interface._handle_command(agent, "/reset", None)
+    await interface._handle_command(agent, "/new", None)
 
     agent.new_session.assert_called_once_with()
     assert "New session started" in _plain_text(buf)
@@ -279,7 +279,7 @@ async def test_help_lists_commands(make_mock_agent) -> None:
     await interface._handle_command(agent, "/help", None)
 
     text = _plain_text(buf)
-    for cmd in ("/quit", "/reset", "/tools", "/history", "/save", "/load"):
+    for cmd in ("/quit", "/new", "/tools", "/history", "/save", "/load"):
         assert cmd in text
 
 

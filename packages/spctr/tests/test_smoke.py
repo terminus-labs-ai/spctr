@@ -495,7 +495,7 @@ class TestSmokeDiscordInterface:
         )
 
         # Parse known command
-        cmd, rest = parse_slash_command("/reset")
+        cmd, rest = parse_slash_command("/new")
         assert cmd == "reset"
         assert rest == ""
 

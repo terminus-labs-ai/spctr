@@ -66,7 +66,7 @@ spctr my-config.yaml --trace "list files in /tmp"
 |---------|--------|
 | `/help` | Show available commands |
 | `/tools` | List registered tools |
-| `/reset` | Start a new session |
+| `/new` | Start a new session |
 | `/quit` | Exit |
 
 Ctrl+C during a response interrupts the current stream and re-prompts.

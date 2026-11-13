@@ -79,7 +79,7 @@ class TestShouldRespond:
 
 class TestParseSlashCommand:
     def test_parses_known_command(self) -> None:
-        cmd, rest = parse_slash_command("/reset")
+        cmd, rest = parse_slash_command("/new")
         assert cmd == "reset"
         assert rest == ""
 
@@ -104,7 +104,7 @@ class TestParseSlashCommand:
         assert rest == ""
 
     def test_case_insensitive(self) -> None:
-        cmd, rest = parse_slash_command("/RESET")
+        cmd, rest = parse_slash_command("/new")
         assert cmd == "reset"
         assert rest == ""
 
@@ -226,7 +226,7 @@ class TestHandleCommand:
         response = handle_command("help", "", _ctx())
         assert response is not None
         assert "/ask" in response
-        assert "/reset" in response
+        assert "/new" in response
         assert "/status" in response
         assert "/help" in response
         assert "/hb" in response
