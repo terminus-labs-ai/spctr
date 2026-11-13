@@ -171,13 +171,13 @@ def _make_agent(config: Any) -> Any:
         return Agent(config=config)
 
 
-def _make_interface(tmp_path: Path) -> Any:
+def _make_interface(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     """A ZulipInterface with a fake client: no server, no credentials,
     no network. Only the reminders wiring is exercised via start/stop.
 
-    The fake client stays patched for the interface's life; the test's
-    event loop is the single loop, so the patch's exit is a no-op re-entry
-    guard (same object swapped back in).
+    The fakes are installed with monkeypatch.setattr, so pytest restores
+    the real ZulipClient and load_zulip_credentials when the test ends —
+    no fake outlives the test that installed it.
     """
     from spctr.interfaces.zulip.client import ZulipCredentials
     import spctr.interfaces.zulip.interface as iface_mod
@@ -222,12 +222,15 @@ def _make_interface(tmp_path: Path) -> Any:
             self.sends.append(kwargs)
             return 1
 
-    # Patch for the interface's whole life (construction + start + stop all
-    # happen inside one test, one event loop).
-    iface_mod.load_zulip_credentials = lambda path: ZulipCredentials(
-        email="bot@test.local", api_key="k", site="http://127.0.0.1:1"
+    # monkeypatch.setattr restores the real objects at test teardown.
+    monkeypatch.setattr(
+        iface_mod,
+        "load_zulip_credentials",
+        lambda path: ZulipCredentials(
+            email="bot@test.local", api_key="k", site="http://127.0.0.1:1"
+        ),
     )
-    iface_mod.ZulipClient = lambda **kw: _FakeClient()
+    monkeypatch.setattr(iface_mod, "ZulipClient", lambda **kw: _FakeClient())
     return iface_mod.ZulipInterface(config)
 
 
@@ -237,7 +240,7 @@ def _make_interface(tmp_path: Path) -> Any:
 
 
 class TestAC3Switch:
-    async def test_disabled_registers_nothing(self, tmp_path):
+    async def test_disabled_registers_nothing(self, monkeypatch, tmp_path):
         """AC3: reminders disabled (the default) registers no tool and
         starts no loop."""
         agent = _make_agent(_agent_config(reminders=None))
@@ -245,7 +248,7 @@ class TestAC3Switch:
             assert "reminder" not in agent.registry
             assert agent.reminders is None
             assert agent._runtime.reminders_enabled is False
-            interface = _make_interface(tmp_path)
+            interface = _make_interface(monkeypatch, tmp_path)
             await interface.start(agent)
             try:
                 assert interface._reminders_loop is None
@@ -254,7 +257,7 @@ class TestAC3Switch:
         finally:
             await agent.aclose()
 
-    async def test_enabled_registers_tool_and_starts_loop(self, tmp_path):
+    async def test_enabled_registers_tool_and_starts_loop(self, monkeypatch, tmp_path):
         """AC3: reminders enabled registers the tool and the interface
         start() begins the delivery loop on the shared store."""
         config = _agent_config(
@@ -271,7 +274,7 @@ class TestAC3Switch:
             assert agent.reminders is not None
             assert agent._runtime.reminders_enabled is True
 
-            interface = _make_interface(tmp_path)
+            interface = _make_interface(monkeypatch, tmp_path)
             await interface.start(agent)
             try:
                 assert interface._reminders_loop is not None
@@ -674,11 +677,11 @@ class TestAC6NamedChannel:
         assert store.count_by_status() == {}
         assert calls == []
 
-    async def test_interface_resolver_from_registration_snapshot(self, tmp_path):
+    async def test_interface_resolver_from_registration_snapshot(self, monkeypatch, tmp_path):
         """AC6 through the real ZulipInterface: registration streams give
         the origin its channel NAME (FR12), and the interface resolver
         matches by name case-insensitively, dropping can_send=False."""
-        interface = _make_interface(tmp_path)
+        interface = _make_interface(monkeypatch, tmp_path)
         await interface.start(object())  # start() only reads .reminders
         try:
             assert interface._channel_display_name(42) == "spctr"
@@ -692,7 +695,7 @@ class TestAC6NamedChannel:
         finally:
             await interface.stop()
 
-    async def test_seam_named_channel_through_the_real_resolver(self, tmp_path):
+    async def test_seam_named_channel_through_the_real_resolver(self, monkeypatch, tmp_path):
         """AC6 seam (spc-166): start() registers the real interface
         resolver on the agent's Runtime seam, which seats a tool built
         with it in the startup tool's place — so a named-channel create
@@ -718,7 +721,7 @@ class TestAC6NamedChannel:
             )
         )
         try:
-            interface = _make_interface(tmp_path)
+            interface = _make_interface(monkeypatch, tmp_path)
             tool_before = agent.reminders.tool
             await interface.start(agent)
             try:
@@ -1028,3 +1031,25 @@ class TestAC11NoChatInterface:
         ]
         assert results == [expected, expected, expected]
         assert store.count_by_status() == {}
+
+
+# ---------------------------------------------------------------------------
+# spc-1020 — no fake outlives the test that installed it
+# ---------------------------------------------------------------------------
+
+
+class TestNoModuleAttributeLeak:
+    def test_interface_module_attributes_are_restored(self):
+        """spc-1020 (AC1): after every test in this file has run (each
+        installs fake ZulipClient / load_zulip_credentials via monkeypatch),
+        the interface module again carries the REAL objects, verified by
+        identity against the client module's own definitions."""
+        import spctr.interfaces.zulip.client as client_mod
+        import spctr.interfaces.zulip.interface as iface_mod
+
+        assert (
+            iface_mod.ZulipClient is client_mod.ZulipClient
+        ), f"ZulipClient leaked: {iface_mod.ZulipClient!r}"
+        assert (
+            iface_mod.load_zulip_credentials is client_mod.load_zulip_credentials
+        ), f"load_zulip_credentials leaked: {iface_mod.load_zulip_credentials!r}"
