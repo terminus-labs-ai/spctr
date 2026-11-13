@@ -1079,6 +1079,10 @@ def test_cold_topic_history_id_sorted_when_probe_out_of_order_ac1(tmp_path):
             (CONFIGURED_CHANNEL, "sortask")) == 1, run.zulip.history_calls
     finally:
         harness.close(run)
+
+
+@pytest.mark.baseline_debt("spc-965")
+def test_own_account_plus_foreign_message_refused_ac16b(tmp_path):
     """AC16-b: one own-account seed plus a prior Diego message is still
     refused with the unsupported-history reply and no model work."""
     harness = Harness(workdir=tmp_path / "ac16b", resume_enabled=False)
