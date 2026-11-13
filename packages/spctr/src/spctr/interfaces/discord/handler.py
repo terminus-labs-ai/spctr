@@ -203,6 +203,12 @@ def _build_help_text() -> str:
     entries: list[str] = []
     for name, cmd in sorted(_COMMAND_REGISTRY.items()):
         entries.append(f"`/{name}` — {cmd.description}")
+    # Accepted-input aliases are user-facing names too: advertise each one so
+    # the help text matches what parse_slash_command accepts.
+    for alias, canonical in sorted(COMMAND_ALIASES.items()):
+        cmd = _COMMAND_REGISTRY.get(canonical)
+        if cmd is not None:
+            entries.append(f"`/{alias}` — {cmd.description}")
     # /hb is async (subprocess), not in the sync registry
     entries.append("`/hb` — Probe Harbinger: live slots, run outcomes, done & blocked beads")
     return HELP_TEMPLATE.format(command_list="\n".join(entries))
@@ -315,7 +321,7 @@ register_command(SlashCommand(
 
 register_command(SlashCommand(
     name="reset",
-    description="Start a new conversation in this channel",
+    description="Start a new conversation in this channel (alias: /new)",
     handler=_handle_reset,
 ))
 
@@ -356,9 +362,18 @@ register_command(SlashCommand(
 ))
 
 
-# Known slash commands (sync registry + async commands handled by the interface).
-# parse_slash_command checks this set; handle_command only dispatches registry commands.
-SLASH_COMMANDS: set[str] = set(_COMMAND_REGISTRY.keys()) | {"hb", "cancel"}
+# Accepted-input aliases: user-facing name -> canonical registry name.
+# Aliases are accepted by parse_slash_command and normalized to the canonical
+# command, so every downstream dispatch (handle_command, the interface's
+# "reset" checks, the native tree) keys off the registry name alone.
+COMMAND_ALIASES: dict[str, str] = {"new": "reset"}
+
+# Known slash commands (sync registry + aliases + async commands handled by
+# the interface). parse_slash_command checks this set; handle_command only
+# dispatches registry commands.
+SLASH_COMMANDS: set[str] = (
+    set(_COMMAND_REGISTRY.keys()) | set(COMMAND_ALIASES) | {"hb", "cancel"}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -412,9 +427,12 @@ def parse_slash_command(content: str) -> tuple[str | None, str]:
     parts = content.strip().split(maxsplit=1)
     cmd = parts[0][1:]  # Strip the leading "/"
 
-    if cmd.lower() in SLASH_COMMANDS:
+    lowered = cmd.lower()
+    if lowered in SLASH_COMMANDS:
         rest = parts[1] if len(parts) > 1 else ""
-        return cmd.lower(), rest
+        # Normalize accepted-input aliases to the canonical registry name so
+        # dispatch only ever sees commands present in _COMMAND_REGISTRY.
+        return COMMAND_ALIASES.get(lowered, lowered), rest
 
     # Unknown slash — treat as regular content
     return None, content

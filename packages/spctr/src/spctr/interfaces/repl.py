@@ -178,6 +178,15 @@ def _history_file() -> Path:
     return path
 
 
+# Legacy muscle-memory aliases: typed prefix -> renamed command to offer.
+# The FuzzyWordCompleter cannot surface "/model" from "/change" typing (the
+# rename dropped "/change-model" from _COMMANDS), so the completer offers the
+# renamed command for these exact inputs ahead of the fuzzy results.
+_COMMAND_ALIASES = {
+    "/change": "/model",
+}
+
+
 class _SlashCompleter(Completer):
     """Slash-command completer gated to slash-prefixed input.
 
@@ -199,7 +208,16 @@ class _SlashCompleter(Completer):
         first_line = document.text_before_cursor.rsplit("\n", 1)[-1]
         if not first_line.startswith("/"):
             return
-        yield from self._fuzzy.get_completions(document, complete_event)
+        # A legacy alias pins its completion: typing the old command name
+        # offers the renamed command first (deduped against the fuzzy list).
+        alias = _COMMAND_ALIASES.get(first_line)
+        if alias is not None:
+            yield Completion(alias, start_position=-len(first_line))
+        seen = {alias}
+        for completion in self._fuzzy.get_completions(document, complete_event):
+            if completion.text not in seen:
+                seen.add(completion.text)
+                yield completion
 
 
 # Shift+Enter has no encoding of its own in a default terminal: it sends the
