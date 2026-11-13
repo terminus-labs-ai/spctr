@@ -533,21 +533,6 @@ class _CurrentProjectionCache:
 _CONTENT_CACHE: "dict[str, frozenset[str]]" = {}
 _CONTENT_CACHE_LIMIT = 4096
 
-#: Claim object-words -> the subject they named, so a later confirmation or
-#: correction that carries no subject link still finds the subject its own
-#: words are about.
-_CLAIM_INDEX: dict[str, list[tuple[str, str]]] = {}
-
-
-def _remember_claim(subject_id: str, text: str) -> None:
-    """Index a claim's object words against the subject it formed."""
-    for word in _object_words(text):
-        bucket = _CLAIM_INDEX.setdefault(word, [])
-        if (subject_id, text) not in bucket:
-            bucket.append((subject_id, text))
-    if len(_CLAIM_INDEX) > _CONTENT_CACHE_LIMIT:
-        _CLAIM_INDEX.clear()
-
 
 # ---------------------------------------------------------------------------
 # The consolidator
@@ -599,7 +584,6 @@ class RuleBasedContinuityConsolidator:
             if record is not None:
                 records.append(record)
                 self._projections.record(record)
-                _remember_claim(record.subject_id, record.content)
         return records
 
     # ------------------------------------------------------------------
