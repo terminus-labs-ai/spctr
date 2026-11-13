@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from spctr.core import RunContext, RunMode
 from spctr.events import AgentTextDelta, AgentToolResult, AgentToolStart
+from spctr.interfaces.common import render_progress_message, render_tool_line
 from spctr.interfaces.discord.adapter import DiscordBotAdapter
 from spctr.interfaces.discord.config import DiscordConfig
 from spctr.interfaces.discord.config_source import (
@@ -55,7 +56,6 @@ from spctr.interfaces.discord.handler import (
   resolve_area,
   should_respond,
   split_for_retry,
-  tail_for_stream,
 )
 from spctr.interfaces.discord.session_map import SessionMap
 
@@ -1064,7 +1064,9 @@ class DiscordInterface:
     )
 
     # Send initial placeholder message for streaming
-    thinking_msg = await self._adapter.send_message(channel_id, "⏳ Thinking...")
+    thinking_msg = await self._adapter.send_message(
+      channel_id, self.config.thinking_message
+    )
     thinking_id = getattr(thinking_msg, "id", None) if thinking_msg else None
     session.pending_message_id = thinking_id
 
@@ -1194,12 +1196,13 @@ class DiscordInterface:
     """
     if not self.config.tool_embed_enabled:
       return
-    inputs_max_length = 80
-    inputs = str(event.input)
-    if len(inputs) > inputs_max_length:
-      inputs = inputs[:inputs_max_length] + "..."
 
-    line = f"▶ `{event.name}` - `{inputs}`"
+    line = render_tool_line(
+      self.config.tool_start_line,
+      event.name,
+      str(event.input),
+      self.config.tool_line_max_chars,
+    )
     self._tool_lines.setdefault(channel_id, []).append(line)
     self._flush_tool_lines(channel_id)
 
@@ -1220,14 +1223,17 @@ class DiscordInterface:
     if not self.config.tool_embed_enabled:
       return
 
-    icon = "✖" if event.is_error else "✓"
-    tool_name = event.name or "tool"
-    content_max_length = 80
-    content = str(event.content).replace("\n", "|")
-    if len(content) > content_max_length:
-      content = content[:content_max_length] + "..."
-
-    line = f"{icon} `{tool_name}` - `{content}`"
+    template = (
+      self.config.tool_result_error_line
+      if event.is_error
+      else self.config.tool_result_ok_line
+    )
+    line = render_tool_line(
+      template,
+      event.name or "tool",
+      str(event.content).replace("\n", "|"),
+      self.config.tool_line_max_chars,
+    )
     self._tool_lines.setdefault(channel_id, []).append(line)
     self._flush_tool_lines(channel_id)
 
@@ -1270,15 +1276,15 @@ class DiscordInterface:
     lines = self._tool_lines.get(channel_id, [])
     text = self._stream_text.get(channel_id, "")
 
-    parts: list[str] = []
-    if lines:
-      parts.append("\n".join(lines))
-    # Show the streamed text so far with an in-progress marker; fall back
-    # to the placeholder when no text has arrived yet.
-    parts.append(text + "..." if text else "⏳ Thinking...")
-
-    content = "\n\n".join(parts)
-    content = tail_for_stream(content, self.config.max_message_length)
+    # The one progress renderer (spc-1022): tool lines, a blank line, then
+    # the streamed text plus "...", or the configured thinking placeholder
+    # while no text has arrived, tailed to the message length limit.
+    content = render_progress_message(
+      lines,
+      text,
+      self.config.thinking_message,
+      self.config.max_message_length,
+    )
 
     # Supersede any pending edit — this render reflects the latest state.
     self._cancel_pending_stream_edit()
