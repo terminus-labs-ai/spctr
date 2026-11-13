@@ -28,6 +28,8 @@ from typing import Any
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from spctr.config import (
     AgentConfig,
     ModelConfig,
@@ -125,12 +127,18 @@ class FakeAgent:
         self._runtime.set_reminders_channel_resolver(resolver)
 
 
-def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
+def _make_interface(
+    monkeypatch: pytest.MonkeyPatch, store_dir: Path, poll_seconds: float = 0.01
+):
     """A ZulipInterface with a fake client: no server, no credentials,
     no network (same shape as the spc-139/spc-143 test helpers).
 
     ``poll_seconds`` overrides each built delivery loop's real sleep
     interval (tiny) so loop churn between tests stays cheap.
+
+    The fakes are installed with monkeypatch.setattr, so pytest restores
+    the real ZulipClient and load_zulip_credentials when the test ends —
+    no fake outlives the test that installed it.
     """
     import spctr.interfaces.zulip.interface as iface_mod
     from spctr.interfaces.zulip.client import ZulipCredentials
@@ -182,10 +190,15 @@ def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
         async def update_message(self, message_id, content):
             pass
 
-    iface_mod.load_zulip_credentials = lambda path: ZulipCredentials(
-        email="bot@test.local", api_key="k", site="http://127.0.0.1:1"
+    # monkeypatch.setattr restores the real objects at test teardown.
+    monkeypatch.setattr(
+        iface_mod,
+        "load_zulip_credentials",
+        lambda path: ZulipCredentials(
+            email="bot@test.local", api_key="k", site="http://127.0.0.1:1"
+        ),
     )
-    iface_mod.ZulipClient = lambda **kw: _FakeClient()
+    monkeypatch.setattr(iface_mod, "ZulipClient", lambda **kw: _FakeClient())
     interface = iface_mod.ZulipInterface(config)
 
     real_start_reminders = interface._start_reminders
@@ -338,7 +351,7 @@ class TestR1SingleConstructionPath:
         assert offenders == [], offenders
 
     async def test_runtime_passes_the_registered_resolver_into_construction(
-        self, tmp_path
+        self, monkeypatch, tmp_path
     ):
         """R1: a resolver registered on the Runtime seam reaches the tool
         through its constructor and is used from there, regardless of
@@ -367,7 +380,7 @@ class TestR1SingleConstructionPath:
         runtime_b = _runtime(_enabled(store_b, poll_seconds=30))
         tool_b = runtime_b.reminders.tool
         assert isinstance(tool_b, ReminderTool)
-        interface_b = _make_interface(tmp_path)
+        interface_b = _make_interface(monkeypatch, tmp_path)
         await interface_b.start(FakeAgent(runtime_b))
         try:
             seated = runtime_b.reminders.tool
@@ -417,7 +430,7 @@ def row_for(store_file, result: str):
 
 class TestR2InterfaceRegistersViaSeam:
     async def test_start_registers_the_interface_resolver_on_the_runtime(
-        self, tmp_path
+        self, monkeypatch, tmp_path
     ):
         """R2: ZulipInterface.start registers its resolver on the seam
         (never touching the tool): the tool the seam seats in its place —
@@ -427,7 +440,7 @@ class TestR2InterfaceRegistersViaSeam:
         store_file = tmp_path / "r.sqlite"
         runtime = _runtime(_enabled(store_file, poll_seconds=30))
         agent = FakeAgent(runtime)
-        interface = _make_interface(tmp_path)
+        interface = _make_interface(monkeypatch, tmp_path)
         tool = runtime.reminders.tool
         assert "reminder" in runtime.registry
         # No interface yet: the tool exists, no resolver is registered.
@@ -459,7 +472,7 @@ class TestR2InterfaceRegistersViaSeam:
 
 
 class TestR3ResolverSurvivesReseat:
-    async def test_named_create_after_disable_enable_reseat(self, tmp_path):
+    async def test_named_create_after_disable_enable_reseat(self, monkeypatch, tmp_path):
         """R3 (spc-159): a disabled→enabled live reload rebuilds the tool
         (spc-143 re-seat) and the rebuilt tool still carries the seam's
         resolver — a named-channel create from a Zulip turn origin
@@ -468,7 +481,7 @@ class TestR3ResolverSurvivesReseat:
         store_file = tmp_path / "r.sqlite"
         runtime = _runtime(_config(store_file))  # disabled at startup
         agent = FakeAgent(runtime)
-        interface = _make_interface(tmp_path)
+        interface = _make_interface(monkeypatch, tmp_path)
         await interface.start(agent)  # registers the resolver on the seam
         try:
             assert runtime.reminders is None
@@ -497,14 +510,14 @@ class TestR3ResolverSurvivesReseat:
         finally:
             await interface.stop()
 
-    async def test_named_create_after_changed_block_reseat(self, tmp_path):
+    async def test_named_create_after_changed_block_reseat(self, monkeypatch, tmp_path):
         """R3 (spc-159): a reminders-block change while enabled rebuilds
         the tool; the rebuilt tool resolves a named create from a Zulip
         turn through the interface resolver and stores the row."""
         store_file = tmp_path / "r.sqlite"
         runtime = _runtime(_enabled(store_file, poll_seconds=30))
         agent = FakeAgent(runtime)
-        interface = _make_interface(tmp_path)
+        interface = _make_interface(monkeypatch, tmp_path)
         await interface.start(agent)
         try:
             tool_before = runtime.reminders.tool
