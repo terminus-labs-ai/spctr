@@ -69,7 +69,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 import urllib.parse
 from typing import TYPE_CHECKING, Any, Callable
@@ -82,7 +81,11 @@ from spctr.events import (
     AgentToolResult,
     AgentToolStart,
 )
-from spctr.interfaces.common import chunk_message, tail_for_stream
+from spctr.interfaces.common import (
+    chunk_message,
+    render_progress_message,
+    render_tool_line,
+)
 from spctr.interfaces.zulip.client import (
     ZulipClient,
     ZulipError,
@@ -122,25 +125,6 @@ _PROBE_FAILURE_TEXT = (
     "I could not check the earlier messages in this topic, so I will not "
     "answer without its history. Please try again later."
 )
-
-
-_TOOL_PLACEHOLDER = re.compile(r"\{(name|input|content)\}")
-
-
-def render_tool_line(
-    template: str, name: str, value: str, max_chars: int
-) -> str:
-    """Fill one tool-line template (spc-1015).
-
-    *value* (a tool's ``str(input)`` or its result content) is cut to
-    *max_chars* plus ``...`` and fills both ``{input}`` and ``{content}``;
-    ``{name}`` is the tool name. One substitution pass, so a value that
-    itself contains ``{name}`` is never re-filled.
-    """
-    if len(value) > max_chars:
-        value = value[:max_chars] + "..."
-    values = {"name": name, "input": value, "content": value}
-    return _TOOL_PLACEHOLDER.sub(lambda m: values[m.group(1)], template)
 
 
 def is_stop_command(content: str) -> bool:
@@ -224,14 +208,11 @@ class _ProgressView:
     def _render(self) -> None:
         if self._placeholder_id is None:
             return
-        parts: list[str] = []
-        if self._lines:
-            parts.append("\n".join(self._lines))
-        parts.append(
-            self._text + "..." if self._text else self._config.thinking_message
-        )
-        content = tail_for_stream(
-            "\n\n".join(parts), self._config.max_message_length
+        content = render_progress_message(
+            self._lines,
+            self._text,
+            self._config.thinking_message,
+            self._config.max_message_length,
         )
         if self._pending is not None and not self._pending.done():
             self._pending.cancel()

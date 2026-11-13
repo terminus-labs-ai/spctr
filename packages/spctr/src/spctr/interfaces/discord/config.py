@@ -49,6 +49,20 @@ class DiscordConfig(BaseModel):
                               message instead).
         tool_embed_enabled: Whether to send tool execution updates as
                             Discord embeds.
+        tool_line_max_chars: The longest ``{input}``/``{content}`` value a
+                             tool line shows; a longer value is cut to this
+                             many characters plus ``...``.
+        tool_start_line: The line a tool start appends to the in-progress
+                         message; ``{name}`` and ``{input}`` are filled in.
+        tool_result_ok_line: The line a successful tool result appends;
+                             ``{name}`` and ``{content}`` (newlines shown as
+                             ``|``) are filled in.
+        tool_result_error_line: The line a failed tool result appends; the
+                                same placeholders as ``tool_result_ok_line``.
+        thinking_message: The placeholder sent to the channel when a turn
+                          starts, before the model call; the answer replaces
+                          it by edit, and it is what the in-progress message
+                          shows until streamed text arrives.
         auto_thread: If True, automatically create a channel thread when
                      a new conversation starts in a parent channel and
                      route all replies into that thread instead of the
@@ -66,6 +80,11 @@ class DiscordConfig(BaseModel):
     max_message_length: int = 2000
     edit_stream_interval: float = 1.0
     tool_embed_enabled: bool = True
+    tool_line_max_chars: int = 80
+    tool_start_line: str = "▶ `{name}` - `{input}`"
+    tool_result_ok_line: str = "✓ `{name}` - `{content}`"
+    tool_result_error_line: str = "✖ `{name}` - `{content}`"
+    thinking_message: str = "⏳ Thinking..."
     auto_thread: bool = False
     channel_areas: dict[str, str] = Field(
         default_factory=dict,

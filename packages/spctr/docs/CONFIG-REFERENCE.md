@@ -405,6 +405,11 @@ discord:
   max_message_length: 2000
   edit_stream_interval: 1.0
   tool_embed_enabled: true
+  tool_line_max_chars: 80
+  tool_start_line: "▶ `{name}` - `{input}`"
+  tool_result_ok_line: "✓ `{name}` - `{content}`"
+  tool_result_error_line: "✖ `{name}` - `{content}`"
+  thinking_message: "⏳ Thinking..."
   auto_thread: false
   channel_areas: {}
 ```
@@ -419,6 +424,11 @@ discord:
 | `max_message_length` | int | `2000` | Max chars per message (Discord limit) |
 | `edit_stream_interval` | float | `1.0` | Seconds between stream edits (0 = disabled) |
 | `tool_embed_enabled` | bool | `true` | Show tool execution as embeds |
+| `tool_line_max_chars` | int | `80` | `{input}` and `{content}` in a tool line are cut to this many characters plus `...` |
+| `tool_start_line` | str | ``"▶ `{name}` - `{input}`"`` | The line a tool start appends to the in-progress message; `{name}` is the tool name and `{input}` its input |
+| `tool_result_ok_line` | str | ``"✓ `{name}` - `{content}`"`` | The line a successful tool result appends; `{content}` is the result with newlines shown as `\|` |
+| `tool_result_error_line` | str | ``"✖ `{name}` - `{content}`"`` | The line a failed tool result appends; same placeholders as `tool_result_ok_line` |
+| `thinking_message` | str | `"⏳ Thinking..."` | The placeholder sent to the channel when a turn starts, before the model call; the answer replaces it by edit, and the in-progress message shows it until streamed text arrives |
 | `auto_thread` | bool | `false` | Start a thread for each new conversation |
 | `channel_areas` | dict[str, str] | `{}` | Channel ID (as a **string**) to area name. Overrides the name derived from the channel. `""` means "this channel has no area". Keyed on the **parent** channel for threads |
 
