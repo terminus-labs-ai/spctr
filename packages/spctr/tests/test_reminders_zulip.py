@@ -222,7 +222,8 @@ def _make_interface(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
             self.sends.append(kwargs)
             return 1
 
-    # monkeypatch.setattr restores the real objects at test teardown.
+    # Installed via monkeypatch so the real objects are restored at test
+    # teardown (no fake outlives the test that installed it).
     monkeypatch.setattr(
         iface_mod,
         "load_zulip_credentials",
