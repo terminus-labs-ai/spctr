@@ -86,8 +86,10 @@ class ScriptedExecutor:
     """Fake executor running one scripted result per call id.
 
     Each entry maps a tool_use id to either a result content string or a
-    ``(content, is_error)`` tuple. Once the script is exhausted the last
-    entry repeats (mirrors SequentialMockLLM's repeat-last behaviour).
+    ``(content, is_error)`` tuple. Every call for an id re-serves that id's
+    scripted entry: the lookup is by id, so there is no positional advance
+    through the script. A call for an id the script does not list raises
+    ``KeyError``.
     """
 
     def __init__(self, script: dict[str, Any]) -> None:
