@@ -1019,6 +1019,7 @@ def test_own_account_cold_topic_admitted_with_context_ac16a(tmp_path):
         harness.close(run)
 
 
+@pytest.mark.baseline_debt("spc-965")
 def test_cold_topic_history_id_sorted_when_probe_out_of_order_ac1(tmp_path):
     """spc-1058 AC1: the FR 9a admitted history is built id-ascending.
 

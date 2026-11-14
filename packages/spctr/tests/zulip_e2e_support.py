@@ -23,6 +23,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -30,7 +31,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+# The interpreter the journey spawns (spc-1068).  Deriving it from a root
+# resolved relative to ``__file__`` broke with the spc-1038 monorepo move:
+# ``parent.parent`` names ``packages/spctr``, so the spawn named
+# ``packages/spctr/.venv/bin/python``, a path that exists only where someone
+# provisioned a member venv by hand.  ``sys.executable`` is the interpreter
+# actually running the suite (``uv run --frozen`` at the workspace root hands
+# the root venv's python, which has BOTH workspace members installed
+# editable), so it resolves in any checkout or worktree with no provisioning.
+CLI_PYTHON = sys.executable
+# Importability of the sources under test in the spawned process: this file
+# lives at <member>/tests/, so its parent is the member's ``src`` root — the
+# same value the harness named before the monorepo move, now derived from the
+# directory that actually contains it instead of from a guessed workspace root.
+SPCTR_SRC = Path(__file__).resolve().parent.parent / "src"
 
 DIEGO_ID = 8          # spec Dependencies: Diego user ID
 BOT_ID = 9            # spec Dependencies: Miranda bot user ID
@@ -857,7 +871,7 @@ def _child_env(sr2_home: Path, model_pointer: Path) -> dict[str, str]:
     }
     env["SR2_HOME"] = str(sr2_home)
     env["SR2_ACTIVE_MODEL_FILE"] = str(model_pointer)
-    env["PYTHONPATH"] = str(REPO_ROOT / "src")
+    env["PYTHONPATH"] = str(SPCTR_SRC)
     return env
 
 
@@ -1047,7 +1061,8 @@ class Harness:
         self.config_file = config_path
 
         env = _child_env(sr2_home, pointer)
-        env["PATH"] = str(REPO_ROOT / ".venv" / "bin") + os.pathsep + env.get("PATH", "")
+        env["PATH"] = (str(Path(CLI_PYTHON).parent) + os.pathsep
+                       + env.get("PATH", ""))
         run = ZulipCliRun(workdir=workdir, sr2_home=sr2_home,
                           config_path=config_path, zulip=zulip, model=model)
         log_path = workdir / "cli.log"
@@ -1064,7 +1079,7 @@ class Harness:
         err = open(run.stderr_path, "w", encoding="utf-8")
         try:
             run.proc = subprocess.Popen(
-                [str(REPO_ROOT / ".venv" / "bin" / "python"), "-m",
+                [CLI_PYTHON, "-m",
                  "spctr.cli", str(run.config_path), "--interface", "zulip",
                  "--log-file", str(run.workdir / "cli.log")],
                 stdout=out, stderr=err, text=True,
