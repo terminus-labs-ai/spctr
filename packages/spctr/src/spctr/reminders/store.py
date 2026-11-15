@@ -21,67 +21,57 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable
 
-# The reminder column set, named once (spc-144). ``_SCHEMA``, the SELECTs
-# (``due``, ``get``) and the INSERT (``create``) all derive from this
-# single definition, and rows map back to ``Reminder`` by column name via
-# ``sqlite3.Row``. Adding a column means editing this tuple, its CREATE
-# TABLE clause, and (if it starts NULL and should be excluded from the
-# INSERT) the ``_INSERT_COLUMNS`` filter.
-_COLUMNS = (
-    "id",
-    "agent",
-    "platform",
-    "requester_id",
-    "requester_mention",
-    "origin_channel_id",
-    "dest_channel_id",
-    "dest_channel_name",
-    "dest_topic",
-    "text",
-    "due_at",
-    "created_at",
-    "delivered_at",
-    "status",
-    "attempts",
-    "last_error",
+# The reminder column set, the single source of truth (spc-144,
+# spc-145). One ordered tuple of (name, declaration) entries defines
+# every column exactly once; the CREATE TABLE body (``_SCHEMA``), the
+# ``_COLUMNS`` name tuple, the ``_INSERT_COLUMNS`` filter, the
+# ``_TS_BINDINGS`` set, the retry-column identity and its legacy-file
+# ALTER all derive from it. Rows map back to ``Reminder`` by column name
+# via ``sqlite3.Row``. Adding a column is a one-place edit here: append
+# a (name, declaration) entry — if the fresh row starts NULL and the
+# column should be excluded from the INSERT, add it to
+# ``_EXCLUDED_FROM_INSERT`` too.
+_COLUMN_DEFS = (
+    ("id", "TEXT PRIMARY KEY"),
+    ("agent", "TEXT NOT NULL"),
+    ("platform", "TEXT NOT NULL"),
+    ("requester_id", "TEXT NOT NULL"),
+    ("requester_mention", "TEXT NOT NULL"),
+    ("origin_channel_id", "TEXT NOT NULL"),
+    ("dest_channel_id", "TEXT NOT NULL"),
+    ("dest_channel_name", "TEXT NOT NULL"),
+    ("dest_topic", "TEXT NOT NULL"),
+    ("text", "TEXT NOT NULL"),
+    ("due_at", "TEXT NOT NULL"),
+    ("created_at", "TEXT NOT NULL"),
+    ("delivered_at", "TEXT NULL"),
+    ("status", "TEXT NOT NULL CHECK (status IN ('pending', 'sending', 'delivered', 'failed', 'cancelled'))"),
+    ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+    ("last_error", "TEXT NULL"),
     # spc-157: FR18 retries schedule from this column, never from due_at.
-    # It must stay out of ``_INSERT_COLUMNS`` (fresh rows start NULL) and
-    # out of the Reminder dataclass (rows map back by name; the field
-    # would otherwise break every frozen positional/keyword construction).
-    "next_attempt_at",
+    # It must stay out of the INSERT (fresh rows start NULL) and out of
+    # the Reminder dataclass (rows map back by name; the field would
+    # otherwise break every frozen positional/keyword construction).
+    ("next_attempt_at", "TEXT NULL"),
 )
 
-# Columns ``create`` inserts: every column except ``delivered_at`` (which
-# is always NULL on a fresh row and defaults to NULL in the DDL).
-_INSERT_COLUMNS = tuple(
-    c for c in _COLUMNS if c != "delivered_at"
-)
+# Column names, in order (derived from _COLUMN_DEFS).
+_COLUMNS = tuple(name for name, _ in _COLUMN_DEFS)
+
+# Columns ``create`` does not insert: ``delivered_at`` (always NULL on a
+# fresh row and NULL in the DDL).
+_EXCLUDED_FROM_INSERT = frozenset({"delivered_at"})
+
+# Columns ``create`` inserts: every column except the excluded ones.
+_INSERT_COLUMNS = tuple(c for c in _COLUMNS if c not in _EXCLUDED_FROM_INSERT)
 
 # Columns whose values need ``_ts()`` conversion when binding to SQL.
 _TS_BINDINGS = frozenset({"due_at", "created_at", "next_attempt_at"})
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS reminders (
-  id TEXT PRIMARY KEY,
-  agent TEXT NOT NULL,
-  platform TEXT NOT NULL,
-  requester_id TEXT NOT NULL,
-  requester_mention TEXT NOT NULL,
-  origin_channel_id TEXT NOT NULL,
-  dest_channel_id TEXT NOT NULL,
-  dest_channel_name TEXT NOT NULL,
-  dest_topic TEXT NOT NULL,
-  text TEXT NOT NULL,
-  due_at TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  delivered_at TEXT NULL,
-  status TEXT NOT NULL CHECK (status IN
-    ('pending', 'sending', 'delivered', 'failed', 'cancelled')),
-  attempts INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT NULL,
-  next_attempt_at TEXT NULL
-);
-"""
+# The single source of truth for the CREATE TABLE body (spc-145).
+_SCHEMA = "CREATE TABLE IF NOT EXISTS reminders (\n" + ",\n".join(
+    f"  {name} {decl}" for name, decl in _COLUMN_DEFS
+) + "\n);"
 
 
 def _utcnow() -> datetime:
@@ -92,7 +82,12 @@ def _utcnow() -> datetime:
 # ``due_at``. A store file created before it existed (the spc-139 schema)
 # gains the column additively when the store opens; existing rows keep NULL
 # and stay deliverable (their next attempt is due at ``due_at``).
-_RETRY_COLUMN = "next_attempt_at"
+#
+# The retry column is the last column in the source tuple: it was added
+# after the original spc-139 schema, and the legacy-file migration in
+# ``_migrate`` derives its identity and ALTER clause from here (spc-145).
+_RETRY_COLUMN = _COLUMN_DEFS[-1][0]
+_RETRY_DECL = _COLUMN_DEFS[-1][1]
 
 
 def _ts(value: datetime) -> str:
@@ -177,7 +172,7 @@ class ReminderStore:
         }
         if _RETRY_COLUMN not in existing:
             conn.execute(
-                "ALTER TABLE reminders ADD COLUMN next_attempt_at TEXT NULL"
+                f"ALTER TABLE reminders ADD COLUMN {_RETRY_COLUMN} {_RETRY_DECL}"
             )
 
     # ---- sync core (each call = one short-lived connection/transaction) ----
