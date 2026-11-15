@@ -23,19 +23,30 @@ under tmp_path — never ``~/.sr2`` live state.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sqlite3
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 import pytest
 
+from spctr.config import AgentConfig, ModelConfig, SpctrConfig
 from spctr.reminders import (
     DeliveryLoop,
     Reminder,
     ReminderOrigin,
     ReminderStore,
     ReminderTool,
+)
+from spctr.reminders.tool import (
+    NO_INTERFACE_ERROR,
+    TurnScope,
+    turn_scope,
 )
 
 TZ = ZoneInfo("America/Phoenix")
@@ -85,13 +96,29 @@ def _origin(**overrides) -> ReminderOrigin:
 
 
 def _tool(store: ReminderStore, now: datetime = NOW) -> ReminderTool:
+    """A ReminderTool on the frozen clock. The constructor carries no
+    origin (spc-170): the tool reads this turn's ``turn_scope`` at call
+    time, so a caller outside a turn scope gets the FR21 refusal."""
     return ReminderTool(
         store=store,
         timezone="America/Phoenix",
         agent_name="miranda",
-        origin_getter=lambda: _origin(),
         clock=lambda: now,
     )
+
+
+@contextmanager
+def _in_turn(origin: ReminderOrigin) -> Iterator[None]:
+    """This task's ``turn_scope`` set to *origin*, reset in ``finally``.
+
+    The ContextVar is read at call time inside the tool's coroutine, so
+    wrapping the awaited tool call keeps the scope out of every other test.
+    """
+    token = turn_scope.set(TurnScope(origin=origin))
+    try:
+        yield
+    finally:
+        turn_scope.reset(token)
 
 
 def _loop(store: ReminderStore, send, now: datetime) -> DeliveryLoop:
@@ -159,6 +186,40 @@ def store_path(tmp_path: Path) -> Path:
 @pytest.fixture
 def store(store_path: Path) -> ReminderStore:
     return ReminderStore(store_path)
+
+
+def _reminders_config(store_file: Path) -> SpctrConfig:
+    """A minimal real SpctrConfig with reminders enabled."""
+    return SpctrConfig(
+        agent=AgentConfig(
+            name="miranda",
+            default_skills=False,
+            reminders={
+                "enabled": True,
+                "timezone": "America/Phoenix",
+                "store_path": str(store_file),
+                "poll_seconds": 60,
+            },
+        ),
+        models={"default": ModelConfig(model="test-model")},
+        pipeline={"layers": []},
+        provenance_store_path="",
+        memory_store_dsn="",
+    )
+
+
+def _enabled_agent(store_file: Path):
+    """A real Agent — so a real owning Runtime — over an enabled reminders
+    block, with the documented LLM seam patched: no model, no network.
+
+    spc-170: the AC1 test needs the Runtime object that owns the tool, to
+    plant a stale ``_reminders_origin`` attribute on it — the attribute the
+    deleted slot trio used to read.
+    """
+    from spctr.agent import Agent
+
+    with patch("spctr.live_llm.LiteLLMCallable"):
+        return Agent(config=_reminders_config(store_file))
 
 
 # ---------------------------------------------------------------------------
@@ -296,9 +357,10 @@ async def test_r3_list_shows_original_due_time_of_a_retried_row(store):
     assert retried.due_at == NOW + timedelta(minutes=10)
     assert retried.next_attempt_at == NOW + timedelta(minutes=11)
 
-    result = await _tool(store, now=NOW + timedelta(minutes=10, seconds=5))(
-        action="list"
-    )
+    with _in_turn(_origin()):
+        result = await _tool(store, now=NOW + timedelta(minutes=10, seconds=5))(
+            action="list"
+        )
     lines = result.splitlines()
     assert [line.split()[0] for line in lines] == ["r2", "r1"]
     assert lines[0] == (
@@ -329,7 +391,8 @@ async def test_r3_failed_row_window_uses_original_due_time(store):
     assert store.get("r2").status == "failed"
     assert store.get("r2").due_at == NOW - timedelta(minutes=20)
 
-    result = await _tool(store, now=NOW)(action="list")
+    with _in_turn(_origin()):
+        result = await _tool(store, now=NOW)(action="list")
     assert "failed today" in result
     assert "old but failing" not in result
 
@@ -411,3 +474,75 @@ async def test_r4_legacy_row_retries_without_losing_its_due_time(store_path: Pat
     assert row.attempts == 1
     assert row.due_at == NOW
     assert row.next_attempt_at == NOW + timedelta(minutes=1)
+
+
+# ---------------------------------------------------------------------------
+# spc-170 — this turn's scope is the tool's only origin source
+# ---------------------------------------------------------------------------
+
+
+def test_reminder_tool_has_no_origin_getter():
+    """spc-170 (AC1): the shared-slot fallback is gone — the constructor
+    takes no ``origin_getter`` and a built tool carries no
+    ``_origin_getter`` attribute to fall back on."""
+    signature = inspect.signature(ReminderTool.__init__)
+    assert "origin_getter" not in signature.parameters
+
+    # A throwaway store, never written: ReminderStore opens its file in
+    # __init__, so it gets a path under the system temp dir, not the repo.
+    tool = ReminderTool(
+        store=ReminderStore(Path(tempfile.mkdtemp()) / "tool-shape.sqlite"),
+        timezone="America/Phoenix",
+        agent_name="miranda",
+    )
+    assert not hasattr(tool, "_origin_getter")
+    # And every old way of handing out an origin is off Runtime too.
+    from spctr.runtime import Runtime
+
+    assert not hasattr(Runtime, "set_reminders_origin")
+    assert not hasattr(Runtime, "clear_reminders_origin")
+    assert not hasattr(Runtime, "_reminders_origin_getter")
+
+
+async def test_no_turn_scope_refuses_every_action_despite_a_stale_origin(
+    tmp_path: Path,
+):
+    """spc-170 (AC1): a tool call outside any turn scope refuses with the
+    FR21 error for create, list and cancel even when the owning Runtime
+    object carries a stale ``_reminders_origin`` attribute — nothing reads
+    that slot any more, so a non-chat turn cannot be handed a foreign
+    chat origin, and the store stays untouched.
+
+    The tool is the Runtime's own seat (the real construction path), and
+    the stale attribute is set directly on the Runtime that owns it — the
+    object ``Runtime._reminders_origin_getter`` used to read.
+    """
+    store_file = tmp_path / "runtime.sqlite"
+    agent = _enabled_agent(store_file)
+    try:
+        runtime = agent._runtime
+        # The stale value a previous turn could have left behind: a chat
+        # origin from a channel this turn has nothing to do with.
+        runtime._reminders_origin = _origin(
+            channel_id="999", channel_name="someone-elses-channel"
+        )
+        tool = agent.reminders.tool
+        assert turn_scope.get() is None  # no scope: this turn is not a chat turn
+
+        results = [
+            await tool(action="create", text="t", in_minutes=60),
+            await tool(action="list"),
+            await tool(action="cancel", id="r1"),
+        ]
+        assert results == [
+            NO_INTERFACE_ERROR,
+            NO_INTERFACE_ERROR,
+            NO_INTERFACE_ERROR,
+        ]
+        # Had any origin been read, the create would have stored this row.
+        assert ReminderStore(store_file).count_by_status() == {}
+        assert turn_scope.get() is None  # the refusal left no scope behind
+    finally:
+        await agent.aclose()
+
+

@@ -22,6 +22,8 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -43,8 +45,10 @@ from spctr.reminders import (
 )
 from spctr.reminders.tool import (
     NO_INTERFACE_ERROR,
+    TurnScope,
     _match_has_channels,
     format_local_due,
+    turn_scope,
 )
 
 UTC = ZoneInfo("UTC")
@@ -229,16 +233,35 @@ def _origin(**overrides) -> ReminderOrigin:
 
 def _tool(store: ReminderStore, **kwargs: Any) -> ReminderTool:
     """A ReminderTool on the frozen clock; every other arg as given —
-    the constructor is the single documented construction path."""
+    the constructor is the single documented construction path.
+
+    It carries no origin (spc-170): the tool reads this turn's
+    ``turn_scope`` at call time, so callers that need an origin wrap the
+    awaited call in :func:`_in_turn` and callers that test the FR21
+    refusal simply leave no scope set.
+    """
     params: dict[str, Any] = dict(
         store=store,
         timezone="America/Phoenix",
         agent_name="miranda",
-        origin_getter=lambda: None,
         clock=_clock_at(NOW),
     )
     params.update(kwargs)
     return ReminderTool(**params)
+
+
+@contextmanager
+def _in_turn(origin: ReminderOrigin) -> Iterator[None]:
+    """This task's ``turn_scope`` set to *origin*, reset in ``finally``.
+
+    The ContextVar is read at call time inside the tool's coroutine, so
+    wrapping the awaited tool call keeps the scope out of every other test.
+    """
+    token = turn_scope.set(TurnScope(origin=origin))
+    try:
+        yield
+    finally:
+        turn_scope.reset(token)
 
 
 def _resolver(match_lists: dict, platform: str = "zulip"):
@@ -364,10 +387,12 @@ class TestR1SingleConstructionPath:
         runtime.apply_config(_enabled(store_file, poll_seconds=30))
         tool = runtime.reminders.tool
         assert isinstance(tool, ReminderTool)
-        tool._origin_getter = lambda: _origin()  # READBACK
-        result = await tool(
-            action="create", text="t", in_minutes=60, channel="#General"
-        )
+        # spc-170: the origin arrives through the real seam — this task's
+        # turn_scope — instead of a private attribute. READBACK
+        with _in_turn(_origin()):
+            result = await tool(
+                action="create", text="t", in_minutes=60, channel="#General"
+            )
         assert row_for(store_file, result)
 
         # Order B: seat first (startup with an enabled block), hand off
@@ -385,10 +410,12 @@ class TestR1SingleConstructionPath:
         try:
             seated = runtime_b.reminders.tool
             assert seated is not tool_b  # rebuilt through the seam
-            seated._origin_getter = lambda: _origin()  # READBACK
-            result = await seated(
-                action="create", text="t", in_minutes=60, channel="general"
-            )
+            # spc-170: the origin arrives through the real seam — this task's
+            # turn_scope — instead of a private attribute. READBACK
+            with _in_turn(_origin()):
+                result = await seated(
+                    action="create", text="t", in_minutes=60, channel="general"
+                )
             assert row_for(store_b, result)
             # And the re-seat after registration builds WITH it too.
             runtime_b.apply_config(_enabled(store_b, poll_seconds=45))
@@ -404,12 +431,12 @@ class TestR1SingleConstructionPath:
         store = ReminderStore(tmp_path / "r.sqlite")
         tool = _tool(
             store,
-            origin_getter=lambda: _origin(),
             channel_resolver=_resolver({"general": [(7, "general")]}),
         )
-        result = await tool(
-            action="create", text="t", in_minutes=60, channel="#General"
-        )
+        with _in_turn(_origin()):  # spc-170: the origin comes from the scope
+            result = await tool(
+                action="create", text="t", in_minutes=60, channel="#General"
+            )
         assert result == "Reminder r1 set for Thu 2026-10-15 16:00 MST in #general"
         row = store.get("r1")
         assert row.dest_channel_id == "7"
@@ -444,10 +471,12 @@ class TestR2InterfaceRegistersViaSeam:
         tool = runtime.reminders.tool
         assert "reminder" in runtime.registry
         # No interface yet: the tool exists, no resolver is registered.
-        tool._origin_getter = lambda: _origin()  # READBACK
-        assert await tool(
-            action="create", text="t", in_minutes=60, channel="general"
-        ) == "Error: named channels are not available in this build"
+        # spc-170: the origin arrives through the real seam — this task's
+        # turn_scope — instead of a private attribute. READBACK
+        with _in_turn(_origin()):
+            assert await tool(
+                action="create", text="t", in_minutes=60, channel="general"
+            ) == "Error: named channels are not available in this build"
 
         await interface.start(agent)  # the seam registration under test
 
@@ -455,10 +484,12 @@ class TestR2InterfaceRegistersViaSeam:
         # place; read the handle again instead of the pre-start object.
         seated = runtime.reminders.tool
         assert seated is not tool
-        seated._origin_getter = lambda: _origin()  # READBACK
-        result = await seated(
-            action="create", text="t", in_minutes=60, channel="#General"
-        )
+        # spc-170: the origin arrives through the real seam — this task's
+        # turn_scope — instead of a private attribute. READBACK
+        with _in_turn(_origin()):
+            result = await seated(
+                action="create", text="t", in_minutes=60, channel="#General"
+            )
         assert result.startswith("Reminder r1 set for"), result
         row = ReminderStore(store_file).get("r1")
         assert row.dest_channel_id == "7"
@@ -558,15 +589,14 @@ async def _stop_reshaped_loop(interface: Any) -> None:
 
 class TestR4NoResolverUnchanged:
     async def test_every_action_refuses_without_a_chat_origin(self, tmp_path):
-        """R4 (FR21): a tool with no origin getter value (non-Zulip/
-        non-Discord interface) returns the FR21 error for every action,
-        resolver or not."""
+        """R4 (FR21): a tool called with no turn scope (a non-Zulip,
+        non-Discord interface never sets one) returns the FR21 error for
+        every action, resolver or not."""
         store = ReminderStore(tmp_path / "r.sqlite")
-        with_origin = _tool(store, origin_getter=lambda: None)
+        with_origin = _tool(store)
         # Even with a resolver registered, the missing chat origin wins.
         with_resolver = _tool(
             store,
-            origin_getter=lambda: None,
             channel_resolver=_resolver({"general": [(7, "general")]}),
         )
         for tool in (with_origin, with_resolver):
@@ -584,10 +614,11 @@ class TestR4NoResolverUnchanged:
         seam), a named-channel create errors and stores nothing — the
         FR21 guard for list/cancel is the origin, which is unchanged."""
         store = ReminderStore(tmp_path / "r.sqlite")
-        tool = _tool(store, origin_getter=lambda: _origin())
-        result = await tool(
-            action="create", text="t", in_minutes=60, channel="general"
-        )
+        tool = _tool(store)
+        with _in_turn(_origin()):  # spc-170: the origin comes from the scope
+            result = await tool(
+                action="create", text="t", in_minutes=60, channel="general"
+            )
         assert result == "Error: named channels are not available in this build"
         assert store.count_by_status() == {}
 
@@ -600,10 +631,12 @@ class TestR4NoResolverUnchanged:
         runtime = _runtime(_enabled(store_file, poll_seconds=30))
         tool = runtime.reminders.tool
         assert isinstance(tool, ReminderTool)
-        tool._origin_getter = lambda: _origin()  # READBACK
-        result = await tool(
-            action="create", text="t", in_minutes=60, channel="general"
-        )
+        # spc-170: the origin arrives through the real seam — this task's
+        # turn_scope — instead of a private attribute. READBACK
+        with _in_turn(_origin()):
+            result = await tool(
+                action="create", text="t", in_minutes=60, channel="general"
+            )
         assert result == "Error: named channels are not available in this build"
 
 
@@ -652,10 +685,12 @@ class TestR1RegistrationRebuildsTheSeatedTool:
         # replaced the old callable, so the next lookup — the next model
         # turn — executes the tool that carries the resolver.
         assert runtime.registry._tools["reminder"].fn.__self__ is rebuilt
-        rebuilt._origin_getter = lambda: _origin()  # READBACK
-        result = await rebuilt(
-            action="create", text="t", in_minutes=60, channel="general"
-        )
+        # spc-170: the origin arrives through the real seam — this task's
+        # turn_scope — instead of a private attribute. READBACK
+        with _in_turn(_origin()):
+            result = await rebuilt(
+                action="create", text="t", in_minutes=60, channel="general"
+            )
         assert row_for(store_file, result)
 
     async def test_r1_registered_tool_carries_the_resolver_from_the_ctor(
@@ -671,16 +706,21 @@ class TestR1RegistrationRebuildsTheSeatedTool:
         runtime.set_reminders_channel_resolver(resolver)
 
         # The old tool was never touched: it still has no resolver.
-        seated._origin_getter = lambda: _origin()  # READBACK
-        assert await seated(
-            action="create", text="t", in_minutes=60, channel="general"
-        ) == "Error: named channels are not available in this build"
+        # spc-170: the origin arrives through the real seam — this task's
+        # turn_scope — instead of a private attribute. READBACK
+        with _in_turn(_origin()):
+            assert await seated(
+                action="create", text="t", in_minutes=60, channel="general"
+            ) == "Error: named channels are not available in this build"
 
         spec = runtime.registry._tools["reminder"]
         tool = spec.fn.__self__  # READBACK
         assert tool is not seated
-        tool._origin_getter = lambda: _origin()  # READBACK
-        assert row_for(store_file, await tool(action="create", text="t", in_minutes=60, channel="general"))
+        # spc-170: the origin arrives through the real seam — this task's
+        # turn_scope — instead of a private attribute. READBACK
+        with _in_turn(_origin()):
+            result = await tool(action="create", text="t", in_minutes=60, channel="general")
+        assert row_for(store_file, result)
 
 
 class TestR2RegistrationEdges:
@@ -713,8 +753,11 @@ class TestR2RegistrationEdges:
         # And the seat that arrives later is born with it.
         runtime.apply_config(_enabled(store_file, poll_seconds=30))
         tool = runtime.reminders.tool
-        tool._origin_getter = lambda: _origin()  # READBACK
-        assert row_for(store_file, await tool(action="create", text="t", in_minutes=60, channel="general"))
+        # spc-170: the origin arrives through the real seam — this task's
+        # turn_scope — instead of a private attribute. READBACK
+        with _in_turn(_origin()):
+            result = await tool(action="create", text="t", in_minutes=60, channel="general")
+        assert row_for(store_file, result)
 
     def test_r2_unknown_platform_is_ignored_without_a_rebuild(self, tmp_path, caplog):
         """R2 (FR11): a resolver from an unknown platform is still ignored
