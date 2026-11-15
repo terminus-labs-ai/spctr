@@ -20,8 +20,7 @@ from pathlib import Path
 from spctr.reminders.store import _COLUMNS, _COLUMN_DEFS, ReminderStore
 
 # The spc-139-era DDL, recovered verbatim from git history
-# (commit ffab217, src/sr2_spectre/reminders/store.py).
-# It has 16 columns; next_attempt_at was added by spc-157.
+# (commit ffab217). It has 16 columns; next_attempt_at was added by spc-157.
 _SPC139_DDL = """
 CREATE TABLE IF NOT EXISTS reminders (
   id TEXT PRIMARY KEY,
