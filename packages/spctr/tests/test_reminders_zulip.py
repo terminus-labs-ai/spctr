@@ -16,8 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Iterator
-from contextlib import contextmanager
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -33,7 +32,9 @@ from spctr.reminders import (
     ReminderStore,
     ReminderTool,
 )
-from spctr.reminders.tool import TurnScope, turn_scope
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from reminders_turn_support import _in_turn  # noqa: E402
 
 TZ = ZoneInfo("America/Phoenix")
 UTC = ZoneInfo("UTC")
@@ -112,20 +113,6 @@ def _tool(
         clock=_clock_at(now),
         channel_resolver=channel_resolver,
     )
-
-
-@contextmanager
-def _in_turn(origin: ReminderOrigin) -> Iterator[None]:
-    """This task's ``turn_scope`` set to *origin*, reset in ``finally``.
-
-    The ContextVar is read at call time inside the tool's coroutine, so
-    wrapping the awaited tool call keeps the scope out of every other test.
-    """
-    token = turn_scope.set(TurnScope(origin=origin))
-    try:
-        yield
-    finally:
-        turn_scope.reset(token)
 
 
 class FakeChannel:

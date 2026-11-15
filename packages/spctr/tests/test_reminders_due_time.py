@@ -25,9 +25,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import sqlite3
+import sys
 import tempfile
-from collections.abc import Iterator
-from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -45,9 +44,12 @@ from spctr.reminders import (
 )
 from spctr.reminders.tool import (
     NO_INTERFACE_ERROR,
-    TurnScope,
     turn_scope,
 )
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from reminders_turn_support import _in_turn  # noqa: E402
 
 TZ = ZoneInfo("America/Phoenix")
 UTC = ZoneInfo("UTC")
@@ -105,20 +107,6 @@ def _tool(store: ReminderStore, now: datetime = NOW) -> ReminderTool:
         agent_name="miranda",
         clock=lambda: now,
     )
-
-
-@contextmanager
-def _in_turn(origin: ReminderOrigin) -> Iterator[None]:
-    """This task's ``turn_scope`` set to *origin*, reset in ``finally``.
-
-    The ContextVar is read at call time inside the tool's coroutine, so
-    wrapping the awaited tool call keeps the scope out of every other test.
-    """
-    token = turn_scope.set(TurnScope(origin=origin))
-    try:
-        yield
-    finally:
-        turn_scope.reset(token)
 
 
 def _loop(store: ReminderStore, send, now: datetime) -> DeliveryLoop:
