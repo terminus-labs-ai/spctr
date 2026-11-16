@@ -57,12 +57,10 @@ def _write_schedule_file(store_dir: Path, filename: str, user_keys: str, body: s
     return path
 
 
-USER_BASE = """agent: miranda
-platform: discord
+USER_BASE = """platform: discord
 requester_id: '42'
 requester_mention: <@42>
-dest_channel_id: '100'
-dest_channel_name: general
+channel: '100'
 label: test
 cron: 0 7 * * *
 type: command
@@ -77,8 +75,12 @@ on_miss: run_late
 
 class TestAC38RoundTrip:
     def test_created_file_parses_back_equal(self, tmp_path):
-        """AC38-r1: a created file parses back to an equal Schedule."""
-        store = ScheduleStore(tmp_path / "schedules")
+        """AC38-r1: a created file parses back to an equal Schedule.
+
+        FR37 semantics: the channel *name* is never a file key (the seam
+        resolves names at load, spc-996), so the parsed name is empty.
+        """
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         row = _make_schedule(
             label="wördly ✓ 日本語",
             dest_channel_name="café ☕",
@@ -98,7 +100,7 @@ class TestAC38RoundTrip:
         ) == (
             "s1", row.agent, row.platform, row.requester_id,
             row.requester_mention, row.dest_channel_id,
-            row.dest_channel_name, row.label, row.cron,
+            "", row.label, row.cron,
             row.payload_type, row.payload, row.on_miss,
             row.next_run_at, row.last_run_at, row.created_at,
             row.status, row.last_status, row.last_error,
@@ -106,12 +108,15 @@ class TestAC38RoundTrip:
         # The instruction/label unicode survives on disk, not just in memory.
         text = (tmp_path / "schedules" / "s1.md").read_text(encoding="utf-8")
         assert "wördly ✓ 日本語" in text
-        assert "café ☕" in text
         assert "héllo — ünïcode ✓" in text
+        # The resolved channel ID is the file's ``channel`` key (FR37/FR38);
+        # a channel name is never persisted.
+        assert "channel:" in text
+        assert "café" not in text
 
     def test_agent_body_survives_byte_for_byte(self, tmp_path):
         """AC38-r1: unicode/emoji agent bodies survive create + parse."""
-        store = ScheduleStore(tmp_path / "schedules")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         body = "Summarize the beads 🚂🎉\n\nSecond para — em-dash 日本語 ✓"
         row = _make_schedule(
             payload_type="agent",
@@ -128,7 +133,7 @@ class TestAC38RoundTrip:
     def test_runtime_rewrite_preserves_user_keys_and_body(self, tmp_path):
         """AC38-r2: advance_after_run preserves user keys (incl. unknown
         extras) and the body byte-for-byte."""
-        store = ScheduleStore(tmp_path / "schedules")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         store.create(_make_schedule(next_run_at=NOW - timedelta(seconds=1)))
         # Add an unknown extra user key after creation (hand edit).
         path = tmp_path / "schedules" / "s1.md"
@@ -170,7 +175,7 @@ class TestAC38RoundTrip:
 
     def test_created_at_survives_claim_and_advance(self, tmp_path):
         """AC38: created_at is persisted and stable across runtime rewrites."""
-        store = ScheduleStore(tmp_path / "schedules")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         row = _make_schedule(
             next_run_at=NOW - timedelta(seconds=1),
             created_at=NOW - timedelta(days=7),
@@ -187,7 +192,7 @@ class TestAC38RoundTrip:
 
     def test_render_user_keys_before_runtime_keys(self, tmp_path):
         """AC38-r2: user keys render before runtime keys in the file."""
-        store = ScheduleStore(tmp_path / "schedules")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         store.create(_make_schedule())
         text = (tmp_path / "schedules" / "s1.md").read_text(encoding="utf-8")
         last_user = max(text.index(k + ":") for k in ("on_miss", "command", "cron", "type"))
@@ -196,6 +201,109 @@ class TestAC38RoundTrip:
         # Runtime keys in canonical order.
         runtime = [text.index(k + ":") for k in ("next_run_at", "last_run_at", "last_status", "last_error")]
         assert runtime == sorted(runtime)
+
+
+# ---------------------------------------------------------------------------
+# FR37 key semantics (spc-1077): agent is the payload target, channel is
+# the destination, the owning agent is the store's (FR36) — never
+# frontmatter; payload_agent/dest_channel_* are not file keys.
+# ---------------------------------------------------------------------------
+
+# The spec's own example file ("Schedule file (increment 3)"), including
+# the comment line the renderer would never write.
+# ``platform: discord`` is stamped per FR38 (this agent has exactly one
+# schedule-delivery platform enabled; the derivation itself is spc-996).
+SPEC_EXAMPLE = """platform: discord
+label: daily-digest
+cron: 0 7 * * *
+type: command
+command: python3 /home/shepard/git/daily-digest/digest.py
+channel: "1504678682290159728"
+on_miss: run_late
+
+# runtime — engine-owned, rewritten atomically after each run
+next_run_at: "2026-10-27T07:00:00-07:00"
+last_run_at: "2026-10-26T07:00:04-07:00"
+last_status: ok
+"""
+
+
+class TestFR37KeySemantics:
+    def test_created_command_file_keys_are_fr37(self, tmp_path):
+        """A created command file carries exactly the FR37 user keys (plus
+        requester/created_at extras); no owning agent, no dest_channel_*,
+        no payload_agent."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule())
+        text = (tmp_path / "schedules" / "s1.md").read_text(encoding="utf-8")
+        keys = [
+            line.split(":", 1)[0]
+            for line in text.splitlines()
+            if line and not line.startswith("---")
+            and not line.startswith(("#", "next_run_at:", "last_run_at:", "last_status:", "last_error:"))
+        ]
+        assert keys == [
+            "platform", "label", "cron", "type", "command", "on_miss",
+            "channel", "requester_id", "requester_mention", "created_at",
+        ]
+        assert "dest_channel_id" not in text
+        assert "dest_channel_name" not in text
+        assert "payload_agent" not in text
+        assert "\nagent:" not in text
+
+    def test_channel_key_is_the_destination_id(self, tmp_path):
+        """FR37/FR38: the resolved channel ID round-trips through the
+        ``channel`` key; the in-memory name is empty on reload."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule(dest_channel_id="1504678682290159728"))
+        parsed = store.get("s1")
+        assert parsed.dest_channel_id == "1504678682290159728"
+        assert parsed.dest_channel_name == ""
+
+    def test_agent_payload_default_target_is_the_store_agent(self, tmp_path):
+        """An agent payload targeting the owning agent writes no ``agent``
+        key (FR37: optional, default the owning agent) and reloads with
+        the store's agent as the target."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule(
+            payload_type="agent",
+            payload=json.dumps({"agent": "miranda", "instruction": "do it"}),
+        ))
+        text = (tmp_path / "schedules" / "s1.md").read_text(encoding="utf-8")
+        assert "agent:" not in text
+        assert "payload_agent" not in text
+        parsed = store.get("s1")
+        assert json.loads(parsed.payload)["agent"] == "miranda"
+
+    def test_agent_payload_explicit_target_round_trips(self, tmp_path):
+        """An agent payload targeting another agent writes ``agent:
+        <target>`` (FR37) and reloads with that target."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule(
+            payload_type="agent",
+            payload=json.dumps({"agent": "ezio", "instruction": "for ezio"}),
+        ))
+        text = (tmp_path / "schedules" / "s1.md").read_text(encoding="utf-8")
+        assert "agent: ezio" in text
+        parsed = store.get("s1")
+        assert json.loads(parsed.payload)["agent"] == "ezio"
+        assert parsed.agent == "miranda"  # owner is the store's, FR36
+
+    def test_spec_example_file_parses_with_channel_and_owner(self, tmp_path):
+        """The spec's own daily-digest.md example (FR37 section) parses
+        valid: the channel ID is the destination and the owning agent is
+        the store's — list_for_agent sees it (the spc-1077 probe)."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        _write_schedule_file(tmp_path / "schedules", "daily-digest.md", SPEC_EXAMPLE, "Daily digest pipeline; see ~/git/daily-digest/README.md for the sections.")
+        parsed = store.get("daily-digest")
+        assert parsed is not None
+        assert parsed.agent == "miranda"
+        assert parsed.dest_channel_id == "1504678682290159728"
+        assert parsed.platform == "discord"
+        assert parsed.payload_type == "command"
+        assert json.loads(parsed.payload)["command"] == "python3 /home/shepard/git/daily-digest/digest.py"
+        assert parsed.next_run_at == datetime(2026, 10, 27, 7, 0, tzinfo=ZoneInfo("America/Phoenix"))
+        assert [s.id for s in store.list_for_agent("miranda")] == ["daily-digest"]
 
 
 # ---------------------------------------------------------------------------
@@ -213,7 +321,7 @@ NOW = datetime(2026, 10, 20, 14, 0, 0, tzinfo=UTC)
 base = sys.argv[1]
 mode = sys.argv[2]
 tag = sys.argv[3]
-store = ScheduleStore(base)
+store = ScheduleStore(base, agent="miranda")
 
 def row(i, nra):
     return Schedule(
@@ -284,7 +392,7 @@ class TestAC39Concurrency:
         assert outs[0].startswith("writer-done")
         assert outs[1] == "engine-done"
 
-        store = ScheduleStore(base)
+        store = ScheduleStore(base, agent="miranda")
         # Every surviving file parses; no file is left corrupt.
         valid, invalid = store.scan()
         assert invalid == []
@@ -300,7 +408,7 @@ class TestAC39Concurrency:
         assert len(valid) == 10
         # Every mutation landed as a complete file: each surviving file
         # re-parses identically through a fresh store.
-        fresh = ScheduleStore(base)
+        fresh = ScheduleStore(base, agent="miranda")
         for s in valid:
             assert fresh.get(s.id) == s
         # No temp files remain for finished work.
@@ -318,7 +426,7 @@ from zoneinfo import ZoneInfo
 UTC = ZoneInfo("UTC")
 NOW = datetime(2026, 10, 20, 14, 0, 0, tzinfo=UTC)
 base = sys.argv[1]
-store = ScheduleStore(base)
+store = ScheduleStore(base, agent="miranda")
 row = Schedule(
     id="k1", agent="miranda", platform="discord", requester_id="", requester_mention="",
     dest_channel_id="100", dest_channel_name="general", label="test", cron="0 7 * * *",
@@ -342,7 +450,7 @@ class TestAC39KillBetweenWriteAndReplace:
         readable; the leftover temp is swept after one poll interval."""
         base = tmp_path / "schedules"
         base.mkdir()
-        store = ScheduleStore(base)
+        store = ScheduleStore(base, agent="miranda")
         row = _make_schedule(next_run_at=NOW - timedelta(seconds=1))
         store.create(row)
         original = store.get("s1")
@@ -361,7 +469,7 @@ class TestAC39KillBetweenWriteAndReplace:
         # The original file is still readable and uncorrupted: its bytes
         # and parsed row are exactly what the writer committed.
         assert (base / "s1.md").read_bytes() == original_bytes
-        fresh = ScheduleStore(base)
+        fresh = ScheduleStore(base, agent="miranda")
         parsed = fresh.get("s1")
         assert parsed == original
         # The leftover temp is not mistaken for a schedule: the scan shows
@@ -392,7 +500,7 @@ class TestAC39KillBetweenWriteAndReplace:
 class TestAC37IdAssignment:
     def test_create_ignores_placeholder_id_and_never_overwrites(self, tmp_path):
         """Two creates with the same placeholder id produce s1 and s2."""
-        store = ScheduleStore(tmp_path / "schedules")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         assert store.create(_make_schedule(id="s0")) == "s1"
         assert store.create(_make_schedule(id="s0")) == "s2"
         assert (tmp_path / "schedules" / "s1.md").is_file()
@@ -402,7 +510,7 @@ class TestAC37IdAssignment:
 
     def test_create_continues_after_highest_existing_stem(self, tmp_path):
         """A hand-authored s7.md moves the next create to s8."""
-        store = ScheduleStore(tmp_path / "schedules")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         _write_schedule_file(
             tmp_path / "schedules", "s7.md",
             USER_BASE + "next_run_at: '2026-10-21T07:00:00+00:00'\n",
@@ -417,12 +525,12 @@ class TestAC37IdAssignment:
 class TestAC37AsyncFacades:
     @pytest.mark.asyncio
     async def test_async_facades_match_sync_contract(self, tmp_path):
-        store = ScheduleStore(tmp_path / "schedules")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         assert await store.create_async(
             _make_schedule(next_run_at=NOW - timedelta(seconds=1))
         ) == "s1"
 
-        store2 = ScheduleStore(tmp_path / "schedules")
+        store2 = ScheduleStore(tmp_path / "schedules", agent="miranda")
         due = await store2.due_async(NOW)
         assert [s.id for s in due] == ["s1"]
 
@@ -455,7 +563,7 @@ class TestAC37CustomStorePath:
         resolved = cfg.resolved_store_path("miranda")
         assert resolved == str(tmp_path / "custom" / "miranda")
 
-        store = ScheduleStore(resolved)
+        store = ScheduleStore(resolved, agent="miranda")
         assert store.create(_make_schedule()) == "s1"
         assert (tmp_path / "custom" / "miranda" / "s1.md").is_file()
         assert store.get("s1") is not None
@@ -485,7 +593,7 @@ class TestScanPrimitive:
     def test_first_seen_no_next_run_at_is_valid_and_not_due(self, tmp_path):
         """FR39: a file with no next_run_at is a live schedule the engine
         schedules on its next poll — not an invalid file."""
-        store = ScheduleStore(tmp_path / "schedules")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         _write_schedule_file(tmp_path / "schedules", "new.md", USER_BASE, "notes")
         valid, invalid = store.scan()
         assert invalid == []
@@ -502,7 +610,7 @@ class TestScanPrimitive:
 
     def test_closing_fence_at_eof_without_newline(self, tmp_path):
         """A closing --- fence at EOF (no trailing newline) parses."""
-        store = ScheduleStore(tmp_path / "schedules")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         (tmp_path / "schedules" / "eof.md").write_text(
             "---\n" + USER_BASE + "next_run_at: '2026-10-21T07:00:00+00:00'\n---",
             encoding="utf-8",
@@ -514,7 +622,7 @@ class TestScanPrimitive:
 
     def test_unquoted_yaml_timestamp_accepted(self, tmp_path):
         """A hand-authored unquoted ISO timestamp parses as a datetime."""
-        store = ScheduleStore(tmp_path / "schedules")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         _write_schedule_file(
             tmp_path / "schedules", "ts.md",
             USER_BASE + "next_run_at: 2026-10-21T07:00:00+00:00\n",
@@ -526,7 +634,7 @@ class TestScanPrimitive:
 
     def test_enabled_false_pauses(self, tmp_path):
         """FR44: enabled: false is valid, never due/claimed, cancellable."""
-        store = ScheduleStore(tmp_path / "schedules")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         _write_schedule_file(
             tmp_path / "schedules", "parked.md",
             USER_BASE + "enabled: false\nnext_run_at: '2026-10-19T07:00:00+00:00'\n",
@@ -549,7 +657,7 @@ class TestScanPrimitive:
 
     def test_invalid_files_reported_with_reasons(self, tmp_path):
         """FR40: every invalid shape lands in scan()'s invalid list."""
-        store = ScheduleStore(tmp_path / "schedules")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         base = tmp_path / "schedules"
         fence = "---\n{keys}\n---\n\nnotes\n"
         good_keys = (
@@ -615,7 +723,7 @@ class TestScanPrimitive:
 
     def test_invalid_file_does_not_block_valid_sibling(self, tmp_path):
         """FR40: an invalid file is skipped entirely; siblings unaffected."""
-        store = ScheduleStore(tmp_path / "schedules")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         (tmp_path / "schedules" / "broken.md").write_text(
             "no fences here", encoding="utf-8"
         )

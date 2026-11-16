@@ -334,7 +334,7 @@ class Runtime:
                 "is empty; an IANA timezone is required when schedules are "
                 "enabled."
             )
-        store = ScheduleStore(block.resolved_store_path(agent_name))
+        store = ScheduleStore(block.resolved_store_path(agent_name), agent=agent_name)
         tz = ZoneInfo(block.timezone)
         tool = ScheduleTool(
             store=store,
