@@ -188,7 +188,10 @@ async def test_context_role_breakdown_sums_and_order() -> None:
     await interface._handle_command(agent, "/context", None)
 
     text = _plain_text(buf)
-    assert "By role: assistant ~11 · user ~11" in text
+    # Both roles carry the same sum here (11/11), so the rendering is checked
+    # per fragment without implying any order between them.
+    assert "assistant ~11" in text
+    assert "user ~11" in text
     # The role sums add up to the reported total.
     line = next(l for l in text.splitlines() if l.startswith("By role:"))
     sums = [int(m.group(1)) for m in re.finditer(r"~(\d+)", line)]
@@ -197,11 +200,15 @@ async def test_context_role_breakdown_sums_and_order() -> None:
 
 @pytest.mark.asyncio
 async def test_context_role_breakdown_descending_by_tokens() -> None:
-    """Roles must be listed tokens-descending even when inserted ascending."""
+    """Roles must be listed tokens-descending; distinct sums rule out ties."""
     history = [
-        Message(role="assistant", content=[TextBlock(text="a" * 80)]),   # 20
-        Message(role="user", content=[TextBlock(text="b" * 200)]),       # 50
-        Message(role="assistant", content=[TextBlock(text="c" * 120)]),  # +30 -> 50
+        # Distinct sums on purpose: user (80) > assistant (50), and the
+        # alphabetically-first role (assistant) is inserted first with the
+        # SMALLER sum. Only a tokens-descending sort renders user before
+        # assistant; ascending, alphabetical or plain insertion order would
+        # all render "assistant ~50 · user ~80" and fail the assertion.
+        Message(role="assistant", content=[TextBlock(text="c" * 200)]),   # 50
+        Message(role="user", content=[TextBlock(text="b" * 320)]),        # 80
     ]
     agent = _agent(history)
     interface = REPLInterface()
@@ -210,10 +217,10 @@ async def test_context_role_breakdown_descending_by_tokens() -> None:
     await interface._handle_command(agent, "/context", None)
 
     text = _plain_text(buf)
-    # assistant (20+30=50) ties user (50): ties break alphabetically, and the
-    # sums add up to the total.
-    assert "By role: assistant ~50 · user ~50" in text
-    assert "100 tokens est." in text
+    # user 80 > assistant 50 -> descending puts user first; the sums add
+    # up to the reported total (50 + 80 = 130).
+    assert "By role: user ~80 · assistant ~50" in text
+    assert "130 tokens est." in text
 
 
 # ---------------------------------------------------------------------------
