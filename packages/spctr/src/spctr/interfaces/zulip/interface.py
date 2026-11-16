@@ -297,6 +297,7 @@ def _claimed_owner(
         bot_ids=bot_ids,
         bot_names=bot_names,
     ):
+        # Another bot's mention hands the topic over (dec: dec-713).
         return TopicOwner.OTHER
     return None
 
@@ -334,6 +335,8 @@ def classify_topic_opener(
     if mentions_bot(content, full_name=full_name, user_id=user_id):
         return TopicOwner.SELF
     if mentions_other(content, full_name=full_name, user_id=user_id):
+        # An opener mentioning someone else — a human included — makes
+        # this bot record other and drop the topic. (dec: dec-712)
         return TopicOwner.OTHER
     return TopicOwner.UNOWNED
 
@@ -732,7 +735,16 @@ class ZulipInterface:
         channel_id = message["stream_id"]
         topic = str(message.get("subject", ""))
         if is_stop_command(str(message.get("content", ""))):
-            asyncio.create_task(self._stop_topic(channel_id, topic))
+            if config.topic_owner_routing:
+                # The stop stays a fast path, but ownership gates it
+                # first (spc-1071): a non-owner's !stop is dropped.
+                asyncio.create_task(
+                    self._owned_stop(
+                        channel_id, topic, message.get("content")
+                    )
+                )
+            else:
+                asyncio.create_task(self._stop_topic(channel_id, topic))
             return
         frame_id = topic_frame_id(
             self._agent.config.agent.name,
@@ -781,6 +793,21 @@ class ZulipInterface:
                 text = self._config.stop_idle_message
         await self._send_reply(channel_id, topic, text)
         return text
+
+    async def _owned_stop(
+        self, channel_id: int, topic: str, content: Any
+    ) -> str | None:
+        """A ``!stop`` under ``topic_owner_routing`` (spc-1071).
+
+        The ownership drop runs first — the fast path cannot answer a
+        ``!stop`` in a topic another bot owns — and the stop itself stays
+        off the topic queue, exactly as the flag-off path.
+        """
+        if await self._dropped_by_owner(channel_id, topic, content):
+            # Another bot owns this topic: no stop, no reply.
+            # (dec: dec-712)
+            return None
+        return await self._stop_topic(channel_id, topic)
 
     async def _handle_in_topic(
         self,
@@ -893,6 +920,47 @@ class ZulipInterface:
             return None
         return opener
 
+    async def _dropped_by_owner(
+        self, channel_id: int, topic: str, content: Any
+    ) -> bool:
+        """True when this topic's recorded owner is ANOTHER BOT and the
+        message is silently dropped (spc-1071, dec: dec-712).
+
+        Called only under ``topic_owner_routing``, by ``_handle_message``
+        (before the ``!stop`` check and all turn machinery) and by the
+        ``!stop`` fast path (:meth:`_owned_stop`). The first event for an
+        unrecorded topic resolves the opener — one fetch, cached whatever
+        its value; a failed lookup records nothing (not even a claim from
+        this message's own mentions) and the caller routes as today. Then
+        the later-message claim rule applies to *content*: a self-mention
+        claims the topic, a mention of another bot hands it away, and a
+        human mention or an untagged message changes nothing.
+        """
+        key = (channel_id, topic)
+        if key not in self._topic_owners:
+            opener = await self._topic_opener(channel_id, topic)
+            if opener is not None:
+                # One fetch per topic per process: the recorded value
+                # is cached whatever it is.
+                self._topic_owners[key] = classify_topic_opener(
+                    opener,
+                    full_name=self._bot_full_name,
+                    user_id=self._bot_user_id,
+                    bot_ids=self._bot_ids,
+                )
+        if key not in self._topic_owners:
+            return False
+        claimed = _claimed_owner(
+            content,
+            full_name=self._bot_full_name,
+            user_id=self._bot_user_id,
+            bot_ids=self._bot_ids,
+            bot_names=self._bot_names,
+        )
+        if claimed is not None:
+            self._topic_owners[key] = claimed
+        return self._topic_owners[key] is TopicOwner.OTHER
+
     async def _handle_message(
         self,
         message: dict[str, Any],
@@ -922,39 +990,10 @@ class ZulipInterface:
         # mention_only gate and the indicator all sit behind this block.
         # With the flag off (the default) nothing here runs: byte-for-byte
         # the pre-bead route.
-        if config.topic_owner_routing:
-            key = (channel_id, topic)
-            if key not in self._topic_owners:
-                opener = await self._topic_opener(channel_id, topic)
-                if opener is not None:
-                    # One fetch per topic per process: the recorded value
-                    # is cached whatever it is.
-                    self._topic_owners[key] = classify_topic_opener(
-                        opener,
-                        full_name=self._bot_full_name,
-                        user_id=self._bot_user_id,
-                        bot_ids=self._bot_ids,
-                    )
-            if key in self._topic_owners:
-                # The later-message claim rule (ruling 2026-11-16): a
-                # self-mention claims the topic, a mention of another
-                # bot hands it away, and a human mention or an untagged
-                # message changes nothing. A failed opener lookup
-                # recorded nothing, so this message's own mentions are
-                # not consulted either — it routes exactly as today.
-                claimed = _claimed_owner(
-                    message.get("content"),
-                    full_name=self._bot_full_name,
-                    user_id=self._bot_user_id,
-                    bot_ids=self._bot_ids,
-                    bot_names=self._bot_names,
-                )
-                if claimed is not None:
-                    self._topic_owners[key] = claimed
-                if self._topic_owners[key] is TopicOwner.OTHER:
-                    # Another bot owns this topic: silent drop, no
-                    # Session probe, no reply, no indicator.
-                    return
+        if config.topic_owner_routing and await self._dropped_by_owner(
+            channel_id, topic, message.get("content")
+        ):
+            return
         if is_stop_command(str(message.get("content", ""))):
             await self._stop_topic(channel_id, topic)
             return

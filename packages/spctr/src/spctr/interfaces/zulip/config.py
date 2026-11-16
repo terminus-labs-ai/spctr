@@ -288,7 +288,7 @@ def mentions_other_bot(
 ) -> bool:
     """True when *content* mentions a realm identity that is ANOTHER BOT.
 
-    The later-message hand-over rule (spc-1071, Diego ruling 2026-11-16):
+    The later-message hand-over rule (spc-1071, dec: dec-713):
     a mention target counts when its ``|id`` is a registered bot other
     than this one (``bot_ids`` minus ``user_id`` itself) or its name is
     a registered bot name (``bot_names``; the own name is already out by
