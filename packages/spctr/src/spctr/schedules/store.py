@@ -6,7 +6,9 @@ second fence carries the prompt (agent payload) or free-form notes
 (command payload).  The SQLite store is replaced outright; the public
 contract (``Schedule`` dataclass, one-path constructor, method names and
 signatures) is unchanged so the engine, executors, tool and interface
-wiring compile untouched.
+wiring compile untouched.  The constructor takes the owning agent
+(FR36: one directory per agent); rows carry it as ``Schedule.agent`` —
+frontmatter never does.
 
 Concurrent writers are serialized by an advisory ``flock`` on a lockfile
 in the directory (FR41); every mutation writes a temp file in the same
@@ -47,23 +49,29 @@ _ID_STEM_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # FR40: keys the store owns.  User keys are config; runtime keys are
 # engine-owned and rewritten after each run.  Any other key is
-# "user-space": accepted and preserved, never clobbered.
+# "user-space": accepted and preserved, never clobbered.  These are the
+# FR37 "Schedule file (increment 3)" keys: ``agent`` is an agent
+# payload's target (default the owning agent, which the store carries —
+# FR36's one-directory-per-agent — never frontmatter) and ``channel``
+# is the opaque destination string (FR9/FR38; the resolved ID for
+# tool-created files).  ``requester_id``/``requester_mention``/
+# ``created_at`` are not spec keys: the create path writes them as
+# accepted-and-preserved extras (FR40), and a hand-authored file simply
+# lacks them.
 USER_KEYS = (
     "agent",
     "platform",
-    "requester_id",
-    "requester_mention",
-    "dest_channel_id",
-    "dest_channel_name",
     "label",
     "cron",
     "type",
     "command",
     "cwd",
     "on_miss",
-    "payload_agent",
-    "created_at",
+    "channel",
 )
+# Create-path extras: written after the known keys when set, preserved
+# on rewrite, never required.
+CREATE_EXTRA_KEYS = ("requester_id", "requester_mention", "created_at")
 RUNTIME_KEYS = ("next_run_at", "last_run_at", "last_status", "last_error")
 
 # Leftover mutation temps (possibly orphaned by a kill between temp write
@@ -182,20 +190,21 @@ def _render_document(user: list[tuple[str, object]], runtime: list[tuple[str, st
     return "\n".join(parts)
 
 
-def _payload_json(payload_type: str, user: list[tuple[str, object]], body: str) -> str:
+def _payload_json(
+    payload_type: str, data: dict, body: str, owner: str
+) -> str:
     """Reconstruct the increment-2 JSON ``payload`` string from the file."""
-    values = dict(user)
     if payload_type == "agent":
-        # The payload target is ``payload_agent`` when the file carries an
-        # explicit one; otherwise the file's ``agent`` (owning agent)
-        # default, exactly as increment 2 stored it.
-        target = values.get("payload_agent")
+        # FR37: the optional frontmatter ``agent`` key is the payload's
+        # target; it defaults to the owning agent (the store's, never a
+        # file-level owner key).
+        target = data.get("agent")
         if not target:
-            target = values.get("agent", "") or ""
+            target = owner or ""
         return json.dumps(
-            {"agent": target, "instruction": body}, ensure_ascii=False
+            {"agent": str(target), "instruction": body}, ensure_ascii=False
         )
-    return json.dumps({"command": values.get("command", "") or "", "cwd": values.get("cwd")})
+    return json.dumps({"command": data.get("command", "") or "", "cwd": data.get("cwd")})
 
 
 def _user_keys(user: list[tuple[str, object]], row: Schedule) -> list[tuple[str, object]]:
@@ -227,12 +236,22 @@ class ScheduleStore:
     Args:
         path: Directory holding one ``<id>.md`` file per schedule;
             created on demand along with its parents.
+        agent: The owning agent (FR36: one directory per agent, the
+            ``{agent}`` in ``schedules.store_path``).  Every row loaded
+            from or created in this store belongs to this agent; the
+            frontmatter never carries an owning agent.
     """
 
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, agent: str) -> None:
         self._dir = Path(path)
+        self._agent = agent
         self._dir.mkdir(parents=True, exist_ok=True)
         self._lock_path = self._dir / ".lock"
+
+    @property
+    def agent(self) -> str:
+        """The owning agent for every row in this store (FR36)."""
+        return self._agent
 
     # ---- locking and atomic file IO ----
 
@@ -348,10 +367,15 @@ class ScheduleStore:
                 return None, "agent schedule has empty body", None
             if len(doc["body"]) > 4000:
                 return None, "agent instruction exceeds 4000 characters", None
-        # An explicit target agent renders as ``payload_agent``; the plain
-        # ``agent`` key is the owning agent, never the payload target.
-        if "payload_agent" in data and not isinstance(data["payload_agent"], str):
-            return None, "invalid payload_agent value", None
+        # FR37: an agent schedule's optional ``agent`` key is the payload
+        # target (default the owning agent); there is no file-level
+        # owning agent.  ``channel`` is the destination (FR9/FR38); the
+        # in-memory channel name resolves through the interface seam
+        # (spc-996) and is empty on load.
+        if payload_type == "agent" and "agent" in data and not isinstance(
+            data["agent"], str
+        ):
+            return None, "invalid agent value", None
         on_miss = data.get("on_miss", "run_late")
         if on_miss not in ("run_late", "skip"):
             return None, f"unknown on_miss {on_miss!r}", None
@@ -385,16 +409,16 @@ class ScheduleStore:
                 return None, f"invalid created_at {data['created_at']!r}", None
         row = Schedule(
             id=stem,
-            agent=str(data.get("agent", "")),
+            agent=self._agent,
             platform=str(platform),
             requester_id=str(data.get("requester_id", "")),
             requester_mention=str(data.get("requester_mention", "")),
-            dest_channel_id=str(data.get("dest_channel_id", "")),
-            dest_channel_name=str(data.get("dest_channel_name", "")),
+            dest_channel_id=str(data.get("channel", "") or ""),
+            dest_channel_name="",
             label=str(data.get("label", "")),
             cron=str(data["cron"]),
             payload_type=str(payload_type),
-            payload=_payload_json(payload_type, ordered, doc["body"]),
+            payload=_payload_json(payload_type, data, doc["body"], self._agent),
             on_miss=str(on_miss),
             next_run_at=next_run_at,
             last_run_at=last_run_at,
@@ -407,18 +431,18 @@ class ScheduleStore:
 
     def _render_row(self, row: Schedule) -> str:
         """Render a fresh file from a Schedule (create path)."""
-        values = dict(
-            agent=row.agent,
+        values: dict[str, object] = dict(
             platform=row.platform,
-            requester_id=row.requester_id,
-            requester_mention=row.requester_mention,
-            dest_channel_id=row.dest_channel_id,
-            dest_channel_name=row.dest_channel_name,
             label=row.label,
             cron=row.cron,
             type=row.payload_type,
             on_miss=row.on_miss,
         )
+        if row.dest_channel_id:
+            # FR37/FR38: tool-created files write the resolved ID string
+            # as ``channel``; a channel *name* is never persisted (the
+            # seam resolves names at load, spc-996).
+            values["channel"] = row.dest_channel_id
         body = ""
         if row.payload_type == "command":
             payload = json.loads(row.payload)
@@ -428,14 +452,24 @@ class ScheduleStore:
                 values["cwd"] = payload["cwd"]
         if row.payload_type == "agent":
             payload = json.loads(row.payload)
-            # An explicit target agent renders as payload_agent; the
-            # default (owning agent) round-trips through the agent key.
-            if payload.get("agent"):
-                values["payload_agent"] = payload["agent"]
+            # FR37: ``agent`` is the payload target, written only when it
+            # differs from the owning agent (its default); the owning
+            # agent itself is the store's, never frontmatter.
+            target = payload.get("agent", "")
+            if target and target != self._agent:
+                values["agent"] = target
             body = payload.get("instruction", "")
-        if row.created_at is not None:
-            values["created_at"] = _ts(row.created_at)
         ordered = [(k, values[k]) for k in USER_KEYS if k in values]
+        # Create-path extras (FR40 user-space): requester attribution and
+        # the creation timestamp, when the caller supplied them.
+        for key in CREATE_EXTRA_KEYS:
+            if key == "created_at":
+                if row.created_at is not None:
+                    ordered.append((key, _ts(row.created_at)))
+            elif key == "requester_id" and row.requester_id:
+                ordered.append((key, row.requester_id))
+            elif key == "requester_mention" and row.requester_mention:
+                ordered.append((key, row.requester_mention))
         return _render_document(ordered, _runtime_list(row), body)
 
     def _load_one(self, filename: str) -> Schedule | None:

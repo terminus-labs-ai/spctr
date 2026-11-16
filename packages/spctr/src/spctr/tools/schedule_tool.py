@@ -344,7 +344,11 @@ class ScheduleTool:
             payload = json.loads(s.payload)
             summary = (payload.get("command") or payload.get("instruction") or "")[:40]
             lines.append(
-                f"{s.id} {next_str} cron={s.cron} #{s.dest_channel_name} "
+                # The channel *name* resolves through the interface seam
+                # (spc-996); until a file has been through it, show the
+                # stored destination string (the resolved ID).
+                f"{s.id} {next_str} cron={s.cron} "
+                f"#{s.dest_channel_name or s.dest_channel_id} "
                 f"{s.payload_type}: {summary} [{s.last_status or 'never run'}]"
             )
         return "\n".join(lines)
