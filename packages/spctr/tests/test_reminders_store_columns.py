@@ -82,12 +82,14 @@ def test_r1_single_column_definition():
 
 
 def test_r1_migration_probe_does_not_fire_per_operation(tmp_path: Path):
-    """spc-163: the schema-migration probe (``PRAGMA table_info``) runs
-    once when the store is built, not on every connection. The spy below
-    sees only the statements an operation actually needs; a migration
-    smuggled into ``_connect()`` would add a ``PRAGMA table_info`` line to
-    every store call and couple this column-dedup file to the migration's
-    concerns."""
+    """spc-163 (spc-248: migration moved off construction to the first
+    ``_connect()``): the schema-migration probe (``PRAGMA table_info``)
+    runs exactly once per store instance — on the first ``_connect()``,
+    which happens during the first operation — and never on a later
+    connection. The spy below sees only the statements an operation
+    actually needs; a migration smuggled into a per-operation ``_connect``
+    body would add a ``PRAGMA table_info`` line to every store call and
+    couple this column-dedup file to the migration's concerns."""
     record_sql: list[str] = []
 
     class SpyConnection(sqlite3.Connection):
@@ -95,8 +97,14 @@ def test_r1_migration_probe_does_not_fire_per_operation(tmp_path: Path):
             record_sql.append(sql)
             return super().execute(sql, *args, **kwargs)
 
-    # Build the store with the real connect: construction owns migration.
+    # Build the store with the real connect: construction is now
+    # side-effect-free, so migration rides on the first _connect() —
+    # warm the store up before installing the spy so it falls outside
+    # the per-operation window. (A bare get here, not the spy: the warm-up
+    # connection is the migration connection and _migrate reads rows by
+    # name, which the spy's row factory would break.)
     store = ReminderStore(tmp_path / "reminders.sqlite")
+    store.get("r-none")
 
     real_connect = sqlite3.connect
 
@@ -232,3 +240,29 @@ def test_r4_row_to_reminder_completeness(store):
         f"extra={set(_COLUMNS) - field_names}, "
         f"missing={field_names - set(_COLUMNS)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# R5 — construction is side-effect-free (spc-248)
+# ---------------------------------------------------------------------------
+
+
+def test_r5_construction_writes_nothing_until_first_operation(tmp_path: Path):
+    """spc-248: constructing a store for a path under a fresh tmp_path
+    creates neither the parent directory nor the database file. The first
+    operation (create here) triggers mkdir + migration + file creation,
+    and the row then round-trips through get() and due()."""
+    db_path = tmp_path / "sub" / "reminders.sqlite"
+    store = ReminderStore(db_path)
+
+    assert not (tmp_path / "sub").exists()
+    assert not db_path.exists()
+
+    created_id = store.create(_row())
+    assert created_id == "r1"
+
+    assert (tmp_path / "sub").is_dir()
+    assert db_path.is_file()
+
+    assert dataclasses.asdict(store.get("r1")) == dataclasses.asdict(_row())
+    assert [r.id for r in store.due(now=NOW + timedelta(hours=1))] == ["r1"]

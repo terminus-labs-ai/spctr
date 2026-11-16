@@ -141,28 +141,47 @@ class Reminder:
 class ReminderStore:
     """Synchronous SQLite store with async facades.
 
+    Construction is side-effect-free (spc-248): no directory or file is
+    touched until the first operation triggers ``_ensure_ready()``.
+
     Args:
         path: File path of the SQLite database; parent directories are
-            created on demand. ``:memory:`` is supported for tests.
+            created on first use. ``:memory:`` is supported for tests.
     """
 
     def __init__(self, path: str | Path) -> None:
         self._path = str(path)
-        if self._path != ":memory:":
-            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+        self._ready = False
+        self._initializing = False
+
+    def _ensure_ready(self) -> None:
         # spc-163: migrate once here, not on every connection. The store is
         # built once per process (runtime.py), so the schema probe runs once
-        # for the life of the file instead of once per operation. ``_connect``
-        # stays a pure open so a statement-level spy sees only the statements
-        # an operation needs.
-        conn = self._connect()
+        # for the life of the file instead of once per operation. Deferred
+        # to the first ``_connect()`` (spc-248) so constructing a store —
+        # even one that is never used — creates no directory and no file.
+        if self._ready or self._initializing:
+            # ``_initializing`` lets the first ``_connect()`` (called from
+            # inside ``_ensure_ready`` itself) pass through without
+            # re-entering: the connection it opens is the one being
+            # initialized.
+            return
+        self._initializing = True
+        if self._path != ":memory:":
+            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
         try:
-            self._migrate(conn)
-            conn.commit()
+            conn = self._connect()
+            try:
+                self._migrate(conn)
+                conn.commit()
+            finally:
+                conn.close()
         finally:
-            conn.close()
+            self._initializing = False
+            self._ready = True
 
     def _connect(self) -> sqlite3.Connection:
+        self._ensure_ready()
         conn = sqlite3.connect(self._path, timeout=10.0)
         # Map rows to Reminder by column name, never by position (spc-144).
         conn.row_factory = sqlite3.Row
