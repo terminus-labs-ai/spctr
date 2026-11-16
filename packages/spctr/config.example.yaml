@@ -109,6 +109,8 @@ pipeline:
 #                           # strings, booleans and floats are rejected; ignored in stream mode
 #   users: []               # integer user IDs that may trigger a turn; empty = any human
 #   mention_only: false     # stream mode: a new topic starts only on @**<bot name>**
+#   topic_owner_routing: false  # stream mode: one owner bot per topic (first message decides;
+#                           # a later mention of another bot hands it over)
 #   channels: []            # integer channel IDs; empty = every channel the queue delivers
 #   channel_areas:          # string channel ID -> area; "" = no area; else the channel name
 #     "2": ""
@@ -137,7 +139,7 @@ pipeline:
 #   peer_id: 8
 #   users: [8]              # nonempty must include peer_id; empty still admits only that peer
 # Direct mode rejects stream posts and bot senders; no topics or area routing.
-# It ignores mention_only, channels, channel_areas and the working-indicator fields.
+# It ignores mention_only, topic_owner_routing, channels, channel_areas and the working-indicator fields.
 
 # Discord interface (--interface discord) — see docs/CONFIG-REFERENCE.md
 # discord:
