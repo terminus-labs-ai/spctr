@@ -32,7 +32,11 @@ from spctr.interfaces.zulip.client import (
     ZulipCredentials,
     ZulipTransportError,
 )
-from spctr.interfaces.zulip.config import mentions_other
+from spctr.interfaces.zulip.config import (
+    bot_names_from_registration,
+    mentions_other,
+    mentions_other_bot,
+)
 from spctr.interfaces.zulip.interface import TopicOwner
 from spctr.resume import ResumeResult
 
@@ -158,6 +162,7 @@ def _iface(name: str, user_id: int, client: _FakeClient,
     iface._credentials = ZulipCredentials(
         email="b@test.local", api_key="k", site="http://zulip.test")
     iface._bot_ids = {EDI_ID, MIRANDA_ID}
+    iface._bot_names = {EDI_NAME, MIRANDA_NAME}
     iface._bot_user_id = user_id
     iface._bot_full_name = name
     return iface, agent
@@ -525,12 +530,31 @@ async def test_caching_unowned_and_owned_both_single_fetch():
     assert edi._topic_owners[(CHANNEL, "free")] is TopicOwner.UNOWNED
 
 
-async def test_human_mention_evicts_self_owner():
-    """Deliberate consequence: in an EDI-owned topic a message mentioning
-    a human (and not EDI) makes EDI record OTHER and drop."""
+async def test_r4_name_id_mention_hands_over():
+    """``@**Miranda|102**`` hands an EDI-owned topic to Miranda exactly
+    like the bare-name form."""
+    m1 = _msg("@**EDI** first")
+    m2 = _msg("@**Miranda|102** take it")
+    topics = {_key(): [m1]}
+    edi, ea, mir, ma = _pair(topics)
+
+    await edi._handle_message(m1, reload=False)
+    await mir._handle_message(m1, reload=False)
+    await edi._handle_message(m2, reload=False)
+    assert edi._topic_owners[_key()] is TopicOwner.OTHER
+    await mir._handle_message(m2, reload=False)
+    assert mir._topic_owners[_key()] is TopicOwner.SELF
+    assert ma.turns == ["@**Miranda|102** take it"]
+
+
+async def test_later_human_mention_keeps_owner():
+    """Diego ruling 2026-11-16: in a recorded topic a human mention —
+    the quote-reply ``@_**Name|id** [said]`` attribution included —
+    never changes the owner."""
     m1 = _msg("@**EDI** first")
     m2 = _msg("@**Diego** what do you think")
-    m3 = _msg("untagged tail")
+    m3 = _msg("@_**Diego|5** [said](#narrow/near/1):\n"
+              "```quote\nx\n```\nfollow-up")
     topics = {_key(): [m1]}
     edi, ea, mir, ma = _pair(topics)
 
@@ -538,10 +562,28 @@ async def test_human_mention_evicts_self_owner():
     assert edi._topic_owners[_key()] is TopicOwner.SELF
 
     await edi._handle_message(m2, reload=False)
-    assert edi._topic_owners[_key()] is TopicOwner.OTHER
     await edi._handle_message(m3, reload=False)
-    assert edi._topic_owners[_key()] is TopicOwner.OTHER
-    assert ea.turns == ["@**EDI** first"]    # m2/m3 both dropped
+    assert edi._topic_owners[_key()] is TopicOwner.SELF
+    # EDI processed all three: the human mentions never hand it over.
+    assert ea.turns == [
+        "@**EDI** first", "@**Diego** what do you think", m3["content"]
+    ]
+
+
+async def test_later_human_mention_keeps_unowned():
+    opener = _msg("anyone?")
+    m2 = _msg("@**Diego** look")
+    topics = {_key(): [opener]}
+    edi, ea, mir, ma = _pair(topics)
+
+    await edi._handle_message(opener, reload=False)
+    await mir._handle_message(opener, reload=False)
+    await edi._handle_message(m2, reload=False)
+    await mir._handle_message(m2, reload=False)
+    assert edi._topic_owners[_key()] is TopicOwner.UNOWNED
+    assert mir._topic_owners[_key()] is TopicOwner.UNOWNED
+    assert ea.turns == []                    # mention_only still gates
+    assert ma.turns == ["anyone?", "@**Diego** look"]
 
 
 @pytest.mark.parametrize("content,expected", [
@@ -552,7 +594,7 @@ async def test_human_mention_evicts_self_owner():
     pytest.param("@**EDI** hi", False, id="self-name"),
     pytest.param("@**EDI|101** hi", False, id="self-name-id"),
     pytest.param("@_**EDI** hi", False, id="self-silent"),
-    pytest.param("@**Anything|101** hi", False, id="self-id-suffix"),
+    pytest.param("@**Anything|101** hi", True, id="stale-name-own-id"),
     pytest.param("@**all** hi", False, id="wildcard-all"),
     pytest.param("@**everyone** hi", False, id="wildcard-everyone"),
     pytest.param("@**channel** hi", False, id="wildcard-channel"),
@@ -566,6 +608,45 @@ async def test_human_mention_evicts_self_owner():
 def test_mentions_other_table(content, expected):
     assert mentions_other(
         content, full_name=EDI_NAME, user_id=EDI_ID) is expected
+
+
+@pytest.mark.parametrize("content,expected", [
+    pytest.param("@**Miranda** hi", True, id="other-bot-name"),
+    pytest.param("@**Miranda|102** hi", True, id="other-bot-name-id"),
+    pytest.param("@**Mira|102** hi", True, id="other-bot-by-id"),
+    pytest.param("@_**Miranda** hi", True, id="other-bot-silent"),
+    pytest.param("@**Diego** hi", False, id="human"),
+    pytest.param("@_**Diego|5** [said](#narrow/near/1)", False,
+                 id="quote-attribution"),
+    pytest.param("@**EDI** hi", False, id="self-name"),
+    pytest.param("@**EDI|101** hi", False, id="self-name-id"),
+    pytest.param("@**all** hi", False, id="wildcard"),
+    pytest.param("plain @miranda hi", False, id="plain-typed"),
+    pytest.param("@**Diego** and @**Miranda**", True, id="human-plus-bot"),
+])
+def test_mentions_other_bot_table(content, expected):
+    """Later-message rule, from EDI's view: only another BOT is a claim."""
+    assert mentions_other_bot(
+        content, full_name=EDI_NAME, user_id=EDI_ID,
+        bot_ids={EDI_ID, MIRANDA_ID},
+        bot_names={EDI_NAME, MIRANDA_NAME}) is expected
+
+
+def test_bot_names_from_registration():
+    """Only bot identities land in the name set — realm_users is_bot
+    entries and realm_bots entries that carry a full_name."""
+    registration = {
+        "realm_users": [
+            {"user_id": EDI_ID, "is_bot": True, "full_name": "EDI"},
+            {"user_id": DIEGO_ID, "is_bot": False, "full_name": "Diego"},
+            {"user_id": 103, "is_bot": True},
+        ],
+        "realm_bots": [
+            {"bot_id": MIRANDA_ID, "full_name": "Miranda"},
+            {"bot_id": 104},
+        ],
+    }
+    assert bot_names_from_registration(registration) == {"EDI", "Miranda"}
 
 
 # ---------------------------------------------------------------------------
