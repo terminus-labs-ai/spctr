@@ -107,7 +107,7 @@ class TestAC29List:
 
     async def test_line_fields_exact(self, tmp_path):
         """One row renders the whole FR31 line exactly."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         store.create(_make_schedule(
             next_run_at=datetime(2026, 10, 21, 14, 0, tzinfo=UTC),
             cron="0 7 * * *",
@@ -131,7 +131,7 @@ class TestAC29List:
         Payloads are swapped against ID order, so a row-order check
         (or any sort key other than next run) fails the test.
         """
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         # Created first, due LATER; its summary says "later".
         store.create(_make_schedule(
             next_run_at=datetime(2026, 10, 23, 14, 0, tzinfo=UTC),
@@ -154,7 +154,7 @@ class TestAC29List:
 
     async def test_payload_summary_truncated_to_40(self, tmp_path):
         """The summary is the first 40 characters, no more."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         long_command = "A" * 40 + "B" * 20
         store.create(_make_schedule(
             payload=json.dumps({"command": long_command, "cwd": None}),
@@ -168,7 +168,7 @@ class TestAC29List:
 
     async def test_last_status_shown_or_never_run(self, tmp_path):
         """A run row shows its last status; a never-run row says so."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         store.create(_make_schedule(last_status=None))
         store.create(_make_schedule(
             next_run_at=NOW + timedelta(hours=2), last_status="failed",
@@ -182,17 +182,18 @@ class TestAC29List:
         assert lines[1].endswith("[failed]")
 
     async def test_empty_returns_no_schedules(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         tool = _make_tool(store)
         _open_origin_scope()
         assert await tool(action="list") == "No schedules."
 
     async def test_only_own_active_rows(self, tmp_path):
         """Another agent's rows and cancelled rows never appear."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         store.create(_make_schedule())  # mine, active
         store.create(_make_schedule(agent="other"))  # another agent
-        store.create(_make_schedule(status="cancelled"))  # cancelled
+        cancelled_id = store.create(_make_schedule())
+        store.cancel(cancelled_id)  # cancelled
         tool = _make_tool(store)
         _open_origin_scope()
 
@@ -214,7 +215,7 @@ class TestAC30NamedChannel:
 
     async def test_resolved_destination_stored(self, tmp_path):
         """A unique name stores the resolved id and name, not the origin."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
 
         async def resolver(platform: str, name: str, scope: Any = None):
             assert platform == "discord"
@@ -235,7 +236,7 @@ class TestAC30NamedChannel:
         assert row.dest_channel_name == "random"
 
     async def test_name_without_hash_prefix_works(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
 
         async def resolver(platform: str, name: str, scope: Any = None):
             assert name == "random"
@@ -251,7 +252,7 @@ class TestAC30NamedChannel:
         assert store.get("s1").dest_channel_id == "777"
 
     async def test_zero_matches_stores_nothing(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
 
         async def resolver(platform: str, name: str, scope: Any = None):
             return []
@@ -266,7 +267,7 @@ class TestAC30NamedChannel:
         assert store.list_for_agent("miranda") == []
 
     async def test_multiple_matches_stores_nothing(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
 
         async def resolver(platform: str, name: str, scope: Any = None):
             return [
@@ -286,7 +287,7 @@ class TestAC30NamedChannel:
     async def test_cross_platform_name_refused(self, tmp_path):
         """AC30 (FR11): 'zulip#general' from a Discord turn is refused with
         the exact error, nothing stored and no lookup attempted."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         calls: list = []
 
         async def spy(platform: str, name: str, scope: Any = None):
@@ -307,7 +308,7 @@ class TestAC30NamedChannel:
     async def test_same_platform_prefix_is_accepted(self, tmp_path):
         """FR11: naming THIS platform is not cross-platform; the name
         resolves after the prefix is stripped."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
 
         async def resolver(platform: str, name: str, scope: Any = None):
             assert name == "general"
@@ -325,7 +326,7 @@ class TestAC30NamedChannel:
     async def test_resolver_absent_stores_nothing(self, tmp_path):
         """FR10: a named create with no registered resolver errors and
         stores nothing."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         tool = _make_tool(store)  # no resolver
         _open_origin_scope()
         result = await tool(
@@ -338,7 +339,7 @@ class TestAC30NamedChannel:
     async def test_malformed_resolver_result_stores_nothing(self, tmp_path):
         """FR10 guard: a resolver returning the wrong shape is a tool
         error, not an exception, and stores nothing."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
 
         async def resolver(platform: str, name: str, scope: Any = None):
             return [{"id": 5, "name": "raw-dict"}]
@@ -356,7 +357,7 @@ class TestAC30NamedChannel:
     async def test_create_without_channel_uses_origin(self, tmp_path):
         """Omitting `channel` is untouched behavior: the origin is stored
         even with a resolver registered."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
 
         async def resolver(platform: str, name: str, scope: Any = None):
             raise AssertionError("resolver must not be called")
@@ -395,7 +396,7 @@ class TestAC31StartupCatchUp:
     schedule per start."""
 
     async def test_overdue_fires_once_late_and_advances(self, tmp_path, caplog):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         marker = tmp_path / "fired.count"
         store.create(_make_schedule(
             next_run_at=NOW - timedelta(hours=2),  # missed occurrence
@@ -434,7 +435,7 @@ class TestAC31StartupCatchUp:
     async def test_never_more_than_one_catch_up_per_start(self, tmp_path, caplog):
         """Even a **/min schedule (next occurrence within the process
         lifetime) fires exactly once per start."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         marker = tmp_path / "fired.count"
         store.create(_make_schedule(
             cron="* * * * *",
@@ -459,7 +460,7 @@ class TestAC31StartupCatchUp:
         assert len(fires) == 1
 
     async def test_skip_advances_without_firing(self, tmp_path, caplog):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         marker = tmp_path / "fired.count"
         store.create(_make_schedule(
             on_miss="skip",
@@ -489,7 +490,7 @@ class TestAC31StartupCatchUp:
     async def test_second_start_does_not_catch_up_again(self, tmp_path):
         """After a start's catch-up advanced the row past now, a new
         engine (new process) does not fire it again."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         marker = tmp_path / "fired.count"
         payload = json.dumps(
             {"command": f"printf x >> {marker}", "cwd": str(tmp_path)}
@@ -512,7 +513,7 @@ class TestAC31StartupCatchUp:
         assert marker.read_text() == "x"  # still exactly one run
 
     async def test_future_row_untouched_by_catch_up(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         marker = tmp_path / "fired.count"
         future = datetime(2026, 10, 21, 14, 0, tzinfo=UTC)
         store.create(_make_schedule(
@@ -538,7 +539,7 @@ class TestAC31StartupCatchUp:
     async def test_catch_up_platform_scoped(self, tmp_path):
         """A discord engine's catch-up never touches another platform's
         overdue rows (spc-176 scoping, same as the poll)."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         marker = tmp_path / "fired.count"
         store.create(_make_schedule(
             platform="zulip",
@@ -602,7 +603,7 @@ class TestDiscordWiring:
         ]
         interface._adapter = adapter
 
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         tool = ScheduleTool(
             store=store,
             timezone="America/Phoenix",

@@ -64,7 +64,7 @@ class TestAC32CreateAgentPayload:
 
     @pytest.fixture
     def tool_and_store(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         tool = ScheduleTool(
             store=store,
             timezone="America/Phoenix",
@@ -231,7 +231,7 @@ class TestSplitMessage:
 class TestAC33AgentFiresAndPosts:
     @pytest.mark.asyncio
     async def test_done_posts_message_verbatim(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -272,7 +272,7 @@ class TestAC33AgentFiresAndPosts:
 
     @pytest.mark.asyncio
     async def test_done_splits_at_2000(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -315,7 +315,7 @@ class TestAC33AgentFiresAndPosts:
 
     @pytest.mark.asyncio
     async def test_done_empty_message_posts_nothing(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -350,7 +350,7 @@ class TestAC33AgentFiresAndPosts:
     @pytest.mark.asyncio
     async def test_runner_receives_correct_args(self, tmp_path):
         """The runner gets the target agent, instruction, and timeout."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         sent: list[tuple[str, str]] = []
         captured_args: dict[str, Any] = {}
 
@@ -395,7 +395,7 @@ class TestAC34AgentFailurePostsWarning:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", ["failed", "needs-input", "escalation", "timeout", "error"])
     async def test_non_done_posts_warning(self, tmp_path, status):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -438,7 +438,7 @@ class TestAC34AgentFailurePostsWarning:
 
     @pytest.mark.asyncio
     async def test_warning_includes_schedule_id_and_label(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -473,7 +473,7 @@ class TestAC34AgentFailurePostsWarning:
     @pytest.mark.asyncio
     async def test_non_done_does_not_post_message_content(self, tmp_path):
         """Only status=done posts the message field; other statuses post only the ⚠️ line."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -514,7 +514,7 @@ class TestAC34AgentFailurePostsWarning:
 class TestAC35RunNowAgent:
     @pytest.mark.asyncio
     async def test_run_now_posts_done_message(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -556,7 +556,7 @@ class TestAC35RunNowAgent:
 
     @pytest.mark.asyncio
     async def test_run_now_posts_failure_warning(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -597,7 +597,7 @@ class TestAC35RunNowAgent:
     @pytest.mark.asyncio
     async def test_run_now_via_tool(self, tmp_path):
         """run_now through the tool dispatches to engine.execute_now."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
