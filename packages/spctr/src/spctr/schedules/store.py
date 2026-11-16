@@ -32,6 +32,8 @@ from typing import Iterable
 
 import yaml
 
+from spctr.schedules.cron import CronParseError, parse_cron
+
 logger = logging.getLogger(__name__)
 
 # Claim sentinel (FR41): the exact string a claimed row carries in
@@ -63,9 +65,10 @@ USER_KEYS = (
 )
 RUNTIME_KEYS = ("next_run_at", "last_run_at", "last_status", "last_error")
 
-# Files matching this are never schedules: store bookkeeping, temp files
-# (possibly orphaned) and non-markdown files (FR36).
-_NON_SCHEDULE_RE = re.compile(r"^\.(lock|tmp-[^.]*\.\.lock|tmp-)(.+)?$")
+# Leftover mutation temps (possibly orphaned by a kill between temp write
+# and os.replace); swept after one poll interval (FR41).  The lockfile is
+# NOT matched: deleting it would let two writers hold different inodes.
+_TEMP_RE = re.compile(r"^\.tmp-")
 
 
 @dataclass(frozen=True)
@@ -104,8 +107,13 @@ def _ts(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat()
 
 
-def _parse_ts(raw: str) -> datetime:
-    value = datetime.fromisoformat(raw)
+def _parse_ts(raw) -> datetime:
+    # yaml.safe_load turns unquoted ISO timestamps into datetime objects;
+    # quoted scalars come back as strings.
+    if isinstance(raw, datetime):
+        value = raw
+    else:
+        value = datetime.fromisoformat(str(raw))
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value
@@ -248,7 +256,7 @@ class ScheduleStore:
     def _read_file(self, filename: str) -> str | None:
         try:
             return (self._dir / filename).read_text(encoding="utf-8")
-        except (FileNotFoundError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError):
             return None
 
     def sweep_temp_files(self, now: datetime, poll_seconds: float) -> None:
@@ -259,26 +267,27 @@ class ScheduleStore:
         on every poll with the store's poll interval.
         """
         cutoff = now.timestamp() - poll_seconds
-        try:
-            entries = list(self._dir.iterdir())
-        except FileNotFoundError:
-            return
-        for entry in entries:
-            if not _NON_SCHEDULE_RE.match(entry.name):
-                continue
+        with self._lock():
             try:
-                mtime = entry.stat().st_mtime
+                entries = list(self._dir.iterdir())
             except FileNotFoundError:
-                continue
-            if mtime <= cutoff:
+                return
+            for entry in entries:
+                if not _TEMP_RE.match(entry.name):
+                    continue
                 try:
-                    entry.unlink()
+                    mtime = entry.stat().st_mtime
                 except FileNotFoundError:
-                    pass
+                    continue
+                if mtime <= cutoff:
+                    try:
+                        entry.unlink()
+                    except OSError:
+                        pass
 
     # ---- parse / render one file ----
 
-    def _parse_file(self, filename: str, text: str) -> tuple[Schedule | None, str | None, dict | None]:
+    def _parse_file(self, filename: str, text: str | None) -> tuple[Schedule | None, str | None, dict | None]:
         """Parse one schedule file.
 
         Returns ``(schedule, None, extra)`` when the file is valid, or
@@ -286,10 +295,20 @@ class ScheduleStore:
         ordered key/value list of user-space keys as written, for use by
         the writer; it carries the file's user keys (known plus unknown
         extras) with their on-disk ordering preserved.
+
+        A file with no ``next_run_at`` runtime key is VALID with
+        ``next_run_at=None`` — a first-seen hand-authored file the engine
+        schedules on its next poll (FR39).  ``enabled: false`` parses to
+        ``status="paused"`` — valid, but never due, never claimed and
+        never advanced (FR44).
         """
         stem = filename[:-3]
         if not _ID_STEM_RE.match(stem):
             return None, "invalid id stem", None
+        if text is None:
+            return None, "unreadable or not UTF-8", None
+        if len(text.encode("utf-8")) > 64 * 1024:
+            return None, "file exceeds 64 KiB", None
         doc = _split_document(text)
         if doc is None:
             return None, "no frontmatter fences", None
@@ -308,15 +327,22 @@ class ScheduleStore:
                 continue
             ordered.append((k, v))
             seen.add(k)
-        if "cron" not in data:
+        if not data.get("cron"):
             return None, "missing required key 'cron'", None
+        try:
+            parse_cron(str(data["cron"]))
+        except CronParseError:
+            return None, f"invalid cron expression {data['cron']!r}", None
         payload_type = data.get("type", "")
         if payload_type not in ("command", "agent"):
             return None, f"unknown type {payload_type!r}", None
         if payload_type == "command" and not data.get("command"):
             return None, "command schedule missing 'command'", None
-        if payload_type == "agent" and not doc["body"].strip():
-            return None, "agent schedule has empty body", None
+        if payload_type == "agent":
+            if not doc["body"].strip():
+                return None, "agent schedule has empty body", None
+            if len(doc["body"]) > 4000:
+                return None, "agent instruction exceeds 4000 characters", None
         # An explicit target agent renders as ``payload_agent``; the plain
         # ``agent`` key is the owning agent, never the payload target.
         if "payload_agent" in data and not isinstance(data["payload_agent"], str):
@@ -324,27 +350,33 @@ class ScheduleStore:
         on_miss = data.get("on_miss", "run_late")
         if on_miss not in ("run_late", "skip"):
             return None, f"unknown on_miss {on_miss!r}", None
+        enabled = data.get("enabled", True)
+        if not isinstance(enabled, bool):
+            return None, f"unknown enabled {enabled!r}", None
         platform = data.get("platform", "")
         if not platform:
-            return None, "missing required key 'platform'", None
+            return None, "platform required", None
+        if platform not in ("discord", "zulip"):
+            return None, f"invalid platform {platform!r}", None
         raw_next = data.get("next_run_at")
-        if raw_next is None or not isinstance(raw_next, str) or raw_next in ("", "null"):
-            return None, "missing required key 'next_run_at'", None
-        try:
-            next_run_at = _parse_ts(raw_next)
-        except ValueError:
-            return None, f"invalid next_run_at {raw_next!r}", None
+        if raw_next is None or raw_next in ("", "null"):
+            next_run_at = None
+        else:
+            try:
+                next_run_at = _parse_ts(raw_next)
+            except (ValueError, TypeError):
+                return None, f"invalid next_run_at {raw_next!r}", None
         last_run_at = None
         if data.get("last_run_at"):
             try:
-                last_run_at = _parse_ts(str(data["last_run_at"]))
-            except ValueError:
+                last_run_at = _parse_ts(data["last_run_at"])
+            except (ValueError, TypeError):
                 return None, f"invalid last_run_at {data['last_run_at']!r}", None
         created_at = None
         if data.get("created_at"):
             try:
-                created_at = _parse_ts(str(data["created_at"]))
-            except ValueError:
+                created_at = _parse_ts(data["created_at"])
+            except (ValueError, TypeError):
                 return None, f"invalid created_at {data['created_at']!r}", None
         row = Schedule(
             id=stem,
@@ -362,7 +394,7 @@ class ScheduleStore:
             next_run_at=next_run_at,
             last_run_at=last_run_at,
             created_at=created_at or next_run_at,
-            status="active",
+            status="paused" if not enabled else "active",
             last_status=(str(data["last_status"]) if data.get("last_status") else None),
             last_error=(str(data["last_error"]) if data.get("last_error") else None),
         )
@@ -440,15 +472,14 @@ class ScheduleStore:
         platform: str | None = None,
     ) -> list[Schedule]:
         """Active schedules whose next_run_at is at or before *now*."""
-        with self._lock(exclusive=False):
-            rows = [
-                row
-                for row in self._scan()
-                if row is not None
-                and row.status == "active"
-                and row.next_run_at <= now
-                and (platform is None or row.platform == platform)
-            ]
+        rows = [
+            row
+            for row in self._scan()
+            if row.status == "active"
+            and row.next_run_at is not None
+            and row.next_run_at <= now
+            and (platform is None or row.platform == platform)
+        ]
         return sorted(rows, key=lambda r: (r.next_run_at, r.id))
 
     def claim(self, schedule_id: str, platform: str | None = None) -> bool:
@@ -464,7 +495,11 @@ class ScheduleStore:
             if loaded is None:
                 return False
             row, extra = loaded
-            if row.status != "active" or _ts(row.next_run_at) == CLAIM_SENTINEL:
+            if (
+                row.status != "active"
+                or row.next_run_at is None
+                or _ts(row.next_run_at) == CLAIM_SENTINEL
+            ):
                 return False
             if platform is not None and row.platform != platform:
                 return False
@@ -485,7 +520,14 @@ class ScheduleStore:
         with self._lock():
             loaded, reason = self._load_mutating(filename)
             if loaded is None:
-                return  # file deleted while its payload ran (FR42): skip the write
+                # File deleted while its payload ran (FR42): skip the
+                # result write; the run itself already completed.
+                if reason == "missing":
+                    logger.info(
+                        "schedule result write skipped, file gone: id=%s",
+                        schedule_id,
+                    )
+                return
             row, extra = loaded
             new_row = replace(
                 row,
@@ -497,15 +539,14 @@ class ScheduleStore:
             self._rewrite(filename, new_row, extra)
 
     def cancel(self, schedule_id: str) -> bool:
-        """Delete the file (FR32).  Returns True if it was active."""
+        """Delete the file (FR32); deleting the file cancels the schedule.
+
+        Returns False only when there is no file to remove — a paused
+        (``enabled: false``) file is still a schedule and is removed too
+        (FR44).
+        """
         filename = f"{schedule_id}.md"
         with self._lock():
-            loaded, reason = self._load_mutating(filename)
-            if loaded is None:
-                return False
-            row, _extra = loaded
-            if row.status != "active":
-                return False
             try:
                 (self._dir / filename).unlink()
             except FileNotFoundError:
@@ -523,53 +564,57 @@ class ScheduleStore:
         They are returned so the engine can treat them as missed
         occurrences.
         """
-        with self._lock(exclusive=False):
-            rows = [
-                row
-                for row in self._scan()
-                if row is not None
-                and row.status == "active"
-                and _ts(row.next_run_at) == CLAIM_SENTINEL
-                and (platform is None or row.platform == platform)
-            ]
+        rows = [
+            row
+            for row in self._scan()
+            if row.status == "active"
+            and row.next_run_at is not None
+            and _ts(row.next_run_at) == CLAIM_SENTINEL
+            and (platform is None or row.platform == platform)
+        ]
         return rows
 
     def list_for_agent(
         self, agent: str, statuses: Iterable[str] = ("active",)
     ) -> list[Schedule]:
         statuses = tuple(statuses)
-        with self._lock(exclusive=False):
-            rows = [
-                row
-                for row in self._scan()
-                if row is not None and row.agent == agent and row.status in statuses
-            ]
-        return sorted(rows, key=lambda r: (r.next_run_at, r.id))
+        rows = [
+            row
+            for row in self._scan()
+            if row.agent == agent and row.status in statuses
+        ]
+        return sorted(
+            rows,
+            key=lambda r: (
+                r.next_run_at is not None,
+                r.next_run_at or datetime.max.replace(tzinfo=timezone.utc),
+                r.id,
+            ),
+        )
 
-    def _scan(self) -> list[Schedule | None]:
-        """One directory scan: one entry per ``*.md`` file, None when invalid."""
-        result: list[Schedule | None] = []
-        for path in sorted(self._dir.glob("*.md"), key=lambda p: p.name):
-            row, reason, _extra = self._parse_file(path.name, self._read_file(path.name) or "")
-            if row is None:
-                logger.error("schedule file invalid: file=%s reason=%s", path.name, reason)
-            result.append(row)
-        return result
+    def _scan(self) -> list[Schedule]:
+        """The valid schedules from one directory scan."""
+        return self.scan()[0]
 
     def scan(self) -> tuple[list[Schedule], list[InvalidEntry]]:
         """One directory scan: valid Schedules plus invalid (filename, reason) pairs.
 
-        The engine calls this on every poll (FR39/FR40).  Invalid files
-        never run, never claim, and do not affect their siblings.
+        The engine calls this on every poll (FR39/FR40); reporting an
+        ERROR line per invalid file at most once per content hash is the
+        caller's job.  Invalid files never run, never claim, and do not
+        affect their siblings.
         """
         valid: list[Schedule] = []
         invalid: list[InvalidEntry] = []
-        for path in sorted(self._dir.glob("*.md"), key=lambda p: p.name):
-            row, reason, _extra = self._parse_file(path.name, self._read_file(path.name) or "")
-            if row is None:
-                invalid.append(InvalidEntry(filename=path.name, reason=reason))
-            else:
-                valid.append(row)
+        with self._lock(exclusive=False):
+            for path in sorted(self._dir.glob("*.md"), key=lambda p: p.name):
+                if not path.is_file():
+                    continue
+                row, reason, _extra = self._parse_file(path.name, self._read_file(path.name))
+                if row is None:
+                    invalid.append(InvalidEntry(filename=path.name, reason=reason))
+                else:
+                    valid.append(row)
         return valid, invalid
 
     # ---- async facades ----

@@ -270,15 +270,15 @@ class TestAC39Concurrency:
         # Every surviving file parses; no file is left corrupt.
         valid, invalid = store.scan()
         assert invalid == []
-        # Nothing was double-run: every advance writes exactly one runtime
-        # key set; a file whose state came from an advance carries it.
-        rows = {s.id: s for s in valid}
-        # The writer's non-cancelled schedules all exist (no schedule lost).
-        # i % 3 == 0 cancels w(i % 5): cancelled = {w0, w3, w4, w2, w1}
-        # over i in 0..14 -> all of w0..w4 are cancelled eventually, so
-        # assert the engine-side ids (e0..e2) that claims produced state on.
+        # No schedule lost and none extra: the writer creates w0..w14 and
+        # deterministically cancels w0..w4 (i % 3 == 0 -> cancel w(i % 5)),
+        # so exactly w5..w14 survive — the engine only claims/advances.
+        assert {s.id for s in valid} == {f"w{i}" for i in range(5, 15)}
+        # Every mutation landed as a complete file: each surviving file
+        # re-parses identically through a fresh store.
+        fresh = ScheduleStore(base)
         for s in valid:
-            assert s.id.startswith("e") or s.id.startswith("w")
+            assert fresh.get(s.id) == s
         # No temp files remain for finished work.
         assert [p.name for p in base.iterdir() if p.name.startswith(".tmp-")] == []
 
@@ -386,3 +386,181 @@ class TestAC37AsyncFacades:
         rows = await store.list_for_agent_async("miranda")
         assert rows == []
         assert await store.get_async("s1") is None
+
+
+# ---------------------------------------------------------------------------
+# AC37-r2: custom schedules.store_path template honored end to end
+# ---------------------------------------------------------------------------
+
+class TestAC37CustomStorePath:
+    def test_custom_store_path_template(self, tmp_path):
+        """AC37-r2: resolved_store_path honors a custom {agent} template."""
+        from spctr.config import SchedulesConfig, resolve_sr2_home
+
+        cfg = SchedulesConfig(store_path=str(tmp_path / "custom" / "{agent}"))
+        resolved = cfg.resolved_store_path("miranda")
+        assert resolved == str(tmp_path / "custom" / "miranda")
+
+        store = ScheduleStore(resolved)
+        assert store.create(_make_schedule()) == "s1"
+        assert (tmp_path / "custom" / "miranda" / "s1.md").is_file()
+        assert store.get("s1") is not None
+        assert [s.id for s in store.list_for_agent("miranda")] == ["s1"]
+
+        # Nothing was written under the default state/{agent}/schedules/.
+        state_root = Path(resolve_sr2_home()) / "state"
+        assert not (state_root / "miranda" / "schedules").exists()
+        leftovers = list(state_root.rglob("*.md")) if state_root.exists() else []
+        assert leftovers == []
+
+    def test_tilde_in_store_path_expanded(self):
+        """AC37-r2: a '~' store_path resolves under the user's home."""
+        from spctr.config import SchedulesConfig
+
+        cfg = SchedulesConfig(store_path="~/sched-x/{agent}")
+        resolved = cfg.resolved_store_path("miranda")
+        assert resolved == str(Path.home() / "sched-x" / "miranda")
+        assert not resolved.startswith("~")
+
+
+# ---------------------------------------------------------------------------
+# Scan primitive: first-seen files, paused files, invalid files (FR39/40/44)
+# ---------------------------------------------------------------------------
+
+class TestScanPrimitive:
+    def test_first_seen_no_next_run_at_is_valid_and_not_due(self, tmp_path):
+        """FR39: a file with no next_run_at is a live schedule the engine
+        schedules on its next poll — not an invalid file."""
+        store = ScheduleStore(tmp_path / "schedules")
+        _write_schedule_file(tmp_path / "schedules", "new.md", USER_BASE, "notes")
+        valid, invalid = store.scan()
+        assert invalid == []
+        assert [s.id for s in valid] == ["new"]
+        assert valid[0].next_run_at is None
+        assert valid[0].status == "active"
+        # Not due and not claimable until the engine stores an occurrence.
+        assert store.due(NOW) == []
+        assert store.claim("new") is False
+        store.advance_after_run("new", NOW + timedelta(days=1), NOW, "ok", None)
+        assert store.get("new").next_run_at == NOW + timedelta(days=1)
+        assert store.due(NOW) == []
+        assert [s.id for s in store.due(NOW + timedelta(days=2))] == ["new"]
+
+    def test_unquoted_yaml_timestamp_accepted(self, tmp_path):
+        """A hand-authored unquoted ISO timestamp parses as a datetime."""
+        store = ScheduleStore(tmp_path / "schedules")
+        _write_schedule_file(
+            tmp_path / "schedules", "ts.md",
+            USER_BASE + "next_run_at: 2026-10-21T07:00:00+00:00\n",
+            "notes",
+        )
+        row = store.get("ts")
+        assert row is not None
+        assert row.next_run_at == datetime(2026, 10, 21, 7, 0, tzinfo=UTC)
+
+    def test_enabled_false_pauses(self, tmp_path):
+        """FR44: enabled: false is valid, never due/claimed, cancellable."""
+        store = ScheduleStore(tmp_path / "schedules")
+        _write_schedule_file(
+            tmp_path / "schedules", "parked.md",
+            USER_BASE + "enabled: false\nnext_run_at: '2026-10-19T07:00:00+00:00'\n",
+            "notes",
+        )
+        valid, invalid = store.scan()
+        assert invalid == []
+        assert valid[0].status == "paused"
+        # Past due but paused: never due, never claimed.
+        assert store.due(NOW) == []
+        assert store.claim("parked") is False
+        # Hidden from the default list; listed as paused when asked.
+        assert store.list_for_agent("miranda") == []
+        assert [
+            s.id for s in store.list_for_agent("miranda", statuses=("paused",))
+        ] == ["parked"]
+        # A paused schedule is still a schedule: cancel removes it.
+        assert store.cancel("parked") is True
+        assert store.get("parked") is None
+
+    def test_invalid_files_reported_with_reasons(self, tmp_path):
+        """FR40: every invalid shape lands in scan()'s invalid list."""
+        store = ScheduleStore(tmp_path / "schedules")
+        base = tmp_path / "schedules"
+        fence = "---\n{keys}\n---\n\nnotes\n"
+        good_keys = (
+            "cron: 0 7 * * *\ntype: command\ncommand: x\nplatform: discord\n"
+            "next_run_at: '2026-10-21T07:00:00+00:00'\n"
+        )
+        bad = {
+            "BAD.md": fence.format(keys=good_keys),
+            "nofences.md": "just text, no frontmatter\n",
+            "badyaml.md": "---\ncron: [unclosed\n---\n",
+            "nocron.md": fence.format(
+                keys="type: command\ncommand: x\nplatform: discord\n"
+                "next_run_at: '2026-10-21T07:00:00+00:00'\n"
+            ),
+            "badcron.md": fence.format(
+                keys="cron: 0 7 *** *\ntype: command\ncommand: x\nplatform: discord\n"
+                "next_run_at: '2026-10-21T07:00:00+00:00'\n"
+            ),
+            "badtype.md": fence.format(
+                keys="cron: 0 7 * * *\ntype: rocket\nplatform: discord\n"
+                "next_run_at: '2026-10-21T07:00:00+00:00'\n"
+            ),
+            "badonmiss.md": fence.format(
+                keys="cron: 0 7 * * *\ntype: command\ncommand: x\nplatform: discord\n"
+                "on_miss: maybe\nnext_run_at: '2026-10-21T07:00:00+00:00'\n"
+            ),
+            "badenabled.md": fence.format(
+                keys="cron: 0 7 * * *\ntype: command\ncommand: x\nplatform: discord\n"
+                "enabled: banana\nnext_run_at: '2026-10-21T07:00:00+00:00'\n"
+            ),
+            "badplatform.md": fence.format(
+                keys="cron: 0 7 * * *\ntype: command\ncommand: x\nplatform: telegraph\n"
+                "next_run_at: '2026-10-21T07:00:00+00:00'\n"
+            ),
+            "noplatform.md": fence.format(
+                keys="cron: 0 7 * * *\ntype: command\ncommand: x\n"
+                "next_run_at: '2026-10-21T07:00:00+00:00'\n"
+            ),
+        }
+        for name, text in bad.items():
+            (base / name).write_text(text, encoding="utf-8")
+        (base / "big.md").write_text(
+            fence.format(keys=good_keys) + "x" * (64 * 1024), encoding="utf-8"
+        )
+        (base / "bigbody.md").write_text(
+            "---\ncron: 0 7 * * *\ntype: agent\nplatform: discord\n---\n\n"
+            + "x" * 4001,
+            encoding="utf-8",
+        )
+        valid, invalid = store.scan()
+        assert valid == []
+        reasons = {e.filename: e.reason for e in invalid}
+        assert set(reasons) == set(bad) | {"big.md", "bigbody.md"}
+        assert reasons["BAD.md"] == "invalid id stem"
+        assert reasons["noplatform.md"] == "platform required"
+        assert "cron" in reasons["nocron.md"]
+        assert "cron" in reasons["badcron.md"]
+        assert "on_miss" in reasons["badonmiss.md"]
+        assert "enabled" in reasons["badenabled.md"]
+        assert "platform" in reasons["badplatform.md"]
+        assert "64 KiB" in reasons["big.md"]
+        assert "4000" in reasons["bigbody.md"]
+
+    def test_invalid_file_does_not_block_valid_sibling(self, tmp_path):
+        """FR40: an invalid file is skipped entirely; siblings unaffected."""
+        store = ScheduleStore(tmp_path / "schedules")
+        (tmp_path / "schedules" / "broken.md").write_text(
+            "no fences here", encoding="utf-8"
+        )
+        store.create(_make_schedule(next_run_at=NOW - timedelta(seconds=1)))
+        valid, invalid = store.scan()
+        assert [s.id for s in valid] == ["s1"]
+        assert [e.filename for e in invalid] == ["broken.md"]
+        assert [s.id for s in store.due(NOW)] == ["s1"]
+        assert store.claim("s1") is True
+        # The invalid file is never due and never claimed; cancel still
+        # removes it (cancel is file deletion).
+        assert store.claim("broken") is False
+        assert [s.id for s in store.due(NOW + timedelta(days=30))] == []
+        assert store.cancel("broken") is True
