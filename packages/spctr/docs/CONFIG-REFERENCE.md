@@ -519,6 +519,7 @@ zulip:
   peer_id: null            # required integer user ID when mode is direct
   users: []               # empty = any human
   mention_only: false     # stream mode only
+  topic_owner_routing: false  # stream mode only: one owner bot per topic
   channels: []            # empty = every channel the queue delivers
   channel_areas:
     "2": ""
@@ -548,6 +549,7 @@ zulip:
 | `peer_id` | int or null | `null` | Direct mode: the human user ID used for inbound admission and outbound DMs. Required at direct-mode startup; missing or `null` raises `ValueError` before connecting. Must be an unquoted integer: strings, booleans and floats fail config validation. Stream mode ignores it |
 | `users` | list[int] | `[]` | Both modes: user IDs that may trigger a turn. Empty admits any human; nonempty admits only the listed **integer** IDs. A bot (marked `is_bot` in the registration's `realm_users`) or the bot's own account never triggers, whatever this list holds. Replaces `allowed_user_ids`: a config that still carries `allowed_user_ids` fails startup with an error naming `users`. Direct mode's `peer_id` restriction still applies |
 | `mention_only` | bool | `false` | Stream mode: when `true`, a message in a topic with no active Session in this process triggers only if it mentions the bot — `@**<full name>**`, `@**<full name>\|<user id>**` or the silent `@_**…**` form of either. Wildcard mentions (`@**all**`, `@**everyone**`, `@**channel**`, `@**topic**`) do not count. A topic that already has an active Session needs no mention. Direct mode ignores it |
+| `topic_owner_routing` | bool | `false` | Stream mode: when `true`, one owner bot answers per topic. On the first event for an unrecorded topic the topic's oldest message is fetched once (bounded timeout) and the owner is recorded: `self` when it mentions this bot, `other` when it mentions a non-wildcard realm identity that is not this bot (a human's included), `unowned` otherwise. After the opener only bot mentions move the owner — a mention of this bot claims the topic, a mention of another registered bot (by name or `\|id`) hands it over, and a mention of a human never does. A message in a topic recorded `other` is dropped silently before the `!stop` check, the Session probe and the indicator; a topic recorded `self` satisfies `mention_only` like an active Session. A failed opener fetch records nothing and evaluation proceeds unchanged, with the next event retrying. The map is in-process and cleared on restart. Direct mode ignores it |
 | `channels` | list[int] | `[]` | Stream mode: channel IDs that may trigger a turn. Empty admits every channel the event queue delivers (every public channel, plus private channels the bot is subscribed to); nonempty admits only the listed IDs. Entries are **integer** IDs — a quoted `"42"` is rejected, and the old ID→area mapping form fails validation |
 | `channel_areas` | dict[str, str] | `{}` | Stream mode: channel ID **written as a string** (`"42"`) to area identity; `""` means explicitly no area. An integer key is rejected. A channel with no key takes its area from its name, as Discord does |
 | `max_message_length` | int | `10000` | Stream mode: the longest single message the bot sends (Zulip's limit). A longer answer is split with the same chunking Discord uses: the first chunk replaces the placeholder and the rest follow as new messages in order. Direct mode ignores it |
@@ -576,7 +578,7 @@ zulip:
   users: [8]
 ```
 
-Launch with `--interface zulip`; `mode` selects the variant. Direct mode admits private messages only from `peer_id`, subject to the shared human/bot and `users` rules. If `users` is nonempty, it must include the peer to admit their messages; an empty list still admits only the configured peer. Direct mode ignores `mention_only`, `channels`, `channel_areas` and the stream working-indicator fields.
+Launch with `--interface zulip`; `mode` selects the variant. Direct mode admits private messages only from `peer_id`, subject to the shared human/bot and `users` rules. If `users` is nonempty, it must include the peer to admit their messages; an empty list still admits only the configured peer. Direct mode ignores `mention_only`, `topic_owner_routing`, `channels`, `channel_areas` and the stream working-indicator fields.
 
 A missing, unreadable, malformed or incomplete zuliprc fails startup with `ZulipCredentialError` naming the path and the reason, never the file's contents. Stream-mode routing validation checks the shape of `channels` and `channel_areas`; a named area that does not exist in the vault yet is valid and is resolved when a message routes to it.
 
@@ -588,7 +590,9 @@ A missing, unreadable, malformed or incomplete zuliprc fails startup with `Zulip
 mode it also sets `all_public_streams`, so public channels deliver
 messages without a bot subscription),
 `get_events(queue_id, last_event_id)`, `get_topic_messages(channel_id,
-topic)`, `send_message(type=, to=, topic=, content=)` (returns the new
+topic)`, `get_topic_opener(channel_id, topic)` (one oldest message,
+used by `topic_owner_routing`), `send_message(type=, to=, topic=,
+content=)` (returns the new
 message ID) and `update_message(message_id, content)` (edits one message
 with `PATCH /api/v1/messages/{id}`). Requests go only
 to `api_url` when set, otherwise the zuliprc `site` — with HTTP Basic,
@@ -611,7 +615,11 @@ queue — it fetches no history and makes no model request.
   account (the registration `user_id`) and channels outside a nonempty
   `channels` list are ignored without model work. With `mention_only`, a
   topic with no active Session starts only on a mention of the bot's
-  registration `full_name`. A `channels`, `users` or `mention_only` edit
+  registration `full_name`. With `topic_owner_routing`, one owner bot
+  answers per topic: the topic's first message decides the initial owner
+  and a later mention of another bot hands the topic over, so two bots
+  sharing a channel never both answer in one topic. A `channels`,
+  `users`, `mention_only` or `topic_owner_routing` edit
   on disk applies to the next event batch without a restart.
 - A turn's area is `channel_areas["<channel id>"]` when that key exists
   (`""` stays the explicit no-area); otherwise it is the channel name
@@ -650,7 +658,7 @@ queue — it fetches no history and makes no model request.
 
 The Zulip interface re-reads the **whole** resolved config on every inbound
 event batch — not just this section — so `channels`, `channel_areas`,
-`users`, `mention_only`, the working-indicator fields and everything outside `zulip` apply to the next message, with the same
+`users`, `mention_only`, `topic_owner_routing`, the working-indicator fields and everything outside `zulip` apply to the next message, with the same
 last-good guarantees as the [Live reload](#live-reload) section below: a
 malformed or mid-save file keeps the last known-good config in force and
 never takes the process down. `zuliprc` and `api_url` are the interface's
@@ -808,7 +816,7 @@ not just the agent file.
 | `agent.tool_result_max_bytes` | New truncation limit |
 | `agent.tool_limit_notice` | New notice text when the tool loop reaches its iteration limit |
 | `discord.*` except `token` | Channel filters, threading, streaming, embeds |
-| `zulip.channels`, `zulip.users`, `zulip.mention_only`, `zulip.channel_areas` | Which channels and users are admitted, whether a new topic needs a mention, and the area each channel routes to, from the next message |
+| `zulip.channels`, `zulip.users`, `zulip.mention_only`, `zulip.topic_owner_routing`, `zulip.channel_areas` | Which channels and users are admitted, whether a new topic needs a mention, whether one owner bot answers per topic, and the area each channel routes to, from the next message |
 
 The `skills_dirs` file watch is best effort: if a configured directory or skill
 file cannot be read during a rescan (mid-edit save, permissions), the previous
