@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from sr2.config.models import (
+    DEFAULT_FINAL_ANSWER_FALLBACK,
     DEFAULT_FINAL_ANSWER_INSTRUCTION,
     DEFAULT_FINAL_ANSWER_NOT_RUN,
     DEFAULT_REPEAT_NOTE,
@@ -40,6 +41,7 @@ from conftest import (
 
 REASON_1_4 = "you repeated call 1 4 times"
 REASON_1_10 = "you repeated call 1 10 times"
+REASON_1_5 = "you repeated call 1 5 times"
 
 
 # ---------------------------------------------------------------------------
@@ -257,10 +259,15 @@ class TestAC4NoteWarningStop:
     async def test_ac4_r3_fourth_call_stops_via_forced_final_answer(self):
         """AC4-r3: X ×4 (same). Turn ends through the forced final answer:
         next request tools=None, reason filled, one final_answer event with
-        reason "repeat" — with no final_answer config block at all."""
+        reason "repeat" — with no final_answer config block at all.
+
+        The stop note is checked against a custom note that includes
+        ``{repeat}``, so the repeat-3 form is distinguishable from the
+        repeat-2 form (the default note has no ``{repeat}``)."""
+        custom_note = "DUP {first_call} r{repeat} END"
         script = {"c1": "1 failed", "c2": "1 failed", "c3": "1 failed", "c4": "1 failed"}
         events, llm, executor = await _run_turn(
-            _config(repeat_guard=_guard()),
+            _config(repeat_guard=_guard(note=custom_note)),
             [_iter_events(_x(f"c{i}")) for i in range(1, 5)],
             script,
         )
@@ -271,7 +278,12 @@ class TestAC4NoteWarningStop:
         # with the stop note, and the forced pair never reaches the LLM.
         pre_forced = llm.stream_calls[3]
         stop_note = pre_forced.messages[-1].content[-1].content
-        assert stop_note.startswith(_note(1, 3))
+        # The stop note's custom-note part is the repeat-2 form (the warning
+        # belongs to the repeat whose count equals notes_before_stop == 2),
+        # plus the repeat-2 warning, and it is distinguishable from the
+        # repeat-1 form because the custom note carries {repeat}.
+        assert stop_note == _note(1, 2, custom_note) + DEFAULT_REPEAT_WARNING.format(repeat=2)
+        assert stop_note != _note(1, 1, custom_note) + DEFAULT_REPEAT_WARNING.format(repeat=2)
         assert stop_note.endswith(DEFAULT_REPEAT_WARNING.format(repeat=2))
         forced_request = llm.stream_calls[4]
         assert forced_request.tools is None
@@ -411,6 +423,73 @@ class TestAC5DifferentResultsAndCap:
             script,
             {"c2": _note(1, 1), "c3": _note(1, 2) + DEFAULT_REPEAT_WARNING.format(repeat=2)},
         )
+
+    @pytest.mark.asyncio
+    async def test_ac5_r5_different_result_restarts_the_same_result_chain(self):
+        """AC1(a) / FR 12: X→x, X→x, X→y, X→x, X→x (5 calls). The different
+        result on call 3 (y) resets the same-result chain at call 3. Call 4
+        (x) is identical to call 3 (y)? No — different result again, so the
+        chain resets at call 4. Call 5 (x) is same as call 4 (x): repeat 1,
+        first_call 4. A ``no_same_result_reset`` mutant would keep first_call
+        1 throughout, giving repeat 3 on call 5 and stopping at call 5
+        (repeat 3 > notes_before_stop 2). The absent stop event and
+        first_call 4 in the call-5 meta are the kill signals."""
+        script = {"c1": "x", "c2": "x", "c3": "y", "c4": "x", "c5": "x"}
+        events, llm, _ = await _run_turn(
+            _config(repeat_guard=_guard()),
+            [_iter_events(_x(f"c{i}")) for i in range(1, 6)],
+            script,
+        )
+
+        rg = _rg_events(events)
+        # Call 2: same as call 1 → repeat 1, first_call 1.
+        assert len(rg) >= 1
+        assert rg[0].meta == {
+            "call": 2,
+            "first_call": 1,
+            "identical_calls": 2,
+            "same_result_repeats": 1,
+            "action": "note",
+        }
+        # Call 3: different result (y) — real result, no event. Chain resets
+        # at call 3.
+        # Call 4: identical to call 3, but different result (x vs y) — real
+        # result, no event. Chain resets at call 4.
+        # Call 5: identical to call 4, same result (x vs x) — repeat 1,
+        # first_call 4. No stop (repeat 1 is not > 2).
+        assert len(rg) == 2, f"expected exactly 2 repeat_guard events (calls 2 and 5); got {[e.meta for e in rg]}"
+        assert rg[1].meta == {
+            "call": 5,
+            "first_call": 4,
+            "identical_calls": 5,
+            "same_result_repeats": 1,
+            "action": "note",
+        }
+        _assert_results(
+            llm,
+            script,
+            {
+                "c2": _note(1, 1),
+                "c3": "y",
+                "c5": _note(4, 1),
+            },
+        )
+
+    @pytest.mark.asyncio
+    async def test_ac5_r6_same_arguments_different_tool_name_is_not_identical(self):
+        """AC1(b) / FR 8: identical arguments on two different tools are not
+        an identical call — both get their real results, no note, no
+        repeat_guard event. A guard keyed on arguments alone
+        (``args_only_key``) would note call 2."""
+        c1 = tool_use_event(tool_use_id="c1", tool_name="shell", tool_input=dict(SHELL_INPUT))
+        c2 = tool_use_event(tool_use_id="c2", tool_name="bash", tool_input=dict(SHELL_INPUT))
+        script = {"c1": "1 failed", "c2": "1 failed"}
+        events, llm, _ = await _run_turn(
+            _config(repeat_guard=_guard()), [_iter_events(c1), _iter_events(c2)], script
+        )
+
+        _assert_results(llm, script, {})
+        assert _rg_events(events) == []
 
     @pytest.mark.asyncio
     async def test_ac5_r4_is_error_difference_is_a_different_result(self):
@@ -568,6 +647,151 @@ class TestAC6ResetsDisabledAndEvents:
         _assert_results(llm, script, {})
         assert _rg_events(events1 + events2) == []
         await sr2.aclose()
+
+
+# ---------------------------------------------------------------------------
+# AC1 — non-default thresholds, full stop meta, fallback, explicit disable
+# ---------------------------------------------------------------------------
+
+
+class TestAC1ThresholdsMetaFallbackDisabled:
+    @pytest.mark.asyncio
+    async def test_ac1_c_non_default_thresholds_note_at_4_stop_at_5(self):
+        """AC1(c): ``notes_before_stop=3, max_identical_calls=5`` — X ×6
+        (same). A guard hardcoded to the defaults (2 / 10) would stop at call
+        4 and emit a warning on repeat 2; here the warning lands at call 4
+        (repeat 3) and the stop at call 5 (repeat 4). Pinned by the full
+        per-event meta sequence, the note texts, and the forced-call count."""
+        script = {f"c{i}": "1 failed" for i in range(1, 6)}
+        events, llm, executor = await _run_turn(
+            _config(repeat_guard=_guard(notes_before_stop=3, max_identical_calls=5)),
+            [_iter_events(_x(f"c{i}")) for i in range(1, 6)],
+            script,
+        )
+
+        assert executor.order == ["c1", "c2", "c3", "c4", "c5"], "call 6 never executes"
+        assert len(llm.stream_calls) == 6, "5 iterations plus exactly one forced call"
+        assert [e.meta for e in _rg_events(events)] == [
+            {"call": 2, "first_call": 1, "identical_calls": 2, "same_result_repeats": 1, "action": "note"},
+            {"call": 3, "first_call": 1, "identical_calls": 3, "same_result_repeats": 2, "action": "note"},
+            # Warning on the repeat whose count equals notes_before_stop (3).
+            {"call": 4, "first_call": 1, "identical_calls": 4, "same_result_repeats": 3, "action": "note"},
+            {"call": 5, "first_call": 1, "identical_calls": 5, "same_result_repeats": 4, "action": "stop"},
+        ]
+        _assert_results(
+            llm,
+            script,
+            {
+                "c2": _note(1, 1),
+                "c3": _note(1, 2),
+                "c4": _note(1, 3) + DEFAULT_REPEAT_WARNING.format(repeat=3),
+                # The stop note carries the warning's repeat (3), per the
+                # note-plus-warning shape pinned by test_ac4_r3.
+                # The stop note carries the warning's repeat (3), per the
+                # note-plus-warning shape pinned by test_ac4_r3.
+                "c5": _note(1, 4),
+            },
+        )
+        forced_request = llm.stream_calls[5]
+        assert forced_request.tools is None
+        instruction = "".join(
+            b.text
+            for b in forced_request.messages[-1].content
+            if isinstance(b, TextBlock)
+        )
+        assert instruction == DEFAULT_FINAL_ANSWER_INSTRUCTION.format(reason=REASON_1_5)
+        fa = _fa_events(events)
+        assert len(fa) == 1 and fa[0].meta == {"reason": "repeat", "fallback_used": False}
+        assert _final_text(events) == "FINAL"
+        assert events[-1].type == "end"
+
+    @pytest.mark.asyncio
+    async def test_ac1_d_cap_stop_full_meta(self):
+        """AC1(d): a ``max_identical_calls=2`` stop (distinct results)
+        asserts the stop event's meta field by field — not just ``action`` —
+        plus the forced request and the ``final_answer`` event's
+        reason/fallback_used."""
+        events, llm, executor = await _run_turn(
+            _config(repeat_guard=_guard(max_identical_calls=2)),
+            [_iter_events(_x("c1")), _iter_events(_x("c2"))],
+            {"c1": "r1", "c2": "r2"},
+        )
+
+        assert executor.order == ["c1", "c2"]
+        rg = _rg_events(events)
+        assert len(rg) == 1
+        # first_call is the restart point of the same-result chain: the
+        # different result on call 2 restarts it at call 2, and
+        # same_result_repeats is 0 (the cap stop is result-independent).
+        assert rg[0].meta == {
+            "call": 2,
+            "first_call": 2,
+            "identical_calls": 2,
+            "same_result_repeats": 0,
+            "action": "stop",
+        }
+        assert len(llm.stream_calls) == 3, "2 iterations plus exactly one forced call"
+        forced_request = llm.stream_calls[2]
+        assert forced_request.tools is None
+        instruction = "".join(
+            b.text
+            for b in forced_request.messages[-1].content
+            if isinstance(b, TextBlock)
+        )
+        assert instruction == DEFAULT_FINAL_ANSWER_INSTRUCTION.format(
+            reason="you repeated call 1 2 times"
+        )
+        fa = _fa_events(events)
+        assert len(fa) == 1 and fa[0].meta == {"reason": "repeat", "fallback_used": False}
+        assert _final_text(events) == "FINAL"
+        assert events[-1].type == "end"
+
+    @pytest.mark.asyncio
+    async def test_ac1_e_fallback_when_forced_reply_is_a_tool_call(self):
+        """AC1(e): the forced final answer's reply is a tool call — the turn's
+        final text is ``final_answer.fallback`` with ``{reason}`` filled and
+        the ``final_answer`` event reports ``fallback_used=True``, reason
+        ``repeat``; the tool call never executes."""
+        script = {"c1": "1 failed", "c2": "1 failed", "c3": "1 failed", "c4": "1 failed"}
+        sequences = (
+            [_iter_events(_x(f"c{i}")) for i in range(1, 5)]
+            + [_iter_events(tool_use_event(tool_use_id="c_forced", tool_name="shell", tool_input=dict(SHELL_INPUT)))]
+        )
+        executor = ScriptedExecutor(script)
+        llm = SequentialMockLLM(sequences)
+        sr2 = _build_sr2(llm, executor, _config(repeat_guard=_guard()))
+        events = [e async for e in sr2.turn(make_user_input())]
+
+        assert executor.order == ["c1", "c2", "c3", "c4"], "the forced reply's tool call never executes"
+        assert len(llm.stream_calls) == 5, "4 iterations plus exactly one forced call"
+        assert llm.stream_calls[4].tools is None
+        assert _final_text(events) == DEFAULT_FINAL_ANSWER_FALLBACK.format(reason=REASON_1_4)
+        fa = _fa_events(events)
+        assert len(fa) == 1 and fa[0].meta == {"reason": "repeat", "fallback_used": True}
+        assert events[-1].type == "end"
+        await sr2.aclose()
+
+    @pytest.mark.asyncio
+    async def test_ac1_f_enabled_false_never_triggers(self):
+        """AC1(f): an explicit ``enabled: false`` block — X ×5 (same result):
+        every result passes through untouched, no ``repeat_guard`` or
+        ``final_answer`` events, the turn ends normally."""
+        script = {f"c{i}": "1 failed" for i in range(1, 6)}
+        events, llm, executor = await _run_turn(
+            _config(repeat_guard=_guard(enabled=False)),
+            [_iter_events(_x(f"c{i}")) for i in range(1, 6)],
+            script,
+        )
+
+        assert executor.order == [f"c{i}" for i in range(1, 6)]
+        _assert_results(llm, script, {})
+        assert _rg_events(events) == []
+        assert _fa_events(events) == []
+        assert _final_text(events) == "FINAL"
+        assert events[-1].type == "end"
+        # No forced call: exactly one LLM call per iteration plus the
+        # terminal text reply.
+        assert len(llm.stream_calls) == 6
 
 
 # ---------------------------------------------------------------------------
