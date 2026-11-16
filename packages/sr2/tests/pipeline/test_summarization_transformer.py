@@ -4,10 +4,12 @@ Acceptance Criteria covered:
   AC3:  keep_last_n=3 with 10 turns → [TextBlock(summary), turn8, turn9, turn10]
   AC4:  fewer turns than keep_last_n → no-op (content=None, events=[], entries=[], no LLM call)
   AC5:  emits summarization_complete event with event.data = [TextBlock(summary_text)]
-  AC6:  provenance entries have sources = non-empty tuple
+  AC6:  (sr2-127) the transformer emits no entries of its own: no fabricated
+        source ids; the source-lineage omission is declared in provenance
   AC9:  model key in config is read by the transformer (routing tested at orchestrator layer)
   AC10: keep_within_tokens keeps only most-recent turns fitting within token budget
-  AC11: two summarizations in same session → two distinct provenance entries
+  AC11: two summarizations in same session → two LLM calls, two events, two
+        results each carrying their own declared provenance
 
 FR3:  SummarizationTransformer implements the Transformer protocol.
 FR4:  keep_last_n and keep_within_tokens strategies.
@@ -16,7 +18,9 @@ FR5:  LLM is injected at construction (mock in tests).
 Non-functional:
   - No-op safety: never calls LLM when content <= keep threshold.
   - LLM failure propagates as-is.
-  - Transformer origin entries always have non-empty sources.
+  - sr2-127 (spec FR5, "Synthetic dangling source IDs are invalid"): the
+    transformer mints no ids at all. It returns no entries; the Layer
+    synthesizes the summary block against real stored entry ids.
 
 Note on AC9 (model routing): CompletionRequest has no `model` field — the LLM client
 itself handles model selection. The transformer reads `config["model"]` to select which
@@ -26,12 +30,19 @@ the orchestrator integration level, not here.
 
 from __future__ import annotations
 
+import asyncio
+import json
+from datetime import datetime, timezone
+
 import pytest
 
 from sr2.models import TextBlock, TokenUsage
+from sr2.pipeline.event_bus import EventBus
 from sr2.pipeline.events import Event, EventPhase, EventSubscription
-from sr2.pipeline.models import TransformationResult
+from sr2.pipeline.models import ResolvedContent, TransformationResult
 from sr2.pipeline.protocols import Transformer
+from sr2.pipeline.provenance import Entry, EntryOrigin, InMemoryProvenanceStore
+from sr2.pipeline.stores.sqlite import SQLiteProvenanceStore
 from sr2.protocols.llm import CompletionRequest, CompletionResponse
 
 
@@ -413,74 +424,93 @@ class TestSummarizationCompleteEvent:
 
 
 # ---------------------------------------------------------------------------
-# AC6: Provenance entries — non-empty sources
+# AC6 (sr2-127): no fabricated lineage — omission declared explicitly
 # ---------------------------------------------------------------------------
 
 
 class TestProvenanceEntries:
-    """AC6: Provenance entries for removed turns have non-empty sources tuples."""
+    """AC6 (sr2-127, spec FR5): the transformer declares no source lineage of
+    its own and records the omission in its provenance declaration.
+
+    The pre-sr2-127 shape — one entry per summarized block carrying a
+    freshly generated ``source_id`` — was a synthetic dangling source id and
+    is gone. ``transform(content, events)`` receives content blocks with no
+    entry identity, so the transformer emits no entries at all; the Layer
+    synthesizes the compiled summary block against the real stored entry ids
+    it holds at flush time (see test_r1_*/test_r2_* below).
+    """
 
     @pytest.mark.asyncio
-    async def test_ac6_entries_returned_for_summarized_turns(self):
-        """AC6: Summarizing 7 turns produces provenance entries."""
+    async def test_ac6_no_entries_emitted(self):
+        """sr2-127 / AC1: summarizing 7 turns produces zero transformer entries."""
         llm = MockLLM()
         transformer = build_transformer(config=make_config(keep_last_n=3), llm=llm)
         content = make_text_blocks(10)
 
         result = await transformer.transform(content, make_events())
 
-        assert len(result.entries) > 0
+        assert result.entries == []
 
     @pytest.mark.asyncio
-    async def test_ac6_all_entries_have_nonempty_sources(self):
-        """AC6: Every provenance entry from the transformer has a non-empty sources tuple."""
+    async def test_ac6_transformer_mints_no_ids(self):
+        """sr2-127 / AC1: no entry id (or source id) shape appears anywhere in the result
+
+        except ids the test itself stored. The fabricated-ULID path had no
+        observable id of its own beyond entries, so a result with zero
+        entries and no declared sources carries no id the transformer made up.
+        """
         llm = MockLLM()
         transformer = build_transformer(config=make_config(keep_last_n=3), llm=llm)
         content = make_text_blocks(10)
 
         result = await transformer.transform(content, make_events())
 
-        for entry in result.entries:
-            assert entry.sources, f"Entry {entry.id} has empty sources"
-            assert len(entry.sources) > 0
+        assert result.entries == []
+        declaration = result.provenance[0]
+        # The declaration states the omission rather than naming an id.
+        assert "sources" not in declaration, (
+            f"transformer declared sources it cannot resolve: {declaration!r}"
+        )
+        for block in result.content or []:
+            assert isinstance(block, TextBlock)
 
     @pytest.mark.asyncio
-    async def test_ac6_entry_count_matches_summarized_items(self):
-        """AC6: One provenance entry per summarized turn (7 turns summarized → 7 entries)."""
+    async def test_ac6_omission_declared_explicitly(self):
+        """sr2-127 / AC1: the result's provenance records the omission explicitly."""
         llm = MockLLM()
         transformer = build_transformer(config=make_config(keep_last_n=3), llm=llm)
         content = make_text_blocks(10)
 
         result = await transformer.transform(content, make_events())
 
-        assert len(result.entries) == 7  # 10 - 3 kept
+        assert result.provenance is not None
+        assert len(result.provenance) == 1
+        declaration = result.provenance[0]
+        assert declaration.get("sources_omitted") is True
+        reason = declaration.get("sources_omitted_reason")
+        assert isinstance(reason, str)
+        assert reason.strip() != ""
 
     @pytest.mark.asyncio
-    async def test_ac6_entries_are_transformer_origin(self):
-        """AC6: All entries have origin.kind == 'transformer'."""
+    async def test_ac6_declaration_carries_no_causal_override(self):
+        """sr2-127: the omission declaration changes no causal field the Layer derives.
+
+        The Layer's _causal_for_item lets a declaration override reason /
+        authority / lifecycle. The summarizer's declaration must not touch
+        them (nor id / session_id), so the stored summary entry keeps the
+        Layer's default transformer causal shape.
+        """
         llm = MockLLM()
         transformer = build_transformer(config=make_config(keep_last_n=3), llm=llm)
         content = make_text_blocks(10)
 
         result = await transformer.transform(content, make_events())
 
-        for entry in result.entries:
-            assert entry.origin.kind == "transformer"
-
-    @pytest.mark.asyncio
-    async def test_ac6_entry_sources_are_strings(self):
-        """AC6: sources are non-empty tuples of strings (ULID or similar)."""
-        llm = MockLLM()
-        transformer = build_transformer(config=make_config(keep_last_n=3), llm=llm)
-        content = make_text_blocks(10)
-
-        result = await transformer.transform(content, make_events())
-
-        for entry in result.entries:
-            assert isinstance(entry.sources, tuple)
-            for src in entry.sources:
-                assert isinstance(src, str)
-                assert len(src) > 0
+        declaration = result.provenance[0]
+        for key in ("reason", "authority", "lifecycle", "id", "session_id"):
+            assert key not in declaration, (
+                f"summarization declaration must not override {key!r}: {declaration!r}"
+            )
 
     @pytest.mark.asyncio
     async def test_ac6_noop_produces_no_entries(self):
@@ -578,8 +608,8 @@ class TestKeepWithinTokens:
             assert block is content[2 + i]
 
     @pytest.mark.asyncio
-    async def test_ac10_summarized_items_produce_entries(self):
-        """AC10: Summarized items produce provenance entries."""
+    async def test_ac10_summarized_items_declare_no_fabricated_entries(self):
+        """AC10/sr2-127: token-budget summarization emits no entries and declares the omission."""
         llm = MockLLM()
         config = make_config(keep_strategy="keep_within_tokens", keep_tokens=4)
         transformer = build_transformer(config=config, llm=llm)
@@ -587,9 +617,10 @@ class TestKeepWithinTokens:
 
         result = await transformer.transform(content, make_events())
 
-        assert len(result.entries) > 0
-        for entry in result.entries:
-            assert len(entry.sources) > 0
+        assert result.entries == []
+        declaration = result.provenance[0]
+        assert declaration.get("sources_omitted") is True
+        assert "sources" not in declaration
 
 
 # ---------------------------------------------------------------------------
@@ -598,11 +629,17 @@ class TestKeepWithinTokens:
 
 
 class TestTwoSummarizations:
-    """AC11: Two calls produce distinct provenance entries."""
+    """AC11: Two calls each produce their own result and declared provenance.
+
+    sr2-127: entry identity is no longer the transformer's business (the
+    Layer content-addresses the stored summary), so this class asserts what
+    the transformer still owns: one LLM call, one event and one provenance
+    declaration per summarization.
+    """
 
     @pytest.mark.asyncio
-    async def test_ac11_two_summarizations_distinct_entries(self):
-        """AC11: Two separate transform() calls each produce their own provenance entries."""
+    async def test_ac11_two_summarizations_each_declare_their_own_provenance(self):
+        """AC11: Two separate transform() calls each carry their own provenance declaration."""
         llm = MockLLM(response_text="Round summary.")
         config = make_config(keep_last_n=2, max_executions=10)
         transformer = build_transformer(config=config, llm=llm)
@@ -613,14 +650,17 @@ class TestTwoSummarizations:
         result_a = await transformer.transform(content_a, make_events())
         result_b = await transformer.transform(content_b, make_events())
 
-        # Both must produce entries
-        assert len(result_a.entries) > 0
-        assert len(result_b.entries) > 0
-
-        # All entry IDs must be distinct across both results
-        ids_a = {e.id for e in result_a.entries}
-        ids_b = {e.id for e in result_b.entries}
-        assert ids_a.isdisjoint(ids_b), "Entry IDs must not overlap across summarization calls"
+        # Both results carry a provenance declaration; neither carries entries.
+        assert result_a.entries == []
+        assert result_b.entries == []
+        assert result_a.provenance is not None and len(result_a.provenance) == 1
+        assert result_b.provenance is not None and len(result_b.provenance) == 1
+        # Distinct result objects — the declarations are not shared state.
+        assert result_a.provenance[0] is not result_b.provenance[0]
+        # Each summarization compiled its own summary block.
+        assert result_a.content[0].text == "Round summary."
+        assert result_b.content[0].text == "Round summary."
+        assert result_a.content[0] is not result_b.content[0]
 
     @pytest.mark.asyncio
     async def test_ac11_two_summarizations_two_llm_calls(self):
@@ -657,8 +697,382 @@ class TestTwoSummarizations:
 
 
 # ---------------------------------------------------------------------------
+# sr2-127 AC1 seam (case r1/r2/r3): real Layer + real ProvenanceStore producer
+# ---------------------------------------------------------------------------
+
+
+def make_layer_with(transformer, provenance_store) -> "Layer":
+    """Real sr2 Layer driving the transformer under test (sr2-127 seam)."""
+    from sr2.pipeline.compilation import AppendStrategy
+    from sr2.pipeline.layer import Layer
+    from sr2.pipeline.models import CompilationTarget
+    from sr2.pipeline.token_counting import CharacterTokenCounter
+
+    return Layer(
+        name="conversation",
+        target=CompilationTarget.MESSAGES,
+        position=AppendStrategy(),
+        token_budget=None,
+        resolvers=[],
+        transformers=[transformer],
+        token_counter=CharacterTokenCounter(),
+        event_bus=EventBus(),
+        provenance_store=provenance_store,
+        session_id="sr2-127-session",
+    )
+
+
+def rows_from_db(db_path):
+    """Every ledger row read straight from the SQLite file.
+
+    Raw rows only — no Entry reconstruction — so sweeping the ledger never
+    trips the Entry invariants and cannot be defeated by a half-valid row.
+    """
+    import sqlite3
+
+    with sqlite3.connect(str(db_path)) as db:
+        rows = db.execute(
+            "SELECT id, content_json, origin_kind, origin_name FROM entries"
+        ).fetchall()
+        links = db.execute(
+            "SELECT entry_id, source_id FROM entry_sources"
+        ).fetchall()
+    return rows, links
+
+
+def transformer_entry_ids_transformer_minted(result) -> list[str]:
+    """Ids the transformer itself put on emitted entries (sr2-127: none)."""
+    return [e.id for e in result.entries]
+
+
+class TestRealStoreSeam:
+    """sr2-127 AC1 (case r1/r2/r3): transform() run against content previously
+    stored through the real Layer, so real entry ids exist in the provenance
+    store, asserted against that same store.
+
+    Both stores are the real production classes. ``Layer.process_pending``
+    (the real producer of stored ids) populates them; the store-level FR5
+    check is exercised through the stores' own validation paths — SQLite FK
+    enforcement over the raw ledger, and ``InMemoryProvenanceStore.write``,
+    which raises ValueError for a source id absent from the store.
+    """
+
+    def test_r1_sqlite_all_source_ids_resolve(self, tmp_path):
+        """r1 / AC1 + FR5: every source id in the ledger resolves to a stored entry.
+
+        Sweeps the whole SQLite ledger after a summarization turn. The
+        fabricated-ULID path cannot survive this sweep: it emitted one entry
+        per summarized block whose single source was a freshly generated id
+        that no write ever stored.
+        """
+        db_path = tmp_path / "r1.db"
+
+        async def _run():
+            store = SQLiteProvenanceStore(path=db_path)
+            await store.connect()
+            try:
+                llm = MockLLM(response_text="R1 summary.")
+                transformer = build_transformer(config=make_config(keep_last_n=3), llm=llm)
+                layer = make_layer_with(transformer, store)
+
+                # Store 10 turns through the real Layer so real entry ids exist.
+                turns = make_text_blocks(10)
+                layer.add_content(
+                    ResolvedContent(
+                        resolver_name="session", source_layer="conversation", content=turns
+                    )
+                )
+                await layer.process_pending()
+
+                # Fire summarization over that same, already-stored content.
+                layer.handle_event(make_events()[0])
+                await layer.process_pending()
+            finally:
+                await store.close()
+
+        asyncio.run(_run())
+
+        rows, links = rows_from_db(db_path)
+        stored_ids = {row[0] for row in rows}
+
+        # The 10 summarized/kept blocks are stored entries.
+        assert len(stored_ids) >= 10
+
+        # FR5 at store level: no source link points at an id that is not a row.
+        dangling = sorted({sid for _, sid in links if sid not in stored_ids})
+        assert dangling == [], f"dangling source ids in the ledger: {dangling}"
+
+        # FR1: the compiled summary block maps to exactly one stored entry, of
+        # transformer origin, whose sources are all stored rows.
+        def _row_text(row) -> str:
+            return json.loads(row[1])["text"]
+
+        summary_rows = [
+            row for row in rows
+            if _row_text(row) == "R1 summary."
+        ]
+        assert len(summary_rows) == 1, (
+            f"the summary block must map to exactly one stored entry, got {len(summary_rows)}"
+        )
+        summary = summary_rows[0]
+        assert summary[2] == "transformer", f"stored origin_kind: {summary[2]!r}"
+        assert summary[3] == "summarization", f"stored origin_name: {summary[3]!r}"
+        summary_sources = sorted(sid for eid, sid in links if eid == summary[0])
+        assert summary_sources, "the summary entry must have stored source links"
+        for source_id in summary_sources:
+            assert source_id in stored_ids, (
+                f"source id {source_id!r} is not a stored entry — dangling lineage"
+            )
+
+    def test_r1_declared_source_id_is_carried_when_it_resolves(self, tmp_path):
+        """r1 / AC1: a summarized block whose real stored id is visible is chained to it.
+
+        The summarized block is written to the real store *before* it joins
+        the layer content — at summarize time it is stored content with a
+        known id, the case-table run — and carries that id in its provenance
+        meta. The stored summary entry's source links must be exactly that id,
+        never an id the store has not seen.
+        """
+        real_id = "SR2127REALID0000000000000A"
+
+        async def _drive(store):
+            if isinstance(store, SQLiteProvenanceStore):
+                await store.connect()
+            try:
+                # Stored first, through the store's own write path, so the id
+                # is a real ledger row before summarize time.
+                await store.write(
+                    Entry(
+                        id=real_id,
+                        content=TextBlock(text="block being summarized"),
+                        sources=(),
+                        origin=EntryOrigin(kind="resolver", name="fixture"),
+                        layer="conversation",
+                        session_id="sr2-127-session",
+                        created_at=datetime.now(tz=timezone.utc),
+                    )
+                )
+
+                llm = MockLLM(response_text="Declared summary.")
+                transformer = build_transformer(config=make_config(keep_last_n=3), llm=llm)
+                transformer._provenance_store = store
+                layer = make_layer_with(transformer, store)
+
+                # The summarized block carries its real stored id; the rest of
+                # the content has no visible id, so the declared one is the
+                # only source the transformer can legitimately name.
+                annotated = TextBlock(
+                    text="block being summarized",
+                    meta={"provenance": {"source_ids": [real_id]}},
+                )
+                filler = make_text_blocks(6, prefix="tail")
+                layer.add_content(
+                    ResolvedContent(
+                        resolver_name="session",
+                        source_layer="conversation",
+                        content=[annotated, *filler],
+                    )
+                )
+                await layer.process_pending()
+
+                layer.handle_event(make_events()[0])
+                await layer.process_pending()
+            finally:
+                if isinstance(store, SQLiteProvenanceStore):
+                    await store.close()
+
+        # InMemory store
+        store = InMemoryProvenanceStore()
+        asyncio.run(_drive(store))
+
+        async def _sources_in_memory():
+            entries = []
+            for sid in ("sr2-127-session", "default", ""):
+                entries.extend(await store.get_session(sid))
+            return entries
+
+        entries = asyncio.run(_sources_in_memory())
+        summaries = [
+            e for e in entries
+            if isinstance(e.content, TextBlock) and e.content.text == "Declared summary."
+        ]
+        assert len(summaries) == 1, "summary block must map to a stored entry (FR1)"
+        assert summaries[0].origin.kind == "transformer"
+        assert summaries[0].sources == (real_id,), (
+            "the summary entry must chain to the summarized block's real stored "
+            f"id; got {summaries[0].sources!r}"
+        )
+
+        # SQLite store — asserted over raw ledger rows.
+        db_path = tmp_path / "decl.db"
+        asyncio.run(_drive(SQLiteProvenanceStore(path=db_path)))
+        rows, links = rows_from_db(db_path)
+        stored_ids = {row[0] for row in rows}
+        summary_rows = [
+            row for row in rows
+            if json.loads(row[1]).get("text") == "Declared summary."
+        ]
+        assert len(summary_rows) == 1, "summary block must map to a stored entry (FR1)"
+        summary = summary_rows[0]
+        assert summary[2] == "transformer"
+        sources = sorted(sid for eid, sid in links if eid == summary[0])
+        assert sources == [real_id], (
+            "the summary entry's stored source links must be exactly the "
+            f"block's real stored id; got {sources!r}"
+        )
+        assert all(sid in stored_ids for sid in sources)
+
+    def test_r2_summary_lineage_reaches_original_turn_entries(self):
+        """r2 / AC1 + FR1 + FR5: the summary block maps to a stored entry whose
+        sources resolve, and lineage walks back to the original turn entries.
+
+        Also exercises the store-level FR5 check: re-writing the summary entry
+        through ``InMemoryProvenanceStore.write`` (which raises ValueError for
+        a source id absent from the store) must not raise.
+        """
+        store = InMemoryProvenanceStore()
+
+        async def _run():
+            llm = MockLLM(response_text="R2 summary.")
+            transformer = build_transformer(config=make_config(keep_last_n=3), llm=llm)
+            layer = make_layer_with(transformer, store)
+
+            turns = make_text_blocks(10)
+            layer.add_content(
+                ResolvedContent(
+                    resolver_name="session", source_layer="conversation", content=turns
+                )
+            )
+            await layer.process_pending()
+            before = {e.id for e in await store.get_session("sr2-127-session")}
+
+            layer.handle_event(make_events()[0])
+            await layer.process_pending()
+            after = await store.get_session("sr2-127-session")
+            new_entries = [e for e in after if e.id not in before]
+            return new_entries
+
+        new_entries = asyncio.run(_run())
+
+        # Exactly one new stored entry: the layer's raw-path synthesis of the
+        # summary block (unchanged by this repair).
+        assert len(new_entries) == 1
+        summary = new_entries[0]
+        assert isinstance(summary.content, TextBlock)
+        assert summary.content.text == "R2 summary."
+        assert summary.origin.kind == "transformer"
+        assert summary.origin.name == "summarization"
+        assert summary.sources
+
+        # Store-level FR5 validation on the single-write path.
+        async def _rewrite():
+            await store.write(summary)
+
+        asyncio.run(_rewrite())
+
+        # FR5: lineage traversal from the summary reaches the original turns.
+        lineage = asyncio.run(store.get_lineage(summary.id))
+        lineage_by_id = {e.id: e for e in lineage}
+        for source_id in summary.sources:
+            assert source_id in lineage_by_id, (
+                f"source {source_id!r} does not resolve in lineage traversal"
+            )
+        reached = {
+            e.content.text
+            for e in lineage_by_id.values()
+            if isinstance(e.content, TextBlock)
+        }
+        for i in range(7):
+            assert f"turn_{i}" in reached, (
+                f"lineage from the summary must reach the original turn_{i} entry"
+            )
+        assert "R2 summary." in reached
+
+    def test_r2_sources_fall_back_to_prior_run_stored_ids(self, tmp_path):
+        """r2 / AC1: with no same-turn writes, sources chain to prior-run stored ids.
+
+        The summary is compiled in a turn where nothing else is written, so
+        the layer's raw-path synthesis chains to the previous turn's stored
+        ids — still real, still stored, never generated.
+        """
+        db_path = tmp_path / "fallback.db"
+
+        async def _run():
+            store = SQLiteProvenanceStore(path=db_path)
+            await store.connect()
+            try:
+                llm = MockLLM(response_text="Fallback summary.")
+                transformer = build_transformer(config=make_config(keep_last_n=3), llm=llm)
+                layer = make_layer_with(transformer, store)
+
+                turns = make_text_blocks(10)
+                layer.add_content(
+                    ResolvedContent(
+                        resolver_name="session", source_layer="conversation", content=turns
+                    )
+                )
+                await layer.process_pending()
+                stored_ids = {
+                    e.id for e in await store.get_session("sr2-127-session")
+                }
+
+                # Second turn: the transformer fires, but no new content is
+                # added — only its output is compiled.
+                layer.handle_event(make_events()[0])
+                await layer.process_pending()
+                return stored_ids
+            finally:
+                await store.close()
+
+        stored_ids = asyncio.run(_run())
+
+        rows, links = rows_from_db(db_path)
+        summary_rows = [
+            row for row in rows
+            if json.loads(row[1]).get("text") == "Fallback summary."
+        ]
+        assert len(summary_rows) == 1, "summary block must still map to a stored entry"
+        summary = summary_rows[0]
+        assert summary[2] == "transformer"
+        sources = sorted(sid for eid, sid in links if eid == summary[0])
+        assert sources, "the summary entry must have stored source links"
+        for source_id in sources:
+            assert source_id in stored_ids, (
+                f"fallback source {source_id!r} is not a stored entry"
+            )
+
+    @pytest.mark.asyncio
+    async def test_r3_noop_path_unchanged_through_real_layer(self, tmp_path):
+        """r3 / AC1: content <= keep_last_n through the real Layer — no entries, no writes, no LLM."""
+        store = InMemoryProvenanceStore()
+        llm = MockLLM()
+        transformer = build_transformer(config=make_config(keep_last_n=3), llm=llm)
+        layer = make_layer_with(transformer, store)
+
+        turns = make_text_blocks(3)
+        layer.add_content(
+            ResolvedContent(
+                resolver_name="session", source_layer="conversation", content=turns
+            )
+        )
+        await layer.process_pending()
+        before = {e.id for e in await store.get_session("sr2-127-session")}
+
+        layer.handle_event(make_events()[0])
+        changed = await layer.process_pending()
+
+        after = {e.id for e in await store.get_session("sr2-127-session")}
+        assert changed is False, "a no-op summarization turn generates no new events"
+        assert after == before, "no-op summarization must write nothing new"
+        assert llm.calls == [], "no-op summarization must not call the LLM"
+        assert layer.get_content() == turns
+
+
+
+# ---------------------------------------------------------------------------
 # LLM failure propagation
 # ---------------------------------------------------------------------------
+
 
 
 class TestLLMFailurePropagation:
