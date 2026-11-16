@@ -35,6 +35,13 @@ UTC = timezone.utc
 
 NOW = datetime(2026, 10, 15, 22, 0, 0, tzinfo=UTC)
 
+# The pristine originals, captured at import time before any test can
+# monkeypatch them: a spy installed by an earlier test would otherwise be
+# handed to the next one as "the real thing" and stay installed for the rest
+# of the session.
+_REAL_CONNECT = sqlite3.connect
+_REAL_MKDIR = Path.mkdir
+
 # spc-139-era DDL (16 columns, no retry column), the legacy file shape
 # ``_migrate`` is meant to upgrade in place. Pinned here independently of
 # ``_SCHEMA`` so the fixture cannot silently become the current schema.
@@ -130,7 +137,7 @@ class _AlterFailureInjector:
         self._real_connect = None
 
     def __enter__(self):
-        self._real_connect = sqlite3.connect
+        self._real_connect = _REAL_CONNECT
         real = self._real_connect
         outer = self
 
@@ -536,23 +543,25 @@ def test_fresh_path_migrates_exactly_once_across_two_operations(
     """
     record: list[str] = []
 
-    real_mkdir = Path.mkdir
-
     def spy_mkdir(self, *args, **kwargs):
         record.append("mkdir")
-        return real_mkdir(self, *args, **kwargs)
-    real_connect = sqlite3.connect
+        return _REAL_MKDIR(self, *args, **kwargs)
 
     def spy_connect(path, *args, **kwargs):
         record.append("connect")
-        return real_connect(path, *args, **kwargs)
+        return _REAL_CONNECT(path, *args, **kwargs)
 
     store = ReminderStore(tmp_path / "reminders.sqlite")
-    real_migrate = ReminderStore._migrate
+    # ``_migrate`` is a staticmethod.  ``ReminderStore._migrate`` reads back
+    # the *unwrapped* function, so assigning that back would leave a plain
+    # function in the class dict and break every later bound call with
+    # "takes 1 positional argument but 2 were given" — poisoning the rest of
+    # the session.  Swap and restore the class-dict descriptor itself.
+    real_migrate_descriptor = ReminderStore.__dict__["_migrate"]
 
     def spy_migrate(conn):
         record.append("migrate")
-        return real_migrate(conn)
+        return real_migrate_descriptor.__func__(conn)
 
     Path.mkdir = spy_mkdir
     sqlite3.connect = spy_connect
@@ -561,10 +570,13 @@ def test_fresh_path_migrates_exactly_once_across_two_operations(
         store.get("r-none")
         store.get("r-none")
     finally:
-        Path.mkdir = real_mkdir
-        sqlite3.connect = real_connect
-        ReminderStore._migrate = real_migrate
+        Path.mkdir = _REAL_MKDIR
+        sqlite3.connect = _REAL_CONNECT
+        ReminderStore._migrate = real_migrate_descriptor
 
+    assert ReminderStore.__dict__["_migrate"] is real_migrate_descriptor, (
+        "the _migrate spy was not restored to the original descriptor"
+    )
     assert record.count("mkdir") == 1, record
     assert record.count("migrate") == 1, record
     # One connection for the pass itself plus one per operation: the pass is
