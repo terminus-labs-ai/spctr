@@ -10,15 +10,18 @@ the active model, and presence in completions/help/docstring.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+# ``_cfg`` is the config builder the Runtime-retarget test uses; reusing it
+# keeps this file's real-Runtime switch on the same shape as that one.
 from spctr.config import AgentConfig, ModelConfig, SpctrConfig
 from spctr.interfaces.repl import (
     REPLInterface,
     render_change_model_command,
 )
+from tests.test_active_model import _cfg
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +59,38 @@ def _agent_with_config(config: SpctrConfig) -> MagicMock:
 
     agent.apply_config.side_effect = _apply
     return agent
+
+
+class _RuntimeFacade:
+    """The slice of ``Agent`` the /model handler touches, backed by a real Runtime.
+
+    ``Agent`` is exactly this facade over ``Runtime`` (``agent.config`` and
+    ``agent.apply_config`` → ``self._runtime.apply_config``,
+    ``spctr/agent.py:213-224``), so handing the handler this wrapper drives the
+    Runtime's own ``apply_config`` — the real seam the mock in
+    ``_agent_with_config`` only imitated — without dragging in the ``Session``
+    construction ``Agent.__init__`` adds for its chat turn.  ``LiteLLMCallable``
+    is patched for the whole lifetime of the Runtime, as
+    ``test_active_model.py:112-116`` patches it for its shorter ``with``.
+    """
+
+    def __init__(self, config: SpctrConfig) -> None:
+        from spctr.runtime import Runtime
+
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            self._runtime = Runtime(config=config)
+
+    @property
+    def config(self) -> SpctrConfig:
+        return self._runtime.config
+
+    def apply_config(self, config: SpctrConfig) -> list[str]:
+        with patch("spctr.live_llm.LiteLLMCallable"):
+            return self._runtime.apply_config(config)
+
+    @property
+    def llm(self):
+        return self._runtime.llm
 
 
 class _LineSink:
@@ -329,6 +364,81 @@ async def test_selecting_active_model_is_a_noop(tmp_path, monkeypatch) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Real retarget — the switch reaches an actual Runtime, not a mock (spc-1002)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_switch_retargets_a_real_runtime_llm(tmp_path, monkeypatch) -> None:
+    """/model fast must repoint a real Runtime's LLM at the selected model.
+
+    The rest of this file drives the handler against ``_agent_with_config``,
+    whose ``apply_config`` side effect only assigns ``agent.config``: those
+    assertions prove the mock, not the retarget.  Here the agent is a real
+    ``Runtime`` (built as ``test_active_model.py`` builds one), so the handler's
+    ``apply_config`` runs ``LiveLLM.retarget`` for real and the assertion lands
+    on the LLM's own model config.
+    """
+    pointer = tmp_path / "active_model"
+    monkeypatch.setenv("SR2_ACTIVE_MODEL_FILE", str(pointer))
+    agent = _RuntimeFacade(_cfg("default", model_names=("default", "fast")))
+    interface = REPLInterface()
+    buf = _console_capturing(interface)
+
+    # Precondition: the LLM starts at the active model's endpoint.
+    assert agent.llm.model_config.base_url == "http://default/v1"
+
+    await interface._handle_command(agent, "/model", "fast")
+
+    assert agent.llm.model_config.base_url == "http://fast/v1"
+    assert agent.config.active_model == "fast"
+    assert pointer.read_text() == "fast\n"
+    assert "Switched to" in _plain_text(buf)
+
+
+@pytest.mark.asyncio
+async def test_mixed_case_switch_retargets_a_real_runtime_llm(
+    tmp_path, monkeypatch
+) -> None:
+    """A mixed-case command through run() retargets the real LLM too.
+
+    Case folding lives in ``run()`` (``cmd = parts[0].lower()``, repl.py:670),
+    which is the only path that reaches the exact-match handler table, so the
+    token is scripted into the prompt loop rather than handed to
+    ``_handle_command`` directly.  Same assertions as the lowercase form.
+    """
+    pointer = tmp_path / "active_model"
+    monkeypatch.setenv("SR2_ACTIVE_MODEL_FILE", str(pointer))
+    agent = _RuntimeFacade(_cfg("default", model_names=("default", "fast")))
+    interface = REPLInterface()
+    buf = _console_capturing(interface)
+
+    class FakeSession:
+        def __init__(self, it):
+            self._it = it
+
+        async def prompt_async(self):
+            return next(self._it)
+
+    def _fake_session(completer):
+        return FakeSession(iter(["/MODEL fast", "/quit"]))
+
+    monkeypatch.setattr("spctr.interfaces.repl._make_prompt_session", _fake_session)
+
+    assert agent.llm.model_config.base_url == "http://default/v1"
+
+    await interface.run(agent)
+
+    assert agent.llm.model_config.base_url == "http://fast/v1"
+    assert agent.config.active_model == "fast"
+    assert pointer.read_text() == "fast\n"
+    text = _plain_text(buf)
+    assert "Switched to" in text
+    # Proof the mixed-case token was dispatched rather than rejected.
+    assert "Unknown command" not in text
+
+
+# ---------------------------------------------------------------------------
 # AC7 — presence in completions, help, and the module docstring
 # ---------------------------------------------------------------------------
 
@@ -375,15 +485,64 @@ def test_module_docstring_lists_change_model() -> None:
 
 
 @pytest.mark.asyncio
-async def test_command_dispatched_case_insensitively() -> None:
-    """The run loop lowercases the command token; the handler must match."""
-    monkey = _agent_with_config(_spctr_with_models("default"))
+async def test_command_dispatched_case_insensitively(monkeypatch) -> None:
+    """The run loop lowercases the command token; the handler must match.
+
+    Sends the mixed-case spelling of the model command (``/MODEL fast``) through
+    ``run()``, the only path that folds case (``cmd = parts[0].lower(),
+    repl.py:670``); the handler table is an exact dict lookup (repl.py:908-928),
+    so a token dispatched as typed would land on ``Unknown command``.  The
+    the outcome below is the one the lowercase token produces when it is handed
+    to the handler (see ``test_switch_applies_config_and_writes_pointer``).
+    ``/change-model`` itself is gone: ``7aa0586`` renamed it to ``/model``, and
+    ``_COMMAND_ALIASES`` maps only ``/change``, for the completer.
+    """
+    agent = _agent_with_config(_spctr_with_models("default"))
     interface = REPLInterface()
     buf = _console_capturing(interface)
 
-    await interface._handle_command(monkey, "/model", None)
+    class FakeSession:
+        def __init__(self, it):
+            self._it = it
 
-    assert "Models:" in _plain_text(buf)
+        async def prompt_async(self):
+            return next(self._it)
+
+    def _fake_session(completer):
+        return FakeSession(iter(["/MODEL fast", "/quit"]))
+
+    monkeypatch.setattr("spctr.interfaces.repl._make_prompt_session", _fake_session)
+
+    await interface.run(agent)
+
+    text = _plain_text(buf)
+    # The mixed-case token was folded and dispatched, not rejected ...
+    assert "Unknown command" not in text
+    # ... and it produced the switch message, which only a dispatched
+    # ``/model <name>`` prints, with the selected model's name in it.
+    assert "Switched to" in text and "fast" in text
+    # The switch was applied in-process, exactly as for the lowercase token.
+    agent.apply_config.assert_called_once()
+    assert agent.apply_config.call_args[0][0].active_model == "fast"
+    assert agent.config.active_model == "fast"
+
+
+@pytest.mark.asyncio
+async def test_mixed_case_token_reaches_no_handler_without_run_loop_folding() -> None:
+    """``_handle_command`` matches exactly, so case folding is the run loop's.
+
+    Guards the test above from being vacuous: called directly with the mixed-
+    case token (skipping ``run()``), no handler is found and nothing is applied.
+    """
+    agent = _agent_with_config(_spctr_with_models("default"))
+    interface = REPLInterface()
+    buf = _console_capturing(interface)
+
+    await interface._handle_command(agent, "/MODEL", "fast")
+
+    assert "Unknown command" in _plain_text(buf)
+    agent.apply_config.assert_not_called()
+    assert agent.config.active_model == "default"
 
 
 def test_pointer_path_reads_env(monkeypatch) -> None:
