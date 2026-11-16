@@ -701,6 +701,20 @@ class TestTwoSummarizations:
 # ---------------------------------------------------------------------------
 
 
+def run_async(coro):
+    """Run ``coro`` to completion without touching the ambient event-loop policy.
+
+    ``asyncio.run`` closes the loop and unsets it from the policy; other
+    suites' sync tests later call ``asyncio.get_event_loop()`` and would
+    break. A fresh loop that is closed but never set is safe.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def make_layer_with(transformer, provenance_store) -> "Layer":
     """Real sr2 Layer driving the transformer under test (sr2-127 seam)."""
     from sr2.pipeline.compilation import AppendStrategy
@@ -790,7 +804,7 @@ class TestRealStoreSeam:
             finally:
                 await store.close()
 
-        asyncio.run(_run())
+        run_async(_run())
 
         rows, links = rows_from_db(db_path)
         stored_ids = {row[0] for row in rows}
@@ -863,7 +877,11 @@ class TestRealStoreSeam:
                 # only source the transformer can legitimately name.
                 annotated = TextBlock(
                     text="block being summarized",
-                    meta={"provenance": {"source_ids": [real_id]}},
+                    meta={
+                        "provenance": {
+                            "source_ids": ["SR2127FAKEID0000000000000B", real_id]
+                        }
+                    },
                 )
                 filler = make_text_blocks(6, prefix="tail")
                 layer.add_content(
@@ -883,7 +901,7 @@ class TestRealStoreSeam:
 
         # InMemory store
         store = InMemoryProvenanceStore()
-        asyncio.run(_drive(store))
+        run_async(_drive(store))
 
         async def _sources_in_memory():
             entries = []
@@ -891,7 +909,7 @@ class TestRealStoreSeam:
                 entries.extend(await store.get_session(sid))
             return entries
 
-        entries = asyncio.run(_sources_in_memory())
+        entries = run_async(_sources_in_memory())
         summaries = [
             e for e in entries
             if isinstance(e.content, TextBlock) and e.content.text == "Declared summary."
@@ -905,7 +923,7 @@ class TestRealStoreSeam:
 
         # SQLite store — asserted over raw ledger rows.
         db_path = tmp_path / "decl.db"
-        asyncio.run(_drive(SQLiteProvenanceStore(path=db_path)))
+        run_async(_drive(SQLiteProvenanceStore(path=db_path)))
         rows, links = rows_from_db(db_path)
         stored_ids = {row[0] for row in rows}
         summary_rows = [
@@ -952,7 +970,7 @@ class TestRealStoreSeam:
             new_entries = [e for e in after if e.id not in before]
             return new_entries
 
-        new_entries = asyncio.run(_run())
+        new_entries = run_async(_run())
 
         # Exactly one new stored entry: the layer's raw-path synthesis of the
         # summary block (unchanged by this repair).
@@ -968,10 +986,10 @@ class TestRealStoreSeam:
         async def _rewrite():
             await store.write(summary)
 
-        asyncio.run(_rewrite())
+        run_async(_rewrite())
 
         # FR5: lineage traversal from the summary reaches the original turns.
-        lineage = asyncio.run(store.get_lineage(summary.id))
+        lineage = run_async(store.get_lineage(summary.id))
         lineage_by_id = {e.id: e for e in lineage}
         for source_id in summary.sources:
             assert source_id in lineage_by_id, (
@@ -1024,7 +1042,7 @@ class TestRealStoreSeam:
             finally:
                 await store.close()
 
-        stored_ids = asyncio.run(_run())
+        stored_ids = run_async(_run())
 
         rows, links = rows_from_db(db_path)
         summary_rows = [
