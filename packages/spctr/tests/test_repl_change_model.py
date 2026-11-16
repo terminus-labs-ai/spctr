@@ -492,7 +492,7 @@ async def test_command_dispatched_case_insensitively(monkeypatch) -> None:
     ``run()``, the only path that folds case (``cmd = parts[0].lower(),
     repl.py:670``); the handler table is an exact dict lookup (repl.py:908-928),
     so a token dispatched as typed would land on ``Unknown command``.  The
-    the outcome below is the one the lowercase token produces when it is handed
+    outcome below is the one the lowercase token produces when it is handed
     to the handler (see ``test_switch_applies_config_and_writes_pointer``).
     ``/change-model`` itself is gone: ``7aa0586`` renamed it to ``/model``, and
     ``_COMMAND_ALIASES`` maps only ``/change``, for the completer.
