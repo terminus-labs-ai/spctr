@@ -48,7 +48,7 @@ def test_ac1_column_defs_are_single_source():
     """AC1: _COLUMN_DEFS defines all 17 columns exactly once, in order.
     _COLUMNS is derived from it and matches the same name set."""
     assert len(_COLUMN_DEFS) == 17
-    names = [name for name, _ in _COLUMN_DEFS]
+    names = [entry.name for entry in _COLUMN_DEFS]
     assert len(names) == len(set(names)), "duplicate column names in _COLUMN_DEFS"
     assert names == list(_COLUMNS), "_COLUMNS must be derived from _COLUMN_DEFS in the same order"
 
@@ -60,7 +60,7 @@ def test_ac1_create_table_body_matches_live_schema(tmp_path: Path):
     with store._connect() as conn:
         rows = conn.execute("PRAGMA table_info(reminders)").fetchall()
     live_names = [r["name"] for r in rows]
-    expected_names = [name for name, _ in _COLUMN_DEFS]
+    expected_names = [entry.name for entry in _COLUMN_DEFS]
     assert live_names == expected_names, (
         f"Live schema columns {live_names} != _COLUMN_DEFS {expected_names}"
     )

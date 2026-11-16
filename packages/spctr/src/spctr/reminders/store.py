@@ -19,58 +19,70 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, NamedTuple
 
 # The reminder column set, the single source of truth (spc-144,
-# spc-145). One ordered tuple of (name, declaration) entries defines
-# every column exactly once; the CREATE TABLE body (``_SCHEMA``), the
-# ``_COLUMNS`` name tuple, the ``_INSERT_COLUMNS`` filter, the
-# ``_TS_BINDINGS`` set, the retry-column identity and its legacy-file
+# spc-145). One ordered tuple of ``Column`` entries defines every column
+# exactly once; the CREATE TABLE body (``_SCHEMA``), the ``_COLUMNS``
+# name tuple, the ``_EXCLUDED_FROM_INSERT``/``_INSERT_COLUMNS`` filter,
+# the ``_TS_BINDINGS`` set, the retry-column identity and its legacy-file
 # ALTER all derive from it. Rows map back to ``Reminder`` by column name
 # via ``sqlite3.Row``. Adding a column is a one-place edit here: append
-# a (name, declaration) entry — if the fresh row starts NULL and the
-# column should be excluded from the INSERT, add it to
-# ``_EXCLUDED_FROM_INSERT`` too.
+# one ``Column`` entry, setting its flags — a column whose fresh row
+# starts NULL takes ``excluded_from_insert``; a timestamp column takes
+# ``ts_binding``.
+class Column(NamedTuple):
+    """One column of the single source: name, DDL declaration, flags."""
+
+    name: str
+    decl: str
+    excluded_from_insert: bool = False
+    ts_binding: bool = False
+
+
 _COLUMN_DEFS = (
-    ("id", "TEXT PRIMARY KEY"),
-    ("agent", "TEXT NOT NULL"),
-    ("platform", "TEXT NOT NULL"),
-    ("requester_id", "TEXT NOT NULL"),
-    ("requester_mention", "TEXT NOT NULL"),
-    ("origin_channel_id", "TEXT NOT NULL"),
-    ("dest_channel_id", "TEXT NOT NULL"),
-    ("dest_channel_name", "TEXT NOT NULL"),
-    ("dest_topic", "TEXT NOT NULL"),
-    ("text", "TEXT NOT NULL"),
-    ("due_at", "TEXT NOT NULL"),
-    ("created_at", "TEXT NOT NULL"),
-    ("delivered_at", "TEXT NULL"),
-    ("status", "TEXT NOT NULL CHECK (status IN ('pending', 'sending', 'delivered', 'failed', 'cancelled'))"),
-    ("attempts", "INTEGER NOT NULL DEFAULT 0"),
-    ("last_error", "TEXT NULL"),
+    Column("id", "TEXT PRIMARY KEY"),
+    Column("agent", "TEXT NOT NULL"),
+    Column("platform", "TEXT NOT NULL"),
+    Column("requester_id", "TEXT NOT NULL"),
+    Column("requester_mention", "TEXT NOT NULL"),
+    Column("origin_channel_id", "TEXT NOT NULL"),
+    Column("dest_channel_id", "TEXT NOT NULL"),
+    Column("dest_channel_name", "TEXT NOT NULL"),
+    Column("dest_topic", "TEXT NOT NULL"),
+    Column("text", "TEXT NOT NULL"),
+    Column("due_at", "TEXT NOT NULL", ts_binding=True),
+    Column("created_at", "TEXT NOT NULL", ts_binding=True),
+    Column("delivered_at", "TEXT NULL", excluded_from_insert=True),
+    Column("status", "TEXT NOT NULL CHECK (status IN ('pending', 'sending', 'delivered', 'failed', 'cancelled'))"),
+    Column("attempts", "INTEGER NOT NULL DEFAULT 0"),
+    Column("last_error", "TEXT NULL"),
     # spc-157: FR18 retries schedule from this column, never from due_at.
     # It must stay out of the INSERT (fresh rows start NULL) and out of
     # the Reminder dataclass (rows map back by name; the field would
     # otherwise break every frozen positional/keyword construction).
-    ("next_attempt_at", "TEXT NULL"),
+    Column("next_attempt_at", "TEXT NULL", ts_binding=True),
 )
 
 # Column names, in order (derived from _COLUMN_DEFS).
-_COLUMNS = tuple(name for name, _ in _COLUMN_DEFS)
+_COLUMNS = tuple(c.name for c in _COLUMN_DEFS)
 
-# Columns ``create`` does not insert: ``delivered_at`` (always NULL on a
-# fresh row and NULL in the DDL).
-_EXCLUDED_FROM_INSERT = frozenset({"delivered_at"})
+# Columns ``create`` does not insert: the flagged ones — ``delivered_at``
+# (always NULL on a fresh row and NULL in the DDL).
+_EXCLUDED_FROM_INSERT = frozenset(
+    c.name for c in _COLUMN_DEFS if c.excluded_from_insert
+)
 
 # Columns ``create`` inserts: every column except the excluded ones.
 _INSERT_COLUMNS = tuple(c for c in _COLUMNS if c not in _EXCLUDED_FROM_INSERT)
 
-# Columns whose values need ``_ts()`` conversion when binding to SQL.
-_TS_BINDINGS = frozenset({"due_at", "created_at", "next_attempt_at"})
+# Columns whose values need ``_ts()`` conversion when binding to SQL:
+# the flagged ones.
+_TS_BINDINGS = frozenset(c.name for c in _COLUMN_DEFS if c.ts_binding)
 
 # The single source of truth for the CREATE TABLE body (spc-145).
 _SCHEMA = "CREATE TABLE IF NOT EXISTS reminders (\n" + ",\n".join(
-    f"  {name} {decl}" for name, decl in _COLUMN_DEFS
+    f"  {c.name} {c.decl}" for c in _COLUMN_DEFS
 ) + "\n);"
 
 
@@ -86,8 +98,8 @@ def _utcnow() -> datetime:
 # The retry column is the last column in the source tuple: it was added
 # after the original spc-139 schema, and the legacy-file migration in
 # ``_migrate`` derives its identity and ALTER clause from here (spc-145).
-_RETRY_COLUMN = _COLUMN_DEFS[-1][0]
-_RETRY_DECL = _COLUMN_DEFS[-1][1]
+_RETRY_COLUMN = _COLUMN_DEFS[-1].name
+_RETRY_DECL = _COLUMN_DEFS[-1].decl
 
 
 def _ts(value: datetime) -> str:
