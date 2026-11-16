@@ -185,8 +185,17 @@ class ReminderStore:
             finally:
                 conn.close()
         finally:
+            # The guard resets unconditionally: a failed pass must leave
+            # nothing set but ``_ready``, so the next call can retry.
             self._initializing = False
-            self._ready = True
+        # spc-1075: readiness belongs to the success path, not to this
+        # ``finally``.  ``_ready = True`` here marked a pass that raised
+        # (lock contention on the ALTER, a failed commit) as done, so the
+        # migration was never retried for the life of the instance and every
+        # later operation died with ``no such column: next_attempt_at`` on a
+        # still-unmigrated file.  Staying not-ready lets the next
+        # ``_connect()`` retry the pass.
+        self._ready = True
 
     def _connect(self) -> sqlite3.Connection:
         self._ensure_ready()
