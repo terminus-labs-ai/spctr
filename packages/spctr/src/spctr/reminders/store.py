@@ -153,13 +153,21 @@ class ReminderStore:
         self._path = str(path)
         self._ready = False
         self._initializing = False
+        # spc-248: construction is side-effect-free for fresh paths (no
+        # mkdir, no file).  For an already-existing file the parent
+        # directory is guaranteed to exist, so migrating at construction
+        # creates nothing new and preserves the pre-lazy-init behaviour
+        # that test_reminders_due_time.py::test_r4 relies on.
+        if self._path != ":memory:" and Path(self._path).exists():
+            self._ensure_ready()
 
     def _ensure_ready(self) -> None:
         # spc-163: migrate once here, not on every connection. The store is
         # built once per process (runtime.py), so the schema probe runs once
-        # for the life of the file instead of once per operation. Deferred
-        # to the first ``_connect()`` (spc-248) so constructing a store —
-        # even one that is never used — creates no directory and no file.
+        # for the life of the file instead of once per operation.  For fresh
+        # paths the call is deferred to the first ``_connect()`` (spc-248)
+        # so that constructing a store that is never used creates no
+        # directory and no file.
         if self._ready or self._initializing:
             # ``_initializing`` lets the first ``_connect()`` (called from
             # inside ``_ensure_ready`` itself) pass through without
