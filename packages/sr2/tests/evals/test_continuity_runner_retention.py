@@ -11,6 +11,15 @@ drives the actual retention loop against the default root, so the
 consumer is never tested through a fake-shaped seam. The current run's
 id is computed before the new run dir exists (the id hashes the corpus
 tree, so it is stable only while the tree is unchanged).
+
+WARNING: these tests drive the real default results root
+(``evals/continuity/results``) — they create and delete untracked run
+dirs in their own worktree's checkout. They must NOT run concurrently
+with anything else (another pytest, a ``run_baseline`` run, or a human)
+inside the same worktree: a concurrent process could create or remove
+run dirs mid-test, and the teardowns remove exactly the dirs they made
+but the retention loop under test removes by mtime order, so a
+concurrent untracked dir could be deleted out from under it.
 """
 
 from __future__ import annotations
@@ -192,3 +201,82 @@ def _repo_toplevel() -> Path:
     proc = _git("rev-parse", "--show-toplevel")
     assert proc.returncode == 0
     return Path(proc.stdout.decode().strip())
+
+
+def _results_prefix() -> str:
+    """The results root's repo-root-relative prefix, ``""`` at the root.
+
+    Mirrors the probe's own call: ``rev-parse --show-prefix`` from the
+    results root; the output already ends in ``/`` (or is empty at the
+    root itself)."""
+    proc = _git("-C", str(RESULTS_ROOT), "rev-parse", "--show-prefix")
+    assert proc.returncode == 0, (
+        f"results root {RESULTS_ROOT} unexpectedly outside a repository")
+    return proc.stdout.decode().strip()
+
+
+def test_tracked_result_dirs_maps_repo_root_relative_listing(
+        monkeypatch):
+    """AC1: an exported absolute ``GIT_DIR`` makes the probe list
+    repo-root-relative names for the whole repository; the helper must
+    still report exactly the committed published dir under the results
+    root (the base code mapped the repo's first components, e.g.
+    ``<root>/.github``, so the published dir was missing and eligible
+    for deletion). The listing is simulated as the probe sees it."""
+    prefix = _results_prefix()
+    # The listing is repo-root-relative (poisoned GIT_DIR view):
+    # paths under *root* are ``<prefix><run-dir>/<file>``, other
+    # repo paths are unrelated.
+    published_rel = (
+        f"{prefix}{TRACKED_PUBLISHED_DIR.name}/metrics.json\0"
+        f"{prefix}{TRACKED_PUBLISHED_DIR.name}/observations.jsonl\0"
+    )
+    listing = (published_rel
+               + ".github/workflows/ci.yml\0.gitignore\0")
+
+    def _fake_run(cmd, *a, **kw):
+        import types
+
+        if "ls-files" in cmd:
+            return types.SimpleNamespace(returncode=0, stdout=listing)
+        if "--show-prefix" in cmd:
+            # The poisoned view reports the repo root.
+            return types.SimpleNamespace(returncode=0, stdout="")
+        if "--is-inside-work-tree" in cmd:
+            return types.SimpleNamespace(returncode=0, stdout="true")
+        return types.SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(crunner.subprocess, "run", _fake_run)
+    tracked = crunner._tracked_result_dirs(RESULTS_ROOT)
+    assert tracked is not None, (
+        "AC1: the probe must not bail out on a poisoned GIT_DIR view")
+    assert TRACKED_PUBLISHED_DIR in tracked, (
+        "AC1: the committed published dir must survive a "
+        "repo-root-relative listing; the helper would hand the caller "
+        f"a set lacking it and the retention loop would rmtree it; "
+        f"got {tracked!r}")
+    for d in tracked:
+        assert d.parent == RESULTS_ROOT, (
+            f"AC1: every reported dir must sit directly under the "
+            f"results root; got {d!r}")
+    assert (RESULTS_ROOT / "packages") not in tracked
+    assert (RESULTS_ROOT / ".github") not in tracked
+
+
+def test_tracked_result_dirs_hostile_git_dir_env(monkeypatch):
+    """AC1 (real environment): with ``GIT_DIR`` exported to this
+    worktree's absolute git dir, the real probe must either report the
+    committed published dir with every dir under the results root, or
+    refuse the view and return None (delete nothing). It must never
+    return a set that lacks the published dir while still containing
+    dirs the retention loop would treat as the tracked set."""
+    git_dir = _repo_toplevel() / ".git"
+    monkeypatch.setenv("GIT_DIR", str(git_dir))
+    monkeypatch.delenv("GIT_WORK_TREE", raising=False)
+    tracked = crunner._tracked_result_dirs(RESULTS_ROOT)
+    assert tracked is None or (
+        TRACKED_PUBLISHED_DIR in tracked
+        and all(d.parent == RESULTS_ROOT for d in tracked)), (
+        "AC1: under an exported absolute GIT_DIR the helper must either "
+        "report the published dir (every dir under the results root) or "
+        f"return None; got {tracked!r}")
