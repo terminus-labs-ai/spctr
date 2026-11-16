@@ -41,6 +41,11 @@ logger = logging.getLogger(__name__)
 # payload killed mid-run.
 CLAIM_SENTINEL = "9999-12-31T23:59:59+00:00"
 
+# FR27/FR37: the agent payload's instruction cap.  One definition for both
+# the tool's create-time check and this store's load-time validity rule;
+# the tool imports it so a change to one cannot split the two (spc-1078).
+AGENT_INSTRUCTION_MAX = 4000
+
 # FR43: a stem is valid when it matches this (stems are lowercase;
 # uppercase stems are invalid files, never silently folded).
 _ID_STEM_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -346,8 +351,8 @@ class ScheduleStore:
         if payload_type == "agent":
             if not doc["body"].strip():
                 return None, "agent schedule has empty body", None
-            if len(doc["body"]) > 4000:
-                return None, "agent instruction exceeds 4000 characters", None
+            if len(doc["body"]) > AGENT_INSTRUCTION_MAX:
+                return None, f"agent instruction exceeds {AGENT_INSTRUCTION_MAX} characters", None
         # An explicit target agent renders as ``payload_agent``; the plain
         # ``agent`` key is the owning agent, never the payload target.
         if "payload_agent" in data and not isinstance(data["payload_agent"], str):

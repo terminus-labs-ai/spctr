@@ -20,16 +20,17 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from spctr.schedules.cron import CronParseError, parse_cron
-from spctr.schedules.store import Schedule, ScheduleStore
+from spctr.schedules.store import AGENT_INSTRUCTION_MAX, Schedule, ScheduleStore
 
 logger = logging.getLogger(__name__)
 
 # FR34: no schedule delivery (non-Discord interfaces).
 NO_INTERFACE_ERROR = "Error: Schedules need the Discord interface"
 
-# FR25: max payload sizes.
+# FR25: max command-payload size.  The agent-instruction cap (FR27) lives in
+# the store as ``AGENT_INSTRUCTION_MAX`` (imported above), so this create-time
+# check and the store's load-time validity rule cannot drift apart.
 COMMAND_MAX = 4000
-AGENT_INSTRUCTION_MAX = 4000
 
 # FR11: a channel naming the other platform is refused outright. Mirrors
 # the reminder tool's constant with the tool's own noun.
