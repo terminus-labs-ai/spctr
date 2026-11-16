@@ -550,6 +550,78 @@ class TestAC37AsyncFacades:
         assert await store.get_async("s1") is None
 
 
+class TestAC37Recovery:
+    def test_claimed_row_is_recovered_by_a_fresh_store(self, tmp_path):
+        """AC37-r1: a restart finds the schedule left at the claim sentinel."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule(next_run_at=NOW - timedelta(seconds=1)))
+        assert store.claim("s1") is True
+
+        # A restart: a fresh store object over the same directory.
+        fresh = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        recovered = fresh.recover_claimed(NOW)
+        assert [s.id for s in recovered] == ["s1"]
+        assert recovered[0].next_run_at == datetime.fromisoformat(SENTINEL)
+        assert recovered[0].status == "active"
+        assert recovered[0].agent == "miranda"
+        assert json.loads(recovered[0].payload)["command"] == "echo hi"
+
+    def test_recover_claimed_scopes_to_platform(self, tmp_path):
+        """AC37-r1: recovery honors the platform filter."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule(
+            platform="discord", next_run_at=NOW - timedelta(seconds=1)
+        ))
+        store.create(_make_schedule(
+            platform="zulip", next_run_at=NOW - timedelta(seconds=1)
+        ))
+        assert store.claim("s1") is True
+        assert store.claim("s2") is True
+
+        fresh = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        assert [s.id for s in fresh.recover_claimed(NOW, platform="discord")] == ["s1"]
+        assert [s.id for s in fresh.recover_claimed(NOW, platform="zulip")] == ["s2"]
+        assert [s.id for s in fresh.recover_claimed(NOW)] == ["s1", "s2"]
+
+    def test_unclaimed_due_and_future_rows_are_not_recovered(self, tmp_path):
+        """AC37-r1: only sentinel-stuck rows are recovered."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule(next_run_at=NOW - timedelta(seconds=1)))  # s1 due
+        store.create(_make_schedule(next_run_at=NOW + timedelta(days=1)))     # s2 future
+
+        fresh = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        assert fresh.recover_claimed(NOW) == []
+        # The due file is still live and due; the future one still waits.
+        assert [s.id for s in fresh.due(NOW)] == ["s1"]
+
+    @pytest.mark.asyncio
+    async def test_recover_claimed_async_matches_sync(self, tmp_path):
+        """AC37-r1: the async facade returns the same recovered row."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule(next_run_at=NOW - timedelta(seconds=1)))
+        assert store.claim("s1") is True
+
+        fresh = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        recovered = await fresh.recover_claimed_async(NOW)
+        assert [s.id for s in recovered] == ["s1"]
+        assert recovered[0].next_run_at == datetime.fromisoformat(SENTINEL)
+
+    def test_advance_after_run_clears_the_recovered_row(self, tmp_path):
+        """A recovered row leaves the recovery set once the engine advances it."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule(next_run_at=NOW - timedelta(seconds=1)))
+        assert store.claim("s1") is True
+
+        fresh = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        assert [s.id for s in fresh.recover_claimed(NOW)] == ["s1"]
+        nxt = NOW + timedelta(days=1)
+        fresh.advance_after_run("s1", nxt, NOW, "ok", None)
+        assert fresh.recover_claimed(NOW) == []
+        row = fresh.get("s1")
+        assert row.next_run_at == nxt
+        assert row.last_status == "ok"
+
+
 # ---------------------------------------------------------------------------
 # AC37-r2: custom schedules.store_path template honored end to end
 # ---------------------------------------------------------------------------
