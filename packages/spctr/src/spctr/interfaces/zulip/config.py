@@ -27,6 +27,7 @@ never exists in two copies.
 """
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -54,6 +55,17 @@ class ZulipConfig(BaseModel):
             active Session triggers only when it mentions the bot
             (:func:`mentions_bot`); a topic with an active Session needs no
             mention. Direct mode ignores it.
+        topic_owner_routing: Stream mode (spc-1071): when true, one owner bot
+            per topic. The owner is recorded per topic in-process: from the
+            topic's first message (one bounded fetch, cached whatever its
+            value), then from any message carrying a non-wildcard realm
+            mention — a mention resolving to this bot records ``self`` and
+            claims the topic; a mention of someone else records ``other``.
+            A message in a topic recorded ``other`` is dropped silently
+            before any trigger, Session or indicator work. A topic this bot
+            owns plays the mention exemption ``mention_only`` would
+            otherwise require. ``False`` — the default — is zero behavior
+            change anywhere. Direct mode ignores it.
         channels: Integer channel IDs admitted in stream mode. Empty admits
             every channel the event queue delivers (every public channel,
             plus private channels the bot is subscribed to); nonempty admits
@@ -103,6 +115,7 @@ class ZulipConfig(BaseModel):
     api_url: str | None = None
     users: list[int] = Field(default_factory=list)
     mention_only: bool = False
+    topic_owner_routing: bool = False
     channels: list[int] = Field(default_factory=list)
     channel_areas: dict[str, str] = Field(default_factory=dict)
     mode: str = "stream"
@@ -205,6 +218,50 @@ def mentions_bot(
         for prefix in ("@", "@_")
         for name in names
     )
+
+
+#: One realm-mention operand inside ``@**X**`` / ``@_**X**`` (spc-1071).
+_REALM_MENTION_RE = re.compile(r"@_?\*\*([^*]+?)\*\*")
+
+#: Wildcard mention targets: they name no user and are never ownership
+#: material (same set spc-1013 documents for ``mention_only``).
+_WILDCARD_MENTION_NAMES = frozenset(
+    {"all", "everyone", "channel", "stream", "topic"}
+)
+
+
+def mentions_other(
+    content: str, *, full_name: str | None, user_id: int | None
+) -> bool:
+    """True when *content* mentions a realm identity that is not this bot.
+
+    Classification is by mention SYNTAX alone (spc-1071) — no realm
+    roster: every ``@**X**``/``@_**X**`` operand ``X`` (``<name>`` or
+    ``<name>|<id>``) is checked against this bot's identity. ``X``
+    resolves to this bot when it equals ``full_name``, equals
+    ``full_name|user_id``, or carries a ``|user_id`` suffix — the ID is
+    authoritative in Zulip's mention form. A wildcard name
+    (``all``/``everyone``/``channel``/``stream``/``topic``) names no user
+    and never counts. User-group syntax (``@*group*``, single asterisks)
+    and plain typed ``@name`` are not realm mentions and never match.
+    """
+    for match in _REALM_MENTION_RE.finditer(content):
+        target = match.group(1)
+        name, sep, suffix = target.partition("|")
+        if name in _WILDCARD_MENTION_NAMES:
+            continue
+        if full_name and target == full_name:
+            continue
+        if (
+            full_name
+            and user_id is not None
+            and target == f"{full_name}|{user_id}"
+        ):
+            continue
+        if sep and user_id is not None and suffix == str(user_id):
+            continue
+        return True
+    return False
 
 
 def is_configured_no_area_channel(

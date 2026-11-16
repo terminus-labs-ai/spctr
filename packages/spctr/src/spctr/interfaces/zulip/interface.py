@@ -47,6 +47,24 @@ whole-config reload:
   ``realm_users``/``user_id``) never do, and unadmitted channels are
   ignored without model work. With ``mention_only`` a topic with no active
   Session starts only on a mention of the bot (spc-1013).
+- With ``topic_owner_routing`` (spc-1071) one owner bot answers per topic:
+  the first event for an unrecorded topic resolves that topic's opener
+  (its oldest message, one bounded fetch via ``anchor: "oldest"``) and
+  records the owner — ``self`` when the opener mentions this bot,
+  ``other`` when it mentions a non-wildcard realm identity that is not
+  this bot, ``unowned`` when it carries no such mention or was itself
+  bot-/self-authored. The same mention rule then applies to every later
+  message in a recorded topic: a message mentioning this bot re-records
+  ``self``, a message mentioning only someone else re-records ``other``,
+  and an untagged message changes nothing. A message in a topic recorded
+  ``other`` is dropped silently before the ``!stop`` check, the Session
+  probe, the ``mention_only`` gate and the indicator; a topic recorded
+  ``self`` plays the role an active Session plays for ``mention_only``.
+  A failed opener fetch records nothing — not even a claim from the
+  trigger message itself — and evaluation proceeds as today (fail-open:
+  a transport error is never a lockout, and the next event retries the
+  fetch). The map is in-process, survives whole-config reloads, and
+  clears on restart.
 - An admitted turn posts ``thinking_message`` in its topic before the
   model call, streams through ``Session.stream_message``, and the answer
   (or ``error_message``) replaces the placeholder by edit, chunked past
@@ -68,6 +86,7 @@ whole-config reload:
 from __future__ import annotations
 
 import asyncio
+import enum
 import logging
 import time
 import urllib.parse
@@ -97,6 +116,7 @@ from spctr.interfaces.zulip.config import (
     bot_ids_from_registration,
     is_configured_no_area_channel,
     mentions_bot,
+    mentions_other,
     resolve_channel_area,
     validate_no_area_only_routing,
 )
@@ -236,6 +256,69 @@ def topic_frame_id(agent_name: str, origin: str, channel_id: int, topic: str) ->
     return f"zulip:{agent_name}:{origin}#{channel_id}#{escaped}"
 
 
+class TopicOwner(enum.Enum):
+    """Who owns one Zulip topic under ``topic_owner_routing`` (spc-1071)."""
+
+    SELF = "self"
+    OTHER = "other"
+    UNOWNED = "unowned"
+
+
+def _claimed_owner(
+    content: Any, *, full_name: str | None, user_id: int | None
+) -> TopicOwner | None:
+    """The owner one message's content claims, or None for no claim.
+
+    The ONE per-message ownership rule (spc-1071): the topic's opener
+    goes through :func:`classify_topic_opener` and every later message in
+    a recorded topic through the routing block — a mention resolving to
+    this bot claims the topic for itself (``self``); any other
+    non-wildcard realm mention hands it to someone else (``other``); no
+    realm mention claims nothing.
+    """
+    if not isinstance(content, str):
+        return None
+    if mentions_bot(content, full_name=full_name, user_id=user_id):
+        return TopicOwner.SELF
+    if mentions_other(content, full_name=full_name, user_id=user_id):
+        return TopicOwner.OTHER
+    return None
+
+
+def classify_topic_opener(
+    opener: dict[str, Any],
+    *,
+    full_name: str | None,
+    user_id: int | None,
+    bot_ids: set[int],
+) -> TopicOwner:
+    """Ownership class of a topic's opener (spc-1071, Diego's rule 2026-11-15).
+
+    The realm-mention syntax is exactly spc-1013's (see
+    :func:`spctr.interfaces.zulip.config.mentions_bot` and
+    :func:`mentions_other`): literal ``@**<name>**`` /
+    ``@**<name>|<id>**`` or the silent ``@_**…**`` form of either; plain
+    typed ``@edi`` is no mention, and a wildcard (``@**all**``,
+    ``@**everyone**``, ...) names no user and is never ownership
+    material. The opener goes through the same per-message claim rule as
+    every later message — self-mention → ``self``, other mention →
+    ``other``, none → ``unowned`` — with one addition: an opener sent by
+    a bot or by this very account (the loop-guard classes) never
+    establishes ``other`` and classifies ``unowned``.
+    """
+    sender_id = opener.get("sender_id")
+    if isinstance(sender_id, int) and (
+        sender_id in bot_ids or sender_id == user_id
+    ):
+        return TopicOwner.UNOWNED
+    claimed = _claimed_owner(
+        opener.get("content"), full_name=full_name, user_id=user_id
+    )
+    if claimed is None:
+        return TopicOwner.UNOWNED
+    return claimed
+
+
 class ZulipInterface:
     """Zulip chat interface for SR2 spctr (area routing + live reload)."""
 
@@ -307,6 +390,10 @@ class ZulipInterface:
         # distinct topics run concurrently.
         self._topic_tails: dict[str, asyncio.Task[None]] = {}
         self._topic_tasks: dict[str, set[asyncio.Task[None]]] = {}
+        # (stream_id, topic) -> TopicOwner under topic_owner_routing
+        # (spc-1071). In-process like the Session map above: survives
+        # whole-config reloads, cleared on restart.
+        self._topic_owners: dict[tuple[int, str], TopicOwner] = {}
         # Serializes delivery-loop restarts now that turns overlap.
         self._reminders_lock = asyncio.Lock()
         # Reminders (spc-139, FR6): delivery loop + the per-turn origin.
@@ -750,6 +837,39 @@ class ZulipInterface:
             bot_user_id=self._bot_user_id,
         )
 
+    async def _topic_opener(
+        self, channel_id: int, topic: str
+    ) -> dict[str, Any] | None:
+        """The topic's oldest message, or None when the lookup failed.
+
+        One bounded fetch (``anchor: "oldest"``, the client's request
+        timeout applies). ANY failure — a transport exception, an empty
+        answer, or a malformed first entry — is one warning and a fail-open
+        ``None``: the caller records nothing (not even a claim from the
+        trigger message itself), evaluates as today, and the next event
+        retries the fetch. A lookup failure is never a lockout.
+        """
+        try:
+            response = await self._client.get_topic_opener(channel_id, topic)
+            messages = (
+                response.get("messages") if isinstance(response, dict) else None
+            )
+            opener = messages[0] if isinstance(messages, list) and messages else None
+            if not (
+                isinstance(opener, dict)
+                and isinstance(opener.get("id"), int)
+            ):
+                raise TypeError("opener answer carries no message with an id")
+        except Exception as exc:  # noqa: BLE001 — fail-open by contract (spc-1071)
+            logger.warning(
+                "Topic opener lookup failed for channel %s topic %r (fail-open): %s",
+                channel_id,
+                topic,
+                exc,
+            )
+            return None
+        return opener
+
     async def _handle_message(
         self,
         message: dict[str, Any],
@@ -774,6 +894,42 @@ class ZulipInterface:
         channel_id = message["stream_id"]
         message_id = message["id"]
         topic = str(message.get("subject", ""))
+        # Topic ownership (spc-1071): before ANY turn machinery — the
+        # !stop command, the area/frame resolution, the Session probe, the
+        # mention_only gate and the indicator all sit behind this block.
+        # With the flag off (the default) nothing here runs: byte-for-byte
+        # the pre-bead route.
+        if config.topic_owner_routing:
+            key = (channel_id, topic)
+            if key not in self._topic_owners:
+                opener = await self._topic_opener(channel_id, topic)
+                if opener is not None:
+                    # One fetch per topic per process: the recorded value
+                    # is cached whatever it is.
+                    self._topic_owners[key] = classify_topic_opener(
+                        opener,
+                        full_name=self._bot_full_name,
+                        user_id=self._bot_user_id,
+                        bot_ids=self._bot_ids,
+                    )
+            if key in self._topic_owners:
+                # The same per-message claim rule the opener went
+                # through: a self-mention claims the topic, a mention of
+                # someone else hands it away, anything else changes
+                # nothing. A failed opener lookup recorded nothing, so
+                # this message's own mentions are not consulted either —
+                # it routes exactly as today.
+                claimed = _claimed_owner(
+                    message.get("content"),
+                    full_name=self._bot_full_name,
+                    user_id=self._bot_user_id,
+                )
+                if claimed is not None:
+                    self._topic_owners[key] = claimed
+                if self._topic_owners[key] is TopicOwner.OTHER:
+                    # Another bot owns this topic: silent drop, no
+                    # Session probe, no reply, no indicator.
+                    return
         if is_stop_command(str(message.get("content", ""))):
             await self._stop_topic(channel_id, topic)
             return
@@ -801,7 +957,15 @@ class ZulipInterface:
             # mention_only (Discord parity): a topic with no active
             # Session starts only on a mention of the bot; a topic
             # that already has one needs none. No probe, no reply.
-            return
+            # With topic_owner_routing (spc-1071) a topic recorded
+            # ``self`` plays that same exemption: this bot owns the
+            # topic, so its follow-ups need no mention.
+            if not (
+                config.topic_owner_routing
+                and self._topic_owners.get((channel_id, topic))
+                is TopicOwner.SELF
+            ):
+                return
         if entry is None:
             # Admit-and-remember only on success. The topic chain covers
             # probe and turn. Eligible siblings from this batch are fresh
