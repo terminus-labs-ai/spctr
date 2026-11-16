@@ -261,9 +261,10 @@ class TestAC4NoteWarningStop:
         next request tools=None, reason filled, one final_answer event with
         reason "repeat" — with no final_answer config block at all.
 
-        The stop note is checked against a custom note that includes
-        ``{repeat}``, so the repeat-3 form is distinguishable from the
-        repeat-2 form (the default note has no ``{repeat}``)."""
+        The stop note is the repeat-3 form of a custom note that includes
+        ``{repeat}``, and is asserted to differ from its repeat-2 form
+        (the default note has no ``{repeat}``, so the two would be
+        indistinguishable)."""
         custom_note = "DUP {first_call} r{repeat} END"
         script = {"c1": "1 failed", "c2": "1 failed", "c3": "1 failed", "c4": "1 failed"}
         events, llm, executor = await _run_turn(
@@ -274,18 +275,20 @@ class TestAC4NoteWarningStop:
 
         assert executor.order == ["c1", "c2", "c3", "c4"]
         assert len(llm.stream_calls) == 5, "4 iterations plus exactly one forced call"
-        # The forced call re-sends the pre-forced request: its history ends
-        # with the stop note, and the forced pair never reaches the LLM.
-        pre_forced = llm.stream_calls[3]
-        stop_note = pre_forced.messages[-1].content[-1].content
-        # The stop note's custom-note part is the repeat-2 form (the warning
-        # belongs to the repeat whose count equals notes_before_stop == 2),
-        # plus the repeat-2 warning, and it is distinguishable from the
-        # repeat-1 form because the custom note carries {repeat}.
-        assert stop_note == _note(1, 2, custom_note) + DEFAULT_REPEAT_WARNING.format(repeat=2)
-        assert stop_note != _note(1, 1, custom_note) + DEFAULT_REPEAT_WARNING.format(repeat=2)
-        assert stop_note.endswith(DEFAULT_REPEAT_WARNING.format(repeat=2))
         forced_request = llm.stream_calls[4]
+        # The forced request pairs c4 (the stop call, repeat 3) with its
+        # stop note. Repeat 3 is not notes_before_stop (2), so no warning
+        # is appended: the note is exactly the repeat-3 form, and it is
+        # distinguishable from the repeat-2 form because the custom note
+        # carries {repeat}.
+        c4_result = next(
+            block.content
+            for message in forced_request.messages
+            for block in message.content
+            if isinstance(block, ToolResultBlock) and block.tool_use_id == "c4"
+        )
+        assert c4_result == custom_note.format(first_call=1, repeat=3)
+        assert c4_result != custom_note.format(first_call=1, repeat=2)
         assert forced_request.tools is None
         instruction = "".join(
             b.text
@@ -657,7 +660,7 @@ class TestAC6ResetsDisabledAndEvents:
 class TestAC1ThresholdsMetaFallbackDisabled:
     @pytest.mark.asyncio
     async def test_ac1_c_non_default_thresholds_note_at_4_stop_at_5(self):
-        """AC1(c): ``notes_before_stop=3, max_identical_calls=5`` — X ×6
+        """AC1(c): ``notes_before_stop=3, max_identical_calls=5`` — X ×5
         (same). A guard hardcoded to the defaults (2 / 10) would stop at call
         4 and emit a warning on repeat 2; here the warning lands at call 4
         (repeat 3) and the stop at call 5 (repeat 4). Pinned by the full
@@ -685,8 +688,6 @@ class TestAC1ThresholdsMetaFallbackDisabled:
                 "c2": _note(1, 1),
                 "c3": _note(1, 2),
                 "c4": _note(1, 3) + DEFAULT_REPEAT_WARNING.format(repeat=3),
-                # The stop note carries the warning's repeat (3), per the
-                # note-plus-warning shape pinned by test_ac4_r3.
                 # The stop note carries the warning's repeat (3), per the
                 # note-plus-warning shape pinned by test_ac4_r3.
                 "c5": _note(1, 4),
