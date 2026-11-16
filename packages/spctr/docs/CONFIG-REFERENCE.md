@@ -617,7 +617,7 @@ queue — it fetches no history and makes no model request.
   topic with no active Session starts only on a mention of the bot's
   registration `full_name`. With `topic_owner_routing`, one owner bot
   answers per topic: the topic's first message decides the initial owner
-  and a later mention of anyone else hands the topic over, so two bots
+  and a later mention of another bot hands the topic over, so two bots
   sharing a channel never both answer in one topic. A `channels`,
   `users`, `mention_only` or `topic_owner_routing` edit
   on disk applies to the next event batch without a restart.
