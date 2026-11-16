@@ -52,19 +52,21 @@ whole-config reload:
   (its oldest message, one bounded fetch via ``anchor: "oldest"``) and
   records the owner — ``self`` when the opener mentions this bot,
   ``other`` when it mentions a non-wildcard realm identity that is not
-  this bot, ``unowned`` when it carries no such mention or was itself
-  bot-/self-authored. The same mention rule then applies to every later
-  message in a recorded topic: a message mentioning this bot re-records
-  ``self``, a message mentioning only someone else re-records ``other``,
-  and an untagged message changes nothing. A message in a topic recorded
-  ``other`` is dropped silently before the ``!stop`` check, the Session
-  probe, the ``mention_only`` gate and the indicator; a topic recorded
-  ``self`` plays the role an active Session plays for ``mention_only``.
-  A failed opener fetch records nothing — not even a claim from the
-  trigger message itself — and evaluation proceeds as today (fail-open:
-  a transport error is never a lockout, and the next event retries the
-  fetch). The map is in-process, survives whole-config reloads, and
-  clears on restart.
+  this bot (a human's included), ``unowned`` when it carries no such
+  mention or was itself bot-/self-authored. After the opener only BOT
+  mentions move the owner (Diego ruling 2026-11-16): a later message
+  mentioning this bot re-records ``self``, one mentioning another
+  registered bot (by name or ``|id``) re-records ``other``, and a
+  mention of a human — a quote-reply ``@_**Name|id** [said]``
+  attribution included — or an untagged message changes nothing. A
+  message in a topic recorded ``other`` is dropped silently before the
+  ``!stop`` check, the Session probe, the ``mention_only`` gate and the
+  indicator; a topic recorded ``self`` plays the role an active Session
+  plays for ``mention_only``. A failed opener fetch records nothing —
+  not even a claim from the trigger message itself — and evaluation
+  proceeds as today (fail-open: a transport error is never a lockout,
+  and the next event retries the fetch). The map is in-process, survives
+  whole-config reloads, and clears on restart.
 - An admitted turn posts ``thinking_message`` in its topic before the
   model call, streams through ``Session.stream_message``, and the answer
   (or ``error_message``) replaces the placeholder by edit, chunked past
@@ -114,9 +116,11 @@ from spctr.interfaces.zulip.client import (
 from spctr.interfaces.zulip.config import (
     ZulipConfig,
     bot_ids_from_registration,
+    bot_names_from_registration,
     is_configured_no_area_channel,
     mentions_bot,
     mentions_other,
+    mentions_other_bot,
     resolve_channel_area,
     validate_no_area_only_routing,
 )
@@ -265,22 +269,34 @@ class TopicOwner(enum.Enum):
 
 
 def _claimed_owner(
-    content: Any, *, full_name: str | None, user_id: int | None
+    content: Any,
+    *,
+    full_name: str | None,
+    user_id: int | None,
+    bot_ids: set[int],
+    bot_names: set[str],
 ) -> TopicOwner | None:
-    """The owner one message's content claims, or None for no claim.
+    """The owner a LATER message's content claims, or None for no change
+    (spc-1071, Diego ruling 2026-11-16).
 
-    The ONE per-message ownership rule (spc-1071): the topic's opener
-    goes through :func:`classify_topic_opener` and every later message in
-    a recorded topic through the routing block — a mention resolving to
-    this bot claims the topic for itself (``self``); any other
-    non-wildcard realm mention hands it to someone else (``other``); no
-    realm mention claims nothing.
+    Applied by the routing block to every message in a recorded topic: a
+    mention resolving to this bot claims the topic for itself
+    (``self``); a mention of ANOTHER BOT — a registered bot identity by
+    name or ``|id`` — hands it over (``other``); a mention of a human —
+    Zulip's quote-reply ``@_**Name|id** [said]`` attribution included —
+    and an untagged message change nothing.
     """
     if not isinstance(content, str):
         return None
     if mentions_bot(content, full_name=full_name, user_id=user_id):
         return TopicOwner.SELF
-    if mentions_other(content, full_name=full_name, user_id=user_id):
+    if mentions_other_bot(
+        content,
+        full_name=full_name,
+        user_id=user_id,
+        bot_ids=bot_ids,
+        bot_names=bot_names,
+    ):
         return TopicOwner.OTHER
     return None
 
@@ -300,23 +316,26 @@ def classify_topic_opener(
     ``@**<name>|<id>**`` or the silent ``@_**…**`` form of either; plain
     typed ``@edi`` is no mention, and a wildcard (``@**all**``,
     ``@**everyone**``, ...) names no user and is never ownership
-    material. The opener goes through the same per-message claim rule as
-    every later message — self-mention → ``self``, other mention →
-    ``other``, none → ``unowned`` — with one addition: an opener sent by
-    a bot or by this very account (the loop-guard classes) never
-    establishes ``other`` and classifies ``unowned``.
+    material. Unlike the later-message rule (:func:`_claimed_owner`),
+    ANY non-wildcard mention decides an opener — a human's included: a
+    mention resolving to this bot records ``self``, any other records
+    ``other``, none records ``unowned``. An opener sent by a bot or by
+    this very account (the loop-guard classes) always records
+    ``unowned``.
     """
     sender_id = opener.get("sender_id")
     if isinstance(sender_id, int) and (
         sender_id in bot_ids or sender_id == user_id
     ):
         return TopicOwner.UNOWNED
-    claimed = _claimed_owner(
-        opener.get("content"), full_name=full_name, user_id=user_id
-    )
-    if claimed is None:
+    content = opener.get("content")
+    if not isinstance(content, str):
         return TopicOwner.UNOWNED
-    return claimed
+    if mentions_bot(content, full_name=full_name, user_id=user_id):
+        return TopicOwner.SELF
+    if mentions_other(content, full_name=full_name, user_id=user_id):
+        return TopicOwner.OTHER
+    return TopicOwner.UNOWNED
 
 
 class ZulipInterface:
@@ -379,8 +398,11 @@ class ZulipInterface:
         # fetched topic history") without making the new topic look
         # populated. Refused triggers never join: they stay prior content.
         self._admitted_ids: set[int] = set()
-        # Bot user IDs from registration realm metadata (see _read_bot_ids).
+        # Bot user IDs and full names from registration realm metadata
+        # (see _read_bot_ids / bot_names_from_registration); the names let
+        # the ownership rule recognize a mention of another bot.
         self._bot_ids: set[int] = set()
+        self._bot_names: set[str] = set()
         # The bot's own account (registration ``user_id``/``full_name``):
         # never a trigger, and the name a mention_only message must mention.
         self._bot_user_id: int | None = None
@@ -440,6 +462,7 @@ class ZulipInterface:
         self._queue_id: str = str(registration["queue_id"])
         self._last_event_id: int = int(registration["last_event_id"])
         self._bot_ids = self._read_bot_ids(registration)
+        self._bot_names = bot_names_from_registration(registration)
         own_id = registration.get("user_id")
         self._bot_user_id = own_id if isinstance(own_id, int) else None
         full_name = registration.get("full_name")
@@ -913,16 +936,18 @@ class ZulipInterface:
                         bot_ids=self._bot_ids,
                     )
             if key in self._topic_owners:
-                # The same per-message claim rule the opener went
-                # through: a self-mention claims the topic, a mention of
-                # someone else hands it away, anything else changes
-                # nothing. A failed opener lookup recorded nothing, so
-                # this message's own mentions are not consulted either —
-                # it routes exactly as today.
+                # The later-message claim rule (ruling 2026-11-16): a
+                # self-mention claims the topic, a mention of another
+                # bot hands it away, and a human mention or an untagged
+                # message changes nothing. A failed opener lookup
+                # recorded nothing, so this message's own mentions are
+                # not consulted either — it routes exactly as today.
                 claimed = _claimed_owner(
                     message.get("content"),
                     full_name=self._bot_full_name,
                     user_id=self._bot_user_id,
+                    bot_ids=self._bot_ids,
+                    bot_names=self._bot_names,
                 )
                 if claimed is not None:
                     self._topic_owners[key] = claimed

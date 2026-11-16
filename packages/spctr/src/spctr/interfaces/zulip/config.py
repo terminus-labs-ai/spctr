@@ -28,6 +28,7 @@ never exists in two copies.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -58,14 +59,16 @@ class ZulipConfig(BaseModel):
         topic_owner_routing: Stream mode (spc-1071): when true, one owner bot
             per topic. The owner is recorded per topic in-process: from the
             topic's first message (one bounded fetch, cached whatever its
-            value), then from any message carrying a non-wildcard realm
-            mention — a mention resolving to this bot records ``self`` and
-            claims the topic; a mention of someone else records ``other``.
-            A message in a topic recorded ``other`` is dropped silently
-            before any trigger, Session or indicator work. A topic this bot
-            owns plays the mention exemption ``mention_only`` would
-            otherwise require. ``False`` — the default — is zero behavior
-            change anywhere. Direct mode ignores it.
+            value — any non-wildcard realm mention decides it), then from
+            later BOT mentions only — a mention resolving to this bot
+            records ``self`` and claims the topic, a mention of another
+            registered bot records ``other``, and a mention of a human
+            changes nothing. A message in a topic recorded ``other`` is
+            dropped silently before any trigger, Session or indicator work.
+            A topic this bot owns plays the mention exemption
+            ``mention_only`` would otherwise require. ``False`` — the
+            default — is zero behavior change anywhere. Direct mode
+            ignores it.
         channels: Integer channel IDs admitted in stream mode. Empty admits
             every channel the event queue delivers (every public channel,
             plus private channels the bot is subscribed to); nonempty admits
@@ -230,37 +233,78 @@ _WILDCARD_MENTION_NAMES = frozenset(
 )
 
 
-def mentions_other(
+def _realm_mention_targets(
     content: str, *, full_name: str | None, user_id: int | None
-) -> bool:
-    """True when *content* mentions a realm identity that is not this bot.
+) -> Iterator[tuple[str, int | None]]:
+    """Yield ``(name, id-or-None)`` per realm-mention operand in *content*
+    that is neither a wildcard nor this bot (spc-1071).
 
-    Classification is by mention SYNTAX alone (spc-1071) — no realm
-    roster: every ``@**X**``/``@_**X**`` operand ``X`` (``<name>`` or
-    ``<name>|<id>``) is checked against this bot's identity. ``X``
-    resolves to this bot when it equals ``full_name``, equals
-    ``full_name|user_id``, or carries a ``|user_id`` suffix — the ID is
-    authoritative in Zulip's mention form. A wildcard name
-    (``all``/``everyone``/``channel``/``stream``/``topic``) names no user
-    and never counts. User-group syntax (``@*group*``, single asterisks)
-    and plain typed ``@name`` are not realm mentions and never match.
+    Classification is by mention SYNTAX alone: every ``@**X**`` /
+    ``@_**X**`` operand ``X`` (``<name>`` or ``<name>|<id>``) yields its
+    display name and parsed ``|id`` unless it is a wildcard name
+    (``all``/``everyone``/``channel``/``stream``/``topic`` — names no
+    user) or resolves to this bot exactly as :func:`mentions_bot`
+    resolves it — ``X == full_name`` or ``X == full_name|user_id`` — so
+    the two functions can never disagree. User-group syntax
+    (``@*group*``, single asterisks) and plain typed ``@name`` are not
+    realm mentions and never match.
     """
     for match in _REALM_MENTION_RE.finditer(content):
         target = match.group(1)
         name, sep, suffix = target.partition("|")
         if name in _WILDCARD_MENTION_NAMES:
             continue
-        if full_name and target == full_name:
-            continue
-        if (
-            full_name
-            and user_id is not None
-            and target == f"{full_name}|{user_id}"
+        if full_name and (
+            target == full_name
+            or (user_id is not None and target == f"{full_name}|{user_id}")
         ):
             continue
-        if sep and user_id is not None and suffix == str(user_id):
-            continue
-        return True
+        yield name, int(suffix) if sep and suffix.isdigit() else None
+
+
+def mentions_other(
+    content: str, *, full_name: str | None, user_id: int | None
+) -> bool:
+    """True when *content* mentions a realm identity that is not this bot.
+
+    Any non-wildcard realm-mention target that does not resolve to this
+    bot counts (:func:`_realm_mention_targets`): a human's mention as
+    well as another bot's — the OPENER rule (spc-1071).
+    """
+    return any(
+        _realm_mention_targets(
+            content, full_name=full_name, user_id=user_id
+        )
+    )
+
+
+def mentions_other_bot(
+    content: str,
+    *,
+    full_name: str | None,
+    user_id: int | None,
+    bot_ids: set[int],
+    bot_names: set[str],
+) -> bool:
+    """True when *content* mentions a realm identity that is ANOTHER BOT.
+
+    The later-message hand-over rule (spc-1071, Diego ruling 2026-11-16):
+    a mention target counts when its ``|id`` is a registered bot other
+    than this one (``bot_ids`` minus ``user_id`` itself) or its name is
+    a registered bot name (``bot_names``; the own name is already out by
+    the shared target rule). A human mention is never a hand-over.
+    """
+    for name, target_id in _realm_mention_targets(
+        content, full_name=full_name, user_id=user_id
+    ):
+        if name in bot_names:
+            return True
+        if (
+            target_id is not None
+            and target_id != user_id
+            and target_id in bot_ids
+        ):
+            return True
     return False
 
 
@@ -354,6 +398,28 @@ def bot_ids_from_registration(registration: dict) -> set[int]:
             if isinstance(bot_id, int):
                 bot_ids.add(bot_id)
     return bot_ids
+
+
+def bot_names_from_registration(registration: dict) -> set[str]:
+    """Collect bot full names from registration realm metadata (spc-1071).
+
+    The name twin of :func:`bot_ids_from_registration`, over the same
+    data source: ``realm_users`` entries with ``is_bot`` carry every
+    bot's ``full_name`` (the mention syntax names users by full name),
+    and ``realm_bots`` entries may carry one too.
+    """
+    names: set[str] = set()
+    for entry in registration.get("realm_users") or []:
+        if (
+            isinstance(entry, dict)
+            and entry.get("is_bot") is True
+            and isinstance(entry.get("full_name"), str)
+        ):
+            names.add(entry["full_name"])
+    for entry in registration.get("realm_bots") or []:
+        if isinstance(entry, dict) and isinstance(entry.get("full_name"), str):
+            names.add(entry["full_name"])
+    return names
 
 
 def validate_direct_mode(config: ZulipConfig) -> None:
