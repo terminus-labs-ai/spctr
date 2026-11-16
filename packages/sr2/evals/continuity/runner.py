@@ -19,9 +19,11 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import logging
 import math
 import os
 import re
+import shutil
 import subprocess
 import time
 from dataclasses import dataclass
@@ -37,6 +39,8 @@ from sr2.orchestrator import SR2
 from sr2.pipeline.provenance import Entry, EntryOrigin
 from sr2.pipeline.token_counting import CharacterTokenCounter
 from sr2.tokenization.counting import count_tokens
+
+logger = logging.getLogger(__name__)
 
 _PKG_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _PKG_DIR.parents[1]
@@ -87,7 +91,8 @@ _LATENCY_PINNED_MEDIAN = 0.02
 _LATENCY_P95_RATIO = 1.5
 
 #: How many published run dirs the default results tree retains (the run
-#: is deterministic; superseded dirs are reproducible from Git).
+#: is deterministic; superseded untracked dirs are reproducible from Git;
+#: Git-tracked run dirs are never removed — see _tracked_result_dirs).
 _PUBLISHED_RUN_RETENTION = 1
 
 
@@ -381,6 +386,30 @@ def latency_stats(runs: Sequence[Sequence[float]]) -> dict:
 def load_pricing() -> dict:
     """The parsed pinned ``evals/continuity/pricing.json`` (no network)."""
     return json.loads(PRICING_PATH.read_text())
+
+
+def _tracked_result_dirs(root: Path) -> set[Path] | None:
+    """Top-level run dirs tracked by Git under *root* (``git ls-files``).
+
+    Output paths are relative to the command's directory, so each listed
+    path's first component names a dir under *root*. Returns ``None``
+    when Git is unavailable or *root* is not inside a repository — the
+    caller must then remove nothing (unknown is not "untracked").
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "-z", "--", "."],
+            capture_output=True,
+        )
+    except OSError:
+        return None
+    if proc.returncode != 0:
+        return None
+    dirs: set[Path] = set()
+    for name in proc.stdout.decode("utf-8", "surrogateescape").split("\0"):
+        if name:
+            dirs.add(root / name.split("/", 1)[0])
+    return dirs
 
 
 # ---------------------------------------------------------------------------
@@ -840,16 +869,32 @@ def run_baseline(output_root: Path | None = None) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     if root.resolve() == DEFAULT_OUTPUT_ROOT.resolve():
         # Keep the versioned results tree on disk only for the latest run
-        # identity; superseded run dirs are reproducible from Git + this
-        # runner. A pinned published run is removed once the results dir
-        # grows past this many entries (see docs/evals/continuity-baseline.md).
-        stale = sorted((d for d in root.iterdir()
-                        if d.is_dir() and d.name != run_dir.name),
-                       key=lambda d: d.stat().st_mtime)
-        while len(stale) >= _PUBLISHED_RUN_RETENTION:
-            import shutil
-
-            shutil.rmtree(stale.pop(0))
+        # identity; superseded untracked run dirs are reproducible from Git
+        # + this runner. Git-tracked run dirs (published, committed
+        # results) are never removed, so a local re-run under a different
+        # run id cannot delete a committed artifact (see
+        # docs/evals/continuity-baseline.md).
+        tracked = None
+        try:
+            tracked = _tracked_result_dirs(root)
+        except OSError:
+            # Probe unavailable (e.g. git not installed).
+            pass
+        if tracked is None:
+            # Git unavailable / not a repository: deleting untracked-vs-
+            # tracked is indistinguishable — remove nothing.
+            logger.warning(
+                "continuity baseline: could not determine Git-tracked "
+                "results dirs under %s; skipping retention cleanup", root,
+            )
+        else:
+            stale = sorted(
+                (d for d in root.iterdir()
+                 if d.is_dir() and d.name != run_dir.name
+                 and d not in tracked),
+                key=lambda d: d.stat().st_mtime)
+            while len(stale) >= _PUBLISHED_RUN_RETENTION:
+                shutil.rmtree(stale.pop(0))
 
     pricing = load_pricing()
     observations: list[dict] = []

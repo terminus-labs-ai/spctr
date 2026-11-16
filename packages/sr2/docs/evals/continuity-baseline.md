@@ -25,7 +25,9 @@ PYTHONPATH=src python -m evals.continuity.runner
 Writes `evals/continuity/results/<run-id>/observations.jsonl` and
 `metrics.json`. `<run-id>` is `<corpus-tree-sha>+<sr2-tree-sha>` —
 git-derived from this checkout (a dirty worktree hashes its tree instead
-of HEAD). To refresh the measured latency figures:
+of HEAD), so the directory name identifies the checkout that published
+it; the published metrics reproduce from any checkout of the same
+committed inputs. To refresh the measured latency figures:
 
 ```
 CONTINUITY_MEASURE_LATENCY=1 PYTHONPATH=src python -m evals.continuity.runner
@@ -36,10 +38,21 @@ CONTINUITY_MEASURE_LATENCY=1 PYTHONPATH=src python -m evals.continuity.runner
 Run id:
 `3a9dbbe8aa119c05afc64314c16fff96dee484c2+d57260125844fed9e30fba4ab04db5ab32b93a00abe5d382fb1e338660490deb`
 
+The run id names the publishing checkout's tree hashes
+(`<corpus-tree-sha>+<sr2-tree-sha>`), so this committed directory name
+reproduces byte for byte only from that checkout; at other commits (or a
+dirty worktree) `run_id()` yields a different directory name. The
+*metrics* are reproducible from any checkout at the same inputs: re-run
+from an identical checkout and `metrics.json` matches the table below
+byte for byte.
+
 Two consecutive publications produced byte-identical `metrics.json`
 (sha256 `168f6ee246258d3341048d87d97a1199b8b4cecbde14450321a0b36fb1fff905`);
 exactly one run directory is retained (retention constant
-`_PUBLISHED_RUN_RETENTION = 1`).
+`_PUBLISHED_RUN_RETENTION = 1`). Git-tracked run directories are never
+removed by retention, so a local re-run under a different run id cannot
+delete this committed directory; if Git is unavailable the retention
+step removes nothing and logs a warning.
 
 ### Raw per-scenario numbers (60 observations = 10 single-turn scenarios
 × 5 runs = 50, plus the cage-composition fixture's 5 runs × 2 retrieval
