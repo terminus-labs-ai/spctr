@@ -13,6 +13,7 @@ Identities: human Diego user_id 5; bots 101 (EDI) and 102 (Miranda).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -61,6 +62,7 @@ class _FakeSession:
     def __init__(self) -> None:
         self.context: Any = None
         self.turns: list[str] = []
+        self.active_handoff: Any = None
 
     def set_run_context(self, context: Any) -> None:
         self.context = context
@@ -180,6 +182,20 @@ def _pair(topics: dict, *, edi_mention_only: bool = True,
 
 def _key(channel: int = CHANNEL, topic: str = TOPIC) -> tuple[int, str]:
     return (channel, topic)
+
+
+async def _settle(*ifaces: ZulipInterface) -> None:
+    """Await every task ``_dispatch`` spawned: the per-topic chains
+    (``_topic_tails``) plus the fire-and-forget ``!stop`` fast path."""
+    await asyncio.gather(
+        *(t for i in ifaces for t in i._topic_tails.values()),
+        *(
+            t
+            for t in asyncio.all_tasks()
+            if t is not asyncio.current_task() and not t.done()
+        ),
+        return_exceptions=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -584,6 +600,70 @@ async def test_later_human_mention_keeps_unowned():
     assert mir._topic_owners[_key()] is TopicOwner.UNOWNED
     assert ea.turns == []                    # mention_only still gates
     assert ma.turns == ["anyone?", "@**Diego** look"]
+
+
+# ---------------------------------------------------------------------------
+# The real poller path — _dispatch's !stop fast path is ownership-gated
+# (defect: _dispatch answered !stop before _handle_message ever ran)
+# ---------------------------------------------------------------------------
+
+
+async def test_stop_via_dispatch_dropped_for_non_owner():
+    """``!stop`` through ``_dispatch``: the non-owner's stop is dropped
+    with no reply; the owner's stop sends the stop reply."""
+    opener = _msg("@**EDI** first")
+    topics = {_key(): [opener]}
+    edi, ea, mir, ma = _pair(topics)
+
+    edi._dispatch(opener, set(), edi._config)
+    mir._dispatch(opener, set(), mir._config)
+    await _settle(edi, mir)
+    assert edi._topic_owners[_key()] is TopicOwner.SELF
+    assert mir._topic_owners[_key()] is TopicOwner.OTHER
+
+    mir._dispatch(_msg("!stop"), set(), mir._config)
+    await _settle(mir)
+    assert mir._client.sends == []          # no "nothing running" reply
+
+    before = len(edi._client.sends)
+    edi._dispatch(_msg("!stop"), set(), edi._config)
+    await _settle(edi)
+    assert [s["content"] for s in edi._client.sends[before:]] == [
+        edi._config.stop_idle_message
+    ]
+
+
+async def test_stop_via_dispatch_flag_off_unchanged():
+    """Flag off: ``_dispatch``'s ``!stop`` fast path is the pre-bead one —
+    the reply goes out, zero opener fetches, empty owner map."""
+    edi, ea, mir, ma = _pair({}, routing=False)
+
+    mir._dispatch(_msg("!stop"), set(), mir._config)
+    await _settle(mir)
+    assert [s["content"] for s in mir._client.sends] == [
+        mir._config.stop_idle_message
+    ]
+    assert mir._client.opener_calls == []
+    assert mir._topic_owners == {}
+
+
+async def test_untagged_followup_via_dispatch_dropped_for_non_owner():
+    """An untagged follow-up through ``_dispatch`` is dropped for the
+    non-owner (no turn, no send) and runs the owner's turn."""
+    opener = _msg("@**EDI** first")
+    followup = _msg("untagged tail")
+    topics = {_key(): [opener]}
+    edi, ea, mir, ma = _pair(topics)
+
+    edi._dispatch(opener, set(), edi._config)
+    mir._dispatch(opener, set(), mir._config)
+    edi._dispatch(followup, set(), edi._config)
+    mir._dispatch(followup, set(), mir._config)
+    await _settle(edi, mir)
+
+    assert mir._topic_owners[_key()] is TopicOwner.OTHER
+    assert ma.turns == [] and mir._client.sends == []
+    assert ea.turns == ["@**EDI** first", "untagged tail"]
 
 
 @pytest.mark.parametrize("content,expected", [
