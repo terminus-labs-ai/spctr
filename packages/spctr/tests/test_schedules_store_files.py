@@ -93,15 +93,15 @@ class TestAC38RoundTrip:
             parsed.requester_mention, parsed.dest_channel_id,
             parsed.dest_channel_name, parsed.label, parsed.cron,
             parsed.payload_type, parsed.payload, parsed.on_miss,
-            parsed.next_run_at, parsed.last_run_at, parsed.status,
-            parsed.last_status, parsed.last_error,
+            parsed.next_run_at, parsed.last_run_at, parsed.created_at,
+            parsed.status, parsed.last_status, parsed.last_error,
         ) == (
-            row.id, row.agent, row.platform, row.requester_id,
+            "s1", row.agent, row.platform, row.requester_id,
             row.requester_mention, row.dest_channel_id,
             row.dest_channel_name, row.label, row.cron,
             row.payload_type, row.payload, row.on_miss,
-            row.next_run_at, row.last_run_at, row.status,
-            row.last_status, row.last_error,
+            row.next_run_at, row.last_run_at, row.created_at,
+            row.status, row.last_status, row.last_error,
         )
         # The instruction/label unicode survives on disk, not just in memory.
         text = (tmp_path / "schedules" / "s1.md").read_text(encoding="utf-8")
@@ -168,6 +168,23 @@ class TestAC38RoundTrip:
         # The body (command note) is unchanged.
         assert b"echo hi" in after
 
+    def test_created_at_survives_claim_and_advance(self, tmp_path):
+        """AC38: created_at is persisted and stable across runtime rewrites."""
+        store = ScheduleStore(tmp_path / "schedules")
+        row = _make_schedule(
+            next_run_at=NOW - timedelta(seconds=1),
+            created_at=NOW - timedelta(days=7),
+        )
+        sid = store.create(row)
+        store.claim(sid)
+        store.advance_after_run(sid, NOW + timedelta(days=1), NOW, "ok", None)
+        parsed = store.get(sid)
+        assert parsed.created_at == NOW - timedelta(days=7)
+        assert parsed.created_at != parsed.next_run_at
+        # On disk too: the created_at key survived both rewrites.
+        text = (tmp_path / "schedules" / f"{sid}.md").read_text(encoding="utf-8")
+        assert "created_at" in text
+
     def test_render_user_keys_before_runtime_keys(self, tmp_path):
         """AC38-r2: user keys render before runtime keys in the file."""
         store = ScheduleStore(tmp_path / "schedules")
@@ -211,13 +228,14 @@ def row(i, nra):
 
 try:
     if mode == "writer":
+        ids = []
         for i in range(15):
-            store.create(row(i, NOW - timedelta(seconds=1)))
+            ids.append(store.create(row(i, NOW - timedelta(seconds=1))))
             if i % 3 == 0:
-                store.cancel(f"{tag}{i % 5}")
+                store.cancel(ids[i // 3])
             if i % 2 == 0:
-                store.advance_after_run(f"{tag}{i % 4}", NOW + timedelta(minutes=i), NOW, "ok", None)
-        print("writer-done")
+                store.advance_after_run(ids[(i // 2) % len(ids)], NOW + timedelta(minutes=i), NOW, "ok", None)
+        print("writer-done " + ",".join(ids))
     else:
         for i in range(15):
             due = store.due(NOW + timedelta(hours=1))
@@ -263,17 +281,23 @@ class TestAC39Concurrency:
             out, err = p.communicate(timeout=120)
             outs.append(out.strip())
             assert p.returncode == 0, err
-        assert outs[0] == "writer-done"
+        assert outs[0].startswith("writer-done")
         assert outs[1] == "engine-done"
 
         store = ScheduleStore(base)
         # Every surviving file parses; no file is left corrupt.
         valid, invalid = store.scan()
         assert invalid == []
-        # No schedule lost and none extra: the writer creates w0..w14 and
-        # deterministically cancels w0..w4 (i % 3 == 0 -> cancel w(i % 5)),
-        # so exactly w5..w14 survive — the engine only claims/advances.
-        assert {s.id for s in valid} == {f"w{i}" for i in range(5, 15)}
+        # No schedule lost and none extra: exactly the schedules the
+        # writer created and did NOT cancel survive — the engine only
+        # claims/advances.  ids[0..4] is the cancelled set (i % 3 == 0
+        # cancels ids[i // 3]); a cancelled stem may be reused by a later
+        # create, so compare against the writer's own id list.
+        created = outs[0].split(" ", 1)[1].split(",")
+        assert len(created) == 15
+        cancelled = set(created[:5])
+        assert {s.id for s in valid} == set(created[5:]) - cancelled
+        assert len(valid) == 10
         # Every mutation landed as a complete file: each surviving file
         # re-parses identically through a fresh store.
         fresh = ScheduleStore(base)
@@ -340,6 +364,11 @@ class TestAC39KillBetweenWriteAndReplace:
         fresh = ScheduleStore(base)
         parsed = fresh.get("s1")
         assert parsed == original
+        # The leftover temp is not mistaken for a schedule: the scan shows
+        # the two committed files as valid and reports nothing invalid.
+        valid_now, invalid_now = fresh.scan()
+        assert {s.id for s in valid_now} == {"s1", "s2"}
+        assert invalid_now == []
 
         # The leftover temp is present until one poll interval has passed,
         # then a sweep deletes it.
@@ -357,8 +386,33 @@ class TestAC39KillBetweenWriteAndReplace:
 
 
 # ---------------------------------------------------------------------------
-# AC37: async facades over the directory-backed store
+# AC37: sequential s<N> assignment; async facades over the directory store
 # ---------------------------------------------------------------------------
+
+class TestAC37IdAssignment:
+    def test_create_ignores_placeholder_id_and_never_overwrites(self, tmp_path):
+        """Two creates with the same placeholder id produce s1 and s2."""
+        store = ScheduleStore(tmp_path / "schedules")
+        assert store.create(_make_schedule(id="s0")) == "s1"
+        assert store.create(_make_schedule(id="s0")) == "s2"
+        assert (tmp_path / "schedules" / "s1.md").is_file()
+        assert (tmp_path / "schedules" / "s2.md").is_file()
+        assert store.get("s1") is not None
+        assert store.get("s2") is not None
+
+    def test_create_continues_after_highest_existing_stem(self, tmp_path):
+        """A hand-authored s7.md moves the next create to s8."""
+        store = ScheduleStore(tmp_path / "schedules")
+        _write_schedule_file(
+            tmp_path / "schedules", "s7.md",
+            USER_BASE + "next_run_at: '2026-10-21T07:00:00+00:00'\n",
+            "notes",
+        )
+        assert store.create(_make_schedule(id="s0")) == "s8"
+        # Non-s<N> files do not affect numbering.
+        _write_schedule_file(tmp_path / "schedules", "standup.md", USER_BASE, "notes")
+        assert store.create(_make_schedule(id="s0")) == "s9"
+
 
 class TestAC37AsyncFacades:
     @pytest.mark.asyncio
@@ -445,6 +499,18 @@ class TestScanPrimitive:
         assert store.get("new").next_run_at == NOW + timedelta(days=1)
         assert store.due(NOW) == []
         assert [s.id for s in store.due(NOW + timedelta(days=2))] == ["new"]
+
+    def test_closing_fence_at_eof_without_newline(self, tmp_path):
+        """A closing --- fence at EOF (no trailing newline) parses."""
+        store = ScheduleStore(tmp_path / "schedules")
+        (tmp_path / "schedules" / "eof.md").write_text(
+            "---\n" + USER_BASE + "next_run_at: '2026-10-21T07:00:00+00:00'\n---",
+            encoding="utf-8",
+        )
+        row = store.get("eof")
+        assert row is not None
+        assert row.id == "eof"
+        assert json.loads(row.payload)["command"] == "echo hi"
 
     def test_unquoted_yaml_timestamp_accepted(self, tmp_path):
         """A hand-authored unquoted ISO timestamp parses as a datetime."""

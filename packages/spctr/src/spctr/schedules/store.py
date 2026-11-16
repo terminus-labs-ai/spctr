@@ -62,6 +62,7 @@ USER_KEYS = (
     "cwd",
     "on_miss",
     "payload_agent",
+    "created_at",
 )
 RUNTIME_KEYS = ("next_run_at", "last_run_at", "last_status", "last_error")
 
@@ -130,6 +131,10 @@ def _split_document(text: str) -> dict[str, str] | None:
         return None
     end = text.find("\n---\n", 4)
     if end == -1:
+        # A closing fence at EOF (no trailing newline) is valid; the
+        # body is empty.
+        if text.endswith("\n---"):
+            return {"head": text[4 : len(text) - 4], "body": ""}
         return None
     head = text[4:end]
     # Body: everything after the closing fence line, byte-for-byte, minus
@@ -428,6 +433,8 @@ class ScheduleStore:
             if payload.get("agent"):
                 values["payload_agent"] = payload["agent"]
             body = payload.get("instruction", "")
+        if row.created_at is not None:
+            values["created_at"] = _ts(row.created_at)
         ordered = [(k, values[k]) for k in USER_KEYS if k in values]
         return _render_document(ordered, _runtime_list(row), body)
 
@@ -455,16 +462,29 @@ class ScheduleStore:
     # ---- sync core ----
 
     def create(self, row: Schedule) -> str:
-        """Write ``<row.id>.md`` (FR43 stem generation is a later slice).
+        """Insert an active schedule. Returns the assigned ``s<N>`` ID.
 
-        Returns the ID that was written.
+        The incoming ``row.id`` is a placeholder and ignored: the ID is
+        the next free ``s<N>`` stem under the exclusive lock (highest
+        numeric suffix among existing ``s<N>.md`` files + 1, starting at
+        ``s1``), so a create never overwrites an existing file.  The
+        FR43 label→stem generation for hand-meaningful names is a later
+        slice.
         """
-        if not _ID_STEM_RE.match(row.id):
-            raise ValueError(f"invalid id {row.id!r}")
         text = self._render_row(row)
         with self._lock():
-            self._replace(f"{row.id}.md", text)
-        return row.id
+            next_n = 1
+            for path in self._dir.glob("*.md"):
+                stem = path.name[:-3]
+                if not stem.startswith("s"):
+                    continue
+                try:
+                    next_n = max(next_n, int(stem[1:]) + 1)
+                except ValueError:
+                    continue
+            new_id = f"s{next_n}"
+            self._replace(f"{new_id}.md", text)
+        return new_id
 
     def due(
         self,
@@ -608,7 +628,7 @@ class ScheduleStore:
         invalid: list[InvalidEntry] = []
         with self._lock(exclusive=False):
             for path in sorted(self._dir.glob("*.md"), key=lambda p: p.name):
-                if not path.is_file():
+                if not path.is_file() or _TEMP_RE.match(path.name):
                     continue
                 row, reason, _extra = self._parse_file(path.name, self._read_file(path.name))
                 if row is None:

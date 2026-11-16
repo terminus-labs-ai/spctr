@@ -130,7 +130,7 @@ class TestCronParser:
 
 def _make_schedule(**kwargs) -> Schedule:
     defaults = dict(
-        id="s1",
+        id="s0",
         agent="miranda",
         platform="discord",
         requester_id="42",
@@ -156,8 +156,8 @@ def _make_schedule(**kwargs) -> Schedule:
 class TestStore:
     def test_create_assigns_sequential_ids(self, tmp_path):
         store = ScheduleStore(tmp_path / "schedules")
-        id1 = store.create(_make_schedule(id="s1"))
-        id2 = store.create(_make_schedule(id="s2"))
+        id1 = store.create(_make_schedule())
+        id2 = store.create(_make_schedule())
         assert id1 == "s1"
         assert id2 == "s2"
 
@@ -176,12 +176,8 @@ class TestStore:
 
     def test_due_platform_scoped(self, tmp_path):
         store = ScheduleStore(tmp_path / "schedules")
-        store.create(_make_schedule(
-            id="s1", next_run_at=NOW - timedelta(minutes=1), platform="discord",
-        ))
-        store.create(_make_schedule(
-            id="s2", next_run_at=NOW - timedelta(minutes=1), platform="zulip",
-        ))
+        store.create(_make_schedule(next_run_at=NOW - timedelta(minutes=1), platform="discord"))
+        store.create(_make_schedule(next_run_at=NOW - timedelta(minutes=1), platform="zulip"))
         due = store.due(NOW, platform="discord")
         assert len(due) == 1
         assert due[0].platform == "discord"
@@ -330,7 +326,7 @@ class TestToolCreateValidation:
         ))
         try:
             result = await tool(action="create", cron="0 7 * * *", type="command", command="echo hi")
-            assert "Schedule s0 set" in result
+            assert "Schedule s1 set" in result
             rows = store.list_for_agent("miranda")
             assert len(rows) == 1
         finally:
@@ -508,8 +504,8 @@ class TestAC24OriginRoot:
             result = await tool(
                 action="create", cron="0 7 * * *", type="command", command="echo"
             )
-            assert "Schedule s0 set" in result
-            row = store.get("s0")
+            assert "Schedule s1 set" in result
+            row = store.get("s1")
             assert row.dest_channel_id == "555"
             assert row.dest_channel_name == "estudos"
         finally:
@@ -621,12 +617,10 @@ class TestAC27EngineContinues:
         script_ok.chmod(script_ok.stat().st_mode | stat.S_IEXEC)
 
         store.create(_make_schedule(
-            id="s1",
             next_run_at=NOW - timedelta(seconds=2),
             payload=json.dumps({"command": str(script_fail), "cwd": str(tmp_path)}),
         ))
         store.create(_make_schedule(
-            id="s2",
             next_run_at=NOW - timedelta(seconds=1),
             payload=json.dumps({"command": str(script_ok), "cwd": str(tmp_path)}),
         ))
@@ -665,7 +659,6 @@ class TestAC28PlatformScoped:
 
         # Zulip row due NOW
         store.create(_make_schedule(
-            id="s1",
             next_run_at=NOW - timedelta(seconds=1),
             platform="zulip",
             payload=json.dumps({"command": "echo zulip", "cwd": str(tmp_path)}),
@@ -685,7 +678,6 @@ class TestAC28PlatformScoped:
     async def test_claim_platform_scoped(self, tmp_path):
         store = ScheduleStore(tmp_path / "schedules")
         store.create(_make_schedule(
-            id="s1",
             next_run_at=NOW - timedelta(seconds=1), platform="zulip",
         ))
         # Discord claim should fail on a zulip row

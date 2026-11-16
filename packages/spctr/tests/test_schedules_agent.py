@@ -28,7 +28,7 @@ NOW = datetime(2026, 10, 20, 14, 0, 0, tzinfo=UTC)
 
 def _make_schedule(**kwargs) -> Schedule:
     defaults = dict(
-        id="s1",
+        id="s0",
         agent="miranda",
         platform="discord",
         requester_id="42",
@@ -87,8 +87,8 @@ class TestAC32CreateAgentPayload:
                 type="agent",
                 instruction="Summarize the beads closed this week",
             )
-            assert "Schedule s0 set" in result
-            row = store.get("s0")
+            assert "Schedule s1 set" in result
+            row = store.get("s1")
             assert row is not None
             assert row.payload_type == "agent"
             payload = json.loads(row.payload)
@@ -112,8 +112,8 @@ class TestAC32CreateAgentPayload:
                 instruction="Do the thing",
                 agent="edi",
             )
-            assert "Schedule s0 set" in result
-            row = store.get("s0")
+            assert "Schedule s1 set" in result
+            row = store.get("s1")
             payload = json.loads(row.payload)
             assert payload["agent"] == "edi"
             assert payload["instruction"] == "Do the thing"
