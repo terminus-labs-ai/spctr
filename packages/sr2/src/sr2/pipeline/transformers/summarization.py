@@ -245,9 +245,6 @@ class SummarizationTransformer:
             for candidate in candidates:
                 if not isinstance(candidate, str) or not candidate:
                     continue
-                try:
-                    if await store.get(candidate) is not None:
-                        return (candidate,)
-                except Exception:  # pragma: no cover - exotic stores
-                    continue
+                if await store.get(candidate) is not None:
+                    return (candidate,)
         return ()
