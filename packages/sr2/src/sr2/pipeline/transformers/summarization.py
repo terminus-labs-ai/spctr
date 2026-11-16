@@ -2,22 +2,23 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
-import ulid
-
 from sr2.config.models import ConfigError, TransformerConfig
 from sr2.models import ContentBlock, Message, TextBlock
 from sr2.pipeline.dependencies import Dependencies
 from sr2.pipeline.events import Event, EventPhase, EventSubscription
 from sr2.pipeline.models import TransformationResult
-from sr2.pipeline.provenance import Entry, EntryOrigin
 from sr2.pipeline.protocols import TokenCounter
 from sr2.pipeline.token_counting import CharacterTokenCounter
 from sr2.pipeline.utils import PHASE_MAP, build_subscriptions
 from sr2.protocols.llm import CompletionRequest, LLMCallable
 
 _DEFAULT_SUMMARIZATION_PROMPT = "Summarize the following conversation turns concisely."
+
+_SOURCES_OMITTED_REASON = (
+    "summarization: transform() receives content blocks without entry identity, "
+    "so it declares no per-block source ids; the Layer resolves the summarized "
+    "blocks to their real stored entry ids at flush time (FR5)."
+)
 
 
 class SummarizationTransformer:
@@ -108,8 +109,23 @@ class SummarizationTransformer:
         # Call LLM to summarize
         summary_block = await self._summarize(to_summarize)
 
-        # Build provenance entries — one per summarized item
-        entries = self._make_entries(to_summarize)
+        # Provenance for the summarized blocks. `transform(content, events)`
+        # sees content blocks, never entry ids, and the blocks it summarizes
+        # were themselves stored as provenance entries at ingestion (FR1 has
+        # no raw-content/no-store bypass). Re-minting ids here — ULID or
+        # content hash — would only ever duplicate what the ledger already
+        # holds, and a fresh ULID would be exactly the synthetic dangling
+        # source id FR5 forbids. So this transformer declares no per-block
+        # source lineage: the omission is recorded in the result's provenance
+        # declaration, and the Layer synthesizes the summary block against
+        # the real stored entry ids it holds at flush time (FR5).
+        declared_sources = await self._resolve_real_source_ids(to_summarize)
+        declaration: dict = {
+            "sources_omitted": not declared_sources,
+            "sources_omitted_reason": _SOURCES_OMITTED_REASON,
+        }
+        if declared_sources:
+            declaration["sources"] = list(declared_sources)
 
         # Emit event
         event = Event(
@@ -126,7 +142,8 @@ class SummarizationTransformer:
             source_layer="summarization",
             content=new_content,
             events=[event],
-            entries=entries,
+            entries=[],
+            provenance=[declaration],
         )
 
     # ------------------------------------------------------------------
@@ -199,21 +216,35 @@ class SummarizationTransformer:
                 return block
         return TextBlock(text="")
 
-    def _make_entries(self, blocks: list[ContentBlock]) -> list[Entry]:
-        """Create one provenance Entry per summarized block."""
-        now = datetime.now(timezone.utc)
-        entries = []
+    async def _resolve_real_source_ids(
+        self, blocks: list[ContentBlock]
+    ) -> tuple[str, ...]:
+        """Real stored entry ids for the summarized blocks, if any is resolvable.
+
+        Only ids already present in the provenance store are declared — this
+        transformer never invents an id (FR5). When no block carries a stored
+        id this returns empty and the Layer resolves the summarized blocks
+        from the turn's write set at flush time.
+        """
+        store = getattr(self, "_provenance_store", None)
+        if store is None:
+            # No store handle: nothing can be confirmed to resolve.
+            return ()
         for block in blocks:
-            entry_id = str(ulid.ULID())
-            source_id = str(ulid.ULID())
-            entry = Entry(
-                id=entry_id,
-                content=block,
-                sources=(source_id,),
-                origin=EntryOrigin(kind="transformer", name=self.name),
-                layer="summarization",
-                session_id=self._session_id,
-                created_at=now,
-            )
-            entries.append(entry)
-        return entries
+            meta = getattr(block, "meta", None)
+            if not isinstance(meta, dict):
+                continue
+            declared = meta.get("provenance")
+            if not isinstance(declared, dict):
+                continue
+            candidates = declared.get("source_ids")
+            if isinstance(candidates, str):
+                candidates = (candidates,)
+            if not isinstance(candidates, (list, tuple)):
+                continue
+            for candidate in candidates:
+                if not isinstance(candidate, str) or not candidate:
+                    continue
+                if await store.get(candidate) is not None:
+                    return (candidate,)
+        return ()
