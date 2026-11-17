@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -110,10 +111,15 @@ class Schedule:
 
 @dataclass(frozen=True)
 class InvalidEntry:
-    """A file the scan could not parse as a Schedule (FR40)."""
+    """A file the scan could not parse as a Schedule (FR40).
+
+    ``content_hash`` is the SHA-256 of the file's content, so the engine
+    logs an invalid file at most once per content hash.
+    """
 
     filename: str
     reason: str
+    content_hash: str = ""
 
 
 def _ts(value: datetime) -> str:
@@ -223,6 +229,16 @@ def _user_keys(user: list[tuple[str, object]], row: Schedule) -> list[tuple[str,
         if key not in seen:
             ordered.append((key, value))
     return ordered
+
+
+def _content_hash(path: Path, text: str | None) -> str:
+    """SHA-256 of a file's content (its raw bytes when it is not UTF-8)."""
+    if text is not None:
+        return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
 
 
 def _runtime_list(row: Schedule) -> list[tuple[str, str]]:
@@ -635,6 +651,42 @@ class ScheduleStore:
         ]
         return rows
 
+    def reschedule(
+        self,
+        schedule_id: str,
+        expected_next_run_at: datetime | None,
+        next_run_at: datetime,
+    ) -> bool:
+        """Set only ``next_run_at`` on an active file, compare-and-set.
+
+        The engine's silent advances (FR39 first sight and cron edits,
+        FR44 resume) go through here: no run is recorded.  Returns False,
+        writing nothing, when the file is gone, invalid, paused, claimed,
+        or its ``next_run_at`` no longer equals *expected_next_run_at*.
+        """
+        filename = f"{schedule_id}.md"
+        with self._lock():
+            loaded, _reason = self._load_mutating(filename)
+            if loaded is None:
+                return False
+            row, extra = loaded
+            if row.status != "active" or row.next_run_at != expected_next_run_at:
+                return False
+            if row.next_run_at is not None and _ts(row.next_run_at) == CLAIM_SENTINEL:
+                return False
+            self._rewrite(filename, replace(row, next_run_at=next_run_at), extra)
+            return True
+
+    async def reschedule_async(
+        self,
+        schedule_id: str,
+        expected_next_run_at: datetime | None,
+        next_run_at: datetime,
+    ) -> bool:
+        return await asyncio.to_thread(
+            self.reschedule, schedule_id, expected_next_run_at, next_run_at
+        )
+
     def list_for_agent(
         self, agent: str, statuses: Iterable[str] = ("active",)
     ) -> list[Schedule]:
@@ -671,9 +723,16 @@ class ScheduleStore:
             for path in sorted(self._dir.glob("*.md"), key=lambda p: p.name):
                 if not path.is_file() or _TEMP_RE.match(path.name):
                     continue
-                row, reason, _extra = self._parse_file(path.name, self._read_file(path.name))
+                text = self._read_file(path.name)
+                row, reason, _extra = self._parse_file(path.name, text)
                 if row is None:
-                    invalid.append(InvalidEntry(filename=path.name, reason=reason))
+                    invalid.append(
+                        InvalidEntry(
+                            filename=path.name,
+                            reason=reason,
+                            content_hash=_content_hash(path, text),
+                        )
+                    )
                 else:
                     valid.append(row)
         return valid, invalid
