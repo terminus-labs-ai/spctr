@@ -274,3 +274,80 @@ async def test_terminal_during_logged_turn_sees_log_stem(tmp_path, monkeypatch):
     assert len(results) == 1
     assert str(results[0].content).strip() == stem
     assert current_session_id.get() is None
+    # The oracle is the file on disk, not just the in-memory path.
+    assert session._log.path.exists()
+    assert session._log.path.parent == tmp_path / "logs"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_logged_turns_terminals_see_own_log_stem(
+    tmp_path, monkeypatch
+):
+    """Two logged Sessions racing in the tool phase: each terminal child
+    sees its own $SPCTR_SESSION_ID (spc-137 AC4).
+
+    The single-session test above proves the export; this one proves the
+    per-task routing through the real terminal tool: both turns are inside
+    their tool call at the same time, so a value that leaked across tasks
+    (or a process-wide environment variable) would hand one child the
+    other session's stem.
+    """
+    from spctr.tools.registry import ToolRegistry
+
+    monkeypatch.setenv("SR2_SESSION_LOG_DIR", str(tmp_path / "logs"))
+
+    async def _run_one(frame_id: str) -> tuple[str, str]:
+        manager = SessionLogManager()
+        session = _make_session(frame_id, _make_sr2_mock(lambda: None), manager)
+        # Each Session gets its own real registry holding the real terminal
+        # tool, so both calls flow through Session._execute_tool as in
+        # production.
+        registry = ToolRegistry()
+        registry.register_from_class_path(
+            "spctr.tools.builtins.terminal.TerminalTool"
+        )
+        session._registry = registry
+        _open_log_ctx(session)
+        assert session._log is not None
+        stem = session._log.path.stem
+
+        use = ToolUseBlock(
+            id=f"tu-{frame_id}",
+            name="terminal",
+            input={"command": 'echo "$SPCTR_SESSION_ID"'},
+        )
+        captured: list[str] = []
+
+        async def _run_tool(user_input):
+            # Overlap both turns in the tool phase: hold this task inside
+            # the turn until the other one has entered its own tool call.
+            result = await session._execute_tool(use)
+            captured.append(str(result.content))
+            await asyncio.sleep(0.05)
+            yield StreamEvent(type="tool_use_emitted", tool_uses=[use])
+            yield StreamEvent(type="tool_result_received", tool_results=[result])
+            yield StreamEvent(type="end")
+
+        session.sr2 = MagicMock()
+        session.sr2.continue_archive = AsyncMock()
+        session.sr2.seed_session = MagicMock()
+        session.sr2.turn = _run_tool
+
+        async for _ in session.stream_message("hi"):
+            pass
+        assert len(captured) == 1
+        return frame_id, captured[0].strip()
+
+    (frame_a, stem_a), (frame_b, stem_b) = await asyncio.gather(
+        _run_one("frame-A"), _run_one("frame-B")
+    )
+
+    # gather preserves task order, so each output pairs with its own session.
+    assert (frame_a, frame_b) == ("frame-A", "frame-B")
+    assert stem_a != stem_b
+    # Each child printed a stem that names a real log file in the shared log
+    # directory — and the two are different files.
+    logs = tmp_path / "logs"
+    for stem in (stem_a, stem_b):
+        assert (logs / f"{stem}.jsonl").exists()
+    assert current_session_id.get() is None

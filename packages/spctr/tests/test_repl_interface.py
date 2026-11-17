@@ -364,7 +364,12 @@ async def test_save_default_path(tmp_path: Path, make_mock_agent, monkeypatch) -
     await interface._cmd_save(agent, None)
 
     assert target.exists()
-    assert str(target) in _plain_text(buf)
+    # The capture console wraps long text mid-token (a long TMPDIR makes
+    # the saved path exceed the console width), so compare whitespace-
+    # collapsed text: the printed path survives any wrap position, and
+    # collapsing both sides keeps paths whose prefix contains spaces
+    # comparable too.
+    assert "".join(str(target).split()) in "".join(_plain_text(buf).split())
 
 
 @pytest.mark.asyncio

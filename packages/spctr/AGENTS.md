@@ -136,9 +136,10 @@ uv run --frozen python -m pytest packages/spctr/tests/test_some_module.py -v
 ```
 
 The suite is self-isolating: `packages/spctr/tests/conftest.py` points
-`SR2_HOME` at a per-test temp dir and drops an inherited
-`SR2_SESSION_LOG_DIR`, so it passes with or without the dispatch
-launch's session-log environment. No `env -u` prefix is needed.
+`SR2_HOME` at a per-test temp dir and drops inherited
+`SR2_SESSION_LOG_DIR` and `SR2_SESSION_LOG_SHARED`, so it passes with or
+without the dispatch launch's session-log environment and with or without
+the container's shared-log setting. No `env -u` prefix is needed.
 
 ### Running tests in a build worktree
 

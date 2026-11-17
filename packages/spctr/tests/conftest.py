@@ -39,9 +39,16 @@ def _isolate_sr2_home(tmp_path_factory, monkeypatch) -> None:
     test that asserts on log location or absence. Drop it so the default
     under the fixture SR2_HOME applies; tests that need a specific value
     still set it themselves.
+
+    ``SR2_SESSION_LOG_SHARED`` (exported by agent containers for
+    cross-user-readable host logs, spc-1055) switches the log modes to
+    0755/0644 and must not leak in either: it would flip the owner-only
+    permission test red. Drop it; the shared-mode tests in
+    ``test_run_log.py`` set it explicitly via monkeypatch.
     """
     monkeypatch.setenv("SR2_HOME", str(tmp_path_factory.mktemp("sr2_home")))
     monkeypatch.delenv("SR2_SESSION_LOG_DIR", raising=False)
+    monkeypatch.delenv("SR2_SESSION_LOG_SHARED", raising=False)
 
 
 def _make_mock_agent(
