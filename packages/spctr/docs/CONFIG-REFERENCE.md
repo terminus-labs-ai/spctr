@@ -712,14 +712,19 @@ agent:
     poll_seconds: 30.0
     command_timeout_seconds: 600.0
     agent_timeout_seconds: 600.0
-    # store_path: ~/.sr2/state/{agent}/schedules.sqlite   # default
+    zulip_topic: schedules       # default
+    # store_path: ~/.sr2/state/{agent}/schedules/   # default (directory)
 ```
 
 One switch enables BOTH the `schedule` tool and the schedule engine; disabled
 (the default) registers neither. `timezone` is required (nonempty) when
 enabled and is the zone cron expressions are interpreted in. `store_path`
 supports `~` and `${VAR}`; `{agent}` is substituted with the agent name at
-wiring time. Resolved against `SR2_HOME` (the spc-160 lesson).
+wiring time. Resolved against `SR2_HOME` (the spc-160 lesson); the default
+is the directory `$SR2_HOME/state/{agent}/schedules/`, one `<id>.md` file per
+schedule. `zulip_topic` is the post topic a schedule created from Zulip records
+when the request names none, and the topic a Zulip schedule file without a
+`topic` key posts to (FR47).
 
 ### Tool actions
 
