@@ -158,6 +158,8 @@ class SchedulesConfig(BaseModel):
         poll_seconds: Engine poll interval.
         command_timeout_seconds: Default timeout for command payloads.
         agent_timeout_seconds: Default timeout for agent payloads (spc-187).
+        zulip_topic: Default post topic for schedules created from Zulip,
+            and for a Zulip schedule file without a ``topic`` key (FR47).
     """
 
     enabled: bool = False
@@ -166,6 +168,7 @@ class SchedulesConfig(BaseModel):
     poll_seconds: float = Field(default=30.0, gt=0)
     command_timeout_seconds: float = Field(default=600.0, gt=0)
     agent_timeout_seconds: float = Field(default=600.0, gt=0)
+    zulip_topic: str = "schedules"
 
     def resolved_store_path(self, agent_name: str) -> str:
         """Store path with ``{agent}`` substituted, then expanded."""

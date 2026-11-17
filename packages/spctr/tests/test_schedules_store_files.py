@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -251,6 +252,148 @@ class TestAC38RoundTrip:
         # Runtime keys in canonical order.
         runtime = [text.index(k + ":") for k in ("next_run_at", "last_run_at", "last_status", "last_error")]
         assert runtime == sorted(runtime)
+
+
+# ---------------------------------------------------------------------------
+# AC38 (spc-1082): line-ending fidelity.  A hand-authored file saved with
+# CRLF endings keeps every byte of its body across runtime rewrites; only
+# the engine-owned runtime keys change.
+# ---------------------------------------------------------------------------
+
+_FENCE_LINE_RE = re.compile(rb"^---[ \t]*\r?\n", re.MULTILINE)
+
+#: Runtime keys a rewrite may legitimately change.
+_RUNTIME_PREFIXES = (b"next_run_at:", b"last_run_at:", b"last_status:", b"last_error:")
+
+
+def _body_of(data: bytes) -> bytes:
+    """The bytes after the second fence line, minus one separator line.
+
+    Implemented independently of the store's splitter (a regex over raw
+    bytes) so a rewrite that normalizes line endings cannot hide behind
+    the code under test.
+    """
+    fences = list(_FENCE_LINE_RE.finditer(data))
+    assert len(fences) == 2, data[:400]
+    rest = data[fences[-1].end() :]
+    if rest.startswith(b"\r\n"):
+        return rest[2:]
+    if rest.startswith(b"\n"):
+        return rest[1:]
+    return rest
+
+
+def _frontmatter_lines(data: bytes, sep: bytes) -> list[bytes]:
+    """Non-empty user frontmatter lines: outside the fences, minus runtime keys."""
+    fences = list(_FENCE_LINE_RE.finditer(data))
+    assert len(fences) == 2, data[:400]
+    head = data[fences[0].end() : fences[1].start()]
+    lines = [ln for ln in head.split(sep) if ln]
+    return [ln for ln in lines if not ln.startswith(_RUNTIME_PREFIXES)]
+
+
+def _hand_authored_crlf_file(path: Path, body: str, *, head_eol: str = "\r\n") -> Path:
+    """Write a whole schedule file the way a Windows editor would."""
+    head = head_eol.join(
+        [
+            "---",
+            "platform: discord",
+            "label: crlf-note",
+            "cron: 0 7 * * *",
+            "type: agent",
+            "on_miss: run_late",
+            "channel: '100'",
+            "extra_note: keep-me 🎯",
+            "next_run_at: '2026-10-20T13:59:59+00:00'",
+            "---",
+            "",
+        ]
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes((head + body).encode("utf-8"))
+    return path
+
+
+class TestAC38LineEndings:
+    def test_crlf_file_is_valid_and_its_body_survives_rewrites(self, tmp_path):
+        """AC38-r3: claim + advance_after_run keep a CRLF body byte-for-byte."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        body = "Line one\r\nLine two\r\n\r\nTrailing spaces   \r\n日本語 ✓\r\n"
+        path = _hand_authored_crlf_file(tmp_path / "schedules" / "crlf-note.md", body)
+        before = path.read_bytes()
+
+        rows, invalid = store.scan()
+        assert invalid == []
+        assert [row.id for row in rows] == ["crlf-note"]
+        assert json.loads(rows[0].payload)["instruction"] == body
+
+        assert store.claim("crlf-note") is True
+        store.advance_after_run("crlf-note", NOW + timedelta(days=1), NOW, "ok", None)
+
+        after = path.read_bytes()
+        assert _body_of(after) == body.encode("utf-8")
+        # Nothing else moved either: the unknown extra key and every other
+        # user line are unchanged, and the file kept CRLF throughout (no
+        # bare LF anywhere).
+        assert _frontmatter_lines(before, b"\r\n") == _frontmatter_lines(after, b"\r\n")
+        assert b"extra_note: keep-me \xf0\x9f\x8e\xaf\r\n" in after
+        assert b"\n" not in after.replace(b"\r\n", b"")
+        parsed = store.get("crlf-note")
+        assert parsed.next_run_at == NOW + timedelta(days=1)
+        assert parsed.last_status == "ok"
+
+    def test_repeated_rewrites_do_not_drift(self, tmp_path):
+        """AC38-r3: a second rewrite with the same values changes no bytes.
+
+        The first rewrite used to convert CRLF to LF; every rewrite after
+        that changed the file again as long as line endings were being
+        normalized somewhere.
+        """
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        path = _hand_authored_crlf_file(
+            tmp_path / "schedules" / "crlf-note.md", "One\r\nTwo\r\n"
+        )
+        nxt, ran = NOW + timedelta(days=1), NOW
+        assert store.claim("crlf-note") is True
+        store.advance_after_run("crlf-note", nxt, ran, "ok", None)
+        first = path.read_bytes()
+        assert store.claim("crlf-note") is True
+        store.advance_after_run("crlf-note", nxt, ran, "ok", None)
+        assert path.read_bytes() == first
+
+    def test_lf_file_is_untouched_in_shape(self, tmp_path):
+        """AC38-r3: an LF file still round-trips with LF only (no regression)."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        body = "Line one\nLine two\n"
+        path = _hand_authored_crlf_file(
+            tmp_path / "schedules" / "lf-note.md", body, head_eol="\n"
+        )
+        assert store.claim("lf-note") is True
+        store.advance_after_run("lf-note", NOW + timedelta(days=1), NOW, "ok", None)
+        after = path.read_bytes()
+        assert _body_of(after) == body.encode("utf-8")
+        assert b"\r" not in after
+
+    def test_mixed_line_endings_keep_the_body_bytes(self, tmp_path):
+        """AC38-r3: LF frontmatter with a CRLF body stays byte-exact."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        body = "Line one\r\nLine two\r\n"
+        path = _hand_authored_crlf_file(
+            tmp_path / "schedules" / "mixed-note.md", body, head_eol="\n"
+        )
+        rows, invalid = store.scan()
+        assert invalid == []
+        assert json.loads(rows[0].payload)["instruction"] == body
+        assert store.claim("mixed-note") is True
+        store.advance_after_run("mixed-note", NOW + timedelta(days=1), NOW, "ok", None)
+        after = path.read_bytes()
+        assert _body_of(after) == body.encode("utf-8")
+        # The structure keeps the style its own fence lines used (LF):
+        # a stray CRLF in the body rewrites nothing outside the body.
+        fences = list(_FENCE_LINE_RE.finditer(after))
+        assert b"\r" not in after[: fences[1].start()]
+        # Re-reading the rewritten file still yields the same instruction.
+        assert json.loads(store.get("mixed-note").payload)["instruction"] == body
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +741,78 @@ class TestAC37AsyncFacades:
         rows = await store.list_for_agent_async("miranda")
         assert rows == []
         assert await store.get_async("s1") is None
+
+
+class TestAC37Recovery:
+    def test_claimed_row_is_recovered_by_a_fresh_store(self, tmp_path):
+        """AC37-r1: a restart finds the schedule left at the claim sentinel."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule(next_run_at=NOW - timedelta(seconds=1)))
+        assert store.claim("s1") is True
+
+        # A restart: a fresh store object over the same directory.
+        fresh = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        recovered = fresh.recover_claimed(NOW)
+        assert [s.id for s in recovered] == ["s1"]
+        assert recovered[0].next_run_at == datetime.fromisoformat(SENTINEL)
+        assert recovered[0].status == "active"
+        assert recovered[0].agent == "miranda"
+        assert json.loads(recovered[0].payload)["command"] == "echo hi"
+
+    def test_recover_claimed_scopes_to_platform(self, tmp_path):
+        """AC37-r1: recovery honors the platform filter."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule(
+            platform="discord", next_run_at=NOW - timedelta(seconds=1)
+        ))
+        store.create(_make_schedule(
+            platform="zulip", next_run_at=NOW - timedelta(seconds=1)
+        ))
+        assert store.claim("s1") is True
+        assert store.claim("s2") is True
+
+        fresh = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        assert [s.id for s in fresh.recover_claimed(NOW, platform="discord")] == ["s1"]
+        assert [s.id for s in fresh.recover_claimed(NOW, platform="zulip")] == ["s2"]
+        assert [s.id for s in fresh.recover_claimed(NOW)] == ["s1", "s2"]
+
+    def test_unclaimed_due_and_future_rows_are_not_recovered(self, tmp_path):
+        """AC37-r1: only sentinel-stuck rows are recovered."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule(next_run_at=NOW - timedelta(seconds=1)))  # s1 due
+        store.create(_make_schedule(next_run_at=NOW + timedelta(days=1)))     # s2 future
+
+        fresh = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        assert fresh.recover_claimed(NOW) == []
+        # The due file is still live and due; the future one still waits.
+        assert [s.id for s in fresh.due(NOW)] == ["s1"]
+
+    @pytest.mark.asyncio
+    async def test_recover_claimed_async_matches_sync(self, tmp_path):
+        """AC37-r1: the async facade returns the same recovered row."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule(next_run_at=NOW - timedelta(seconds=1)))
+        assert store.claim("s1") is True
+
+        fresh = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        recovered = await fresh.recover_claimed_async(NOW)
+        assert [s.id for s in recovered] == ["s1"]
+        assert recovered[0].next_run_at == datetime.fromisoformat(SENTINEL)
+
+    def test_advance_after_run_clears_the_recovered_row(self, tmp_path):
+        """A recovered row leaves the recovery set once the engine advances it."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        store.create(_make_schedule(next_run_at=NOW - timedelta(seconds=1)))
+        assert store.claim("s1") is True
+
+        fresh = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        assert [s.id for s in fresh.recover_claimed(NOW)] == ["s1"]
+        nxt = NOW + timedelta(days=1)
+        fresh.advance_after_run("s1", nxt, NOW, "ok", None)
+        assert fresh.recover_claimed(NOW) == []
+        row = fresh.get("s1")
+        assert row.next_run_at == nxt
+        assert row.last_status == "ok"
 
 
 # ---------------------------------------------------------------------------
