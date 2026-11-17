@@ -30,8 +30,13 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Ancestry anchors for AC2, committed by the assembly itself.
-MERGE_COMMIT = "a4ecb78da6f7ec4c6eeea045e75b794cb61e8855"  # sr2 history -> packages/sr2
-PRE_MERGE_SPCT_BASE = "e9403371e2a20d026bddc1c7e73577fff46fc281"  # last old-repo commit
+# Anchors must be ancestors of main: CI clones only main's lineage
+# (single-branch), while the previous anchors (a4ecb78 / e940337)
+# belonged to the pre-rebase spc-1038 assembly line that never landed.
+# 2dead00 is the same-tree twin of e940337 on the landed lineage
+# (landed merge parents: 2dead00 = old-repo spctr tip, 5926c6d = sr2 tip).
+MERGE_COMMIT = "7486df0860b50a7283aaa1ba7744566cc86206e3"  # sr2 history -> packages/sr2
+PRE_MERGE_SPCT_BASE = "2dead009519f951db55c93ddd94633b59ee63684"  # old-repo spctr tip, landed lineage
 
 SR2_EARLY_COMMITS = {
     "53d29381cc67acfdbe62abac66740b0a0bdc2dd5",  # "Initial commit: SR2 v1.0.0"
