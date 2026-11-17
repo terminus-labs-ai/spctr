@@ -58,6 +58,46 @@ def _write_schedule_file(store_dir: Path, filename: str, user_keys: str, body: s
     return path
 
 
+# Runtime keys live in the same frontmatter block as user keys but are
+# engine-owned: advance_after_run rewrites them, so they are excluded when
+# checking that *user* keys survive unchanged across a rewrite.
+_RUNTIME_KEY_PREFIXES = (
+    "next_run_at:", "last_run_at:", "last_status:", "last_error:",
+)
+
+
+def _body_after_fence(data: bytes) -> bytes:
+    """The body bytes after the closing frontmatter fence, verbatim.
+
+    Mirrors ``store._split_document``: the file opens with ``---\\n`` and
+    the body starts after the closing ``---`` line, minus exactly one
+    separator newline. Lets a test prove a runtime rewrite touched no body
+    byte at all — no strip, no newline rewrite, no unicode change.
+    """
+    assert data.startswith(b"---\n"), "file must open with a frontmatter fence"
+    end = data.find(b"\n---\n", 4)
+    assert end != -1, "file has no closing frontmatter fence"
+    rest = data[end + len(b"\n---\n") :]
+    return rest[1:] if rest.startswith(b"\n") else rest
+
+
+def _user_key_lines(data: bytes) -> set[str]:
+    """The frontmatter user-key lines, excluding fences and runtime keys.
+
+    Reads only the head block (before the closing fence) so a non-empty
+    body never leaks into the set; drops engine-owned runtime keys whose
+    values a rewrite is expected to change.
+    """
+    head = data.split(b"\n---\n", 1)[0]
+    return {
+        line
+        for line in head.decode("utf-8").splitlines()
+        if line
+        and not line.startswith("---")
+        and not line.startswith(_RUNTIME_KEY_PREFIXES)
+    }
+
+
 USER_BASE = """platform: discord
 requester_id: '42'
 requester_mention: <@42>
@@ -133,21 +173,45 @@ class TestAC38RoundTrip:
 
     def test_runtime_rewrite_preserves_user_keys_and_body(self, tmp_path):
         """AC38-r2: advance_after_run preserves user keys (incl. unknown
-        extras) and the body byte-for-byte."""
-        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
-        store.create(_make_schedule(next_run_at=NOW - timedelta(seconds=1)))
-        # Add an unknown extra user key after creation (hand edit).
-        path = tmp_path / "schedules" / "s1.md"
-        text = path.read_text(encoding="utf-8")
-        text = text.replace("command: echo hi", "command: echo hi\nextra_note: keep-me 🎯")
-        path.write_text(text, encoding="utf-8")
-        before = path.read_bytes()
+        extras) AND a non-empty body byte-for-byte.
 
-        store.claim("s1")
+        The body is hand-authored with leading/trailing whitespace, a tab
+        indent, runs of blank lines, unicode and an emoji, then survives
+        two runtime rewrites (claim, then advance_after_run). Every byte
+        after the closing fence must be untouched: this is what kills a
+        mutation such as ``extra["body"].strip()`` at store.py:494, which
+        the earlier command-file version could not catch (command files
+        carry an empty body, so ``echo hi`` matched the frontmatter key,
+        never the body). CRLF bodies are spc-1082's scope; the engine
+        still normalizes them, so the fixture stays LF-only here.
+        """
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        body = "  \nLead \ttabbed line\t\n\n\nAfter blank run ✓ 日本語 🎯\ntrailing   \n   "
+        user_keys = (
+            "platform: discord\n"
+            "label: rewrite-fidelity\n"
+            "cron: 0 7 * * *\n"
+            "type: agent\n"
+            "on_miss: run_late\n"
+            "extra_note: keep-me 🎯\n"
+            f"next_run_at: '{(NOW - timedelta(seconds=1)).isoformat()}'\n"
+        )
+        path = _write_schedule_file(tmp_path / "schedules", "s1.md", user_keys, body)
+        before = path.read_bytes()
+        # The fixture really carries the body verbatim after the fence.
+        assert _body_after_fence(before) == body.encode("utf-8")
+
+        assert store.claim("s1") is True
         store.advance_after_run("s1", NOW + timedelta(days=1), NOW, "ok", None)
         after = path.read_bytes()
 
-        # The unknown extra key survives the runtime rewrite.
+        # Byte-for-byte body fidelity across both runtime rewrites: the
+        # leading spaces, the tab, the blank-line run, the unicode and the
+        # trailing whitespace are all preserved exactly.
+        assert _body_after_fence(after) == body.encode("utf-8")
+        assert _body_after_fence(after) == _body_after_fence(before)
+
+        # The unknown extra user key survives the runtime rewrite too.
         assert b"extra_note: keep-me" in after
         assert b"\xf0\x9f\x8e\xaf" in after  # 🎯 survives
         # Runtime keys moved exactly as requested; user keys are untouched.
@@ -158,21 +222,7 @@ class TestAC38RoundTrip:
         assert parsed.last_error is None
         # Every user key (known + unknown extra) is preserved byte-for-byte
         # as a line; the runtime keys are the only lines that changed.
-        user_keys_before = {
-            line for line in before.decode("utf-8").splitlines()
-            if line and not line.startswith(
-                ("---", "next_run_at:", "last_run_at:", "last_status:", "last_error:")
-            )
-        }
-        user_keys_after = {
-            line for line in after.decode("utf-8").splitlines()
-            if line and not line.startswith(
-                ("---", "next_run_at:", "last_run_at:", "last_status:", "last_error:")
-            )
-        }
-        assert user_keys_before == user_keys_after
-        # The body (command note) is unchanged.
-        assert b"echo hi" in after
+        assert _user_key_lines(before) == _user_key_lines(after)
 
     def test_created_at_survives_claim_and_advance(self, tmp_path):
         """AC38: created_at is persisted and stable across runtime rewrites."""
