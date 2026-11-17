@@ -68,6 +68,7 @@ USER_KEYS = (
     "cwd",
     "on_miss",
     "channel",
+    "topic",
 )
 # Create-path extras: written after the known keys when set, preserved
 # on rewrite, never required.
@@ -102,6 +103,9 @@ class Schedule:
     status: str
     last_status: str | None
     last_error: str | None
+    # FR37: the Zulip post topic (``topic`` key); empty for Discord rows
+    # and for a Zulip file that leaves it to ``schedules.zulip_topic``.
+    topic: str = ""
 
 
 @dataclass(frozen=True)
@@ -426,6 +430,7 @@ class ScheduleStore:
             status="paused" if not enabled else "active",
             last_status=(str(data["last_status"]) if data.get("last_status") else None),
             last_error=(str(data["last_error"]) if data.get("last_error") else None),
+            topic=str(data.get("topic", "") or ""),
         )
         return row, None, {"user": ordered, "body": doc["body"]}
 
@@ -443,6 +448,8 @@ class ScheduleStore:
             # as ``channel``; a channel *name* is never persisted (the
             # seam resolves names at load, spc-996).
             values["channel"] = row.dest_channel_id
+        if row.topic:
+            values["topic"] = row.topic
         body = ""
         if row.payload_type == "command":
             payload = json.loads(row.payload)
