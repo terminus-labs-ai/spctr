@@ -8,12 +8,33 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+def _kill_process_group(proc: asyncio.subprocess.Process) -> None:
+    """SIGKILL the child's whole process group (spc-1091).
+
+    The shell runs in its own session, so its PGID is the child's PID.
+    Killing only the direct child would leave forked grandchildren alive
+    holding the stdout/stderr pipes open, which makes ``proc.wait()``
+    block until the grandchild finishes instead of honoring the timeout
+    (dash forks rather than execs its last command). Falls back to
+    killing just the child if the group is already gone.
+    """
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except (ProcessLookupError, OSError):
+            pass
 
 # Cap for the error line posted to the channel (NFR Isolation).
 ERROR_LINE_CAP = 200
@@ -95,6 +116,10 @@ async def run_command(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
+            # Its own process group, so the timeout kill takes down
+            # grandchildren the payload forked, not just the shell
+            # (FR29, spc-1091).
+            start_new_session=True,
         )
         try:
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
@@ -103,7 +128,7 @@ async def run_command(
             exit_code = proc.returncode
             timed_out = False
         except asyncio.TimeoutError:
-            proc.kill()
+            _kill_process_group(proc)
             await proc.wait()
             stdout_bytes = b""
             stderr_bytes = b""
