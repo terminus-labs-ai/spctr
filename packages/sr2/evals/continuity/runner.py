@@ -1543,10 +1543,400 @@ def run_scenario_candidate(scenario: Scenario, candidate_id: str,
     return run_dir
 
 
+# ---------------------------------------------------------------------------
+# sr2-100 / AC19 — backend bakeoff: baseline vs every registry candidate
+# ---------------------------------------------------------------------------
+#
+# FR21's lexicographic rule, evaluated in order:
+#   1. disqualify policy leaks and stale-over-current errors;
+#   2. require improved correctness/recall over the full-history baseline;
+#   3. minimize irrelevant context / hallucination;
+#   4. minimize token cost;
+#   5. minimize latency.
+# This driver records raw per-scenario evidence and the gate outcome. It
+# tunes, weights and filters nothing: per the spec's Implementation Notes, a
+# bakeoff in which no candidate clears the rule is recorded as ``no_go`` and
+# stops the feature before downstream assembly.
+#
+# Two metric sets are published per arm, for one reason (full analysis:
+# ``docs/evals/continuity-backend-selection.md``):
+#   ``published_metrics``
+#       the arm's own ``metrics.json``, verbatim. NOT comparable across arms:
+#       the baseline sweep scores only gold-bearing turns
+#       (:func:`gold_turns`), while a candidate run publishes every turn of
+#       the FR40 scenario, gold-bearing or not, and an unscored turn is 0 on
+#       correctness and on ``recall`` for the turns before A's decision
+#       re-enters the request.
+#   ``gold_turn_subset`` / ``totals``
+#       both arms restricted to the corpus's gold-bearing retrieval turns,
+#       keyed by position within ``gold_turns(scenario)`` — identical inputs,
+#       identical budgets, identical scored set. These are the numbers the
+#       gate reads.
+
+#: File name of the published bakeoff report under the results root.
+BAKEOFF_FILENAME = "backend-bakeoff.json"
+
+#: Arm id for current full-history behavior: the comparison target, not a
+#: candidate (FR21 measures candidates against it).
+BASELINE_ARM = "baseline"
+
+#: Zero-tolerance gates (NFR "No policy leaks"; AC21 "zero policy leaks and
+#: zero stale-over-current errors"). The corpus plants exactly one policy leak
+#: and one stale read through the pinned control-plan delivery
+# (:data:`POLICY_DELIVERY_PLAN`); that planted exercise travels in every arm
+#: byte-identically, so the gate compares each candidate against the
+#: baseline's count rather than against an absolute zero, and the published
+#: absolutes sit next to the verdict.
+_HARD_GATES = ("policy_leak", "stale_current")
+
+#: FR21 stage names, in evaluation order (recorded in the report).
+GATE_STAGES = (
+    "disqualify_policy_leaks_and_stale_over_current",
+    "require_improved_correctness_or_recall",
+    "minimize_irrelevant_context_and_hallucination",
+    "minimize_token_cost",
+    "minimize_latency",
+)
+
+#: Material limits of this evidence set, recorded with the verdict so a reader
+#: cannot over-read it. Each is reproducible from the committed runner.
+BAKEOFF_LIMITATIONS = (
+    ("Retrieval coverage: on the ten FR31 scenarios and the cage fixture a "
+     "candidate run delivers background through the same full-history path as "
+     "the baseline (run_scenario_turn); the registry index is consulted only "
+     "for the FR40 scenario. Their observations are byte-identical to the "
+     "baseline's for every candidate, so those scenarios cannot discriminate "
+     "backends."),
+    ("Scoring parity: a candidate run scores all seven FR40 turns while the "
+     "baseline sweep scores gold-bearing turns only, which is why the two "
+     "published aggregates differ mostly by scoring set. The gate therefore "
+     "reads gold_turn_subset/totals, not published_metrics."),
+    ("Shared candidate state: _run_fr40_scenario builds one index per "
+     "scenario run and appends the same six record ids once per repetition, "
+     "so re-appended versions crowd distinct records out of search(limit=6) "
+     "from repetition 2 on. Candidate FR40 scores therefore depend on "
+     "run_index (delivered background tokens per reference-turn repetition: "
+     "118, 69, 45, 45, 45 for structured/vector-hybrid/embedding; 118, 69, "
+     "48, 48, 48 for graph)."),
+    ("Observation keys: turn_index means the position within gold_turns() in "
+     "the baseline arm and the absolute turn position in the FR40 candidate "
+     "arm; _canonical_rows normalizes both before comparison."),
+    ("Latency is the Metric Contract's pinned constant (same value in every "
+     "arm), so the final tie-breaker carries no discriminating signal here."),
+    ("The FR21 qualification predicate ('improved correctness/recall') was "
+     "still without an owner ruling on both readings (strict improvement in "
+     "both, versus no regression in either plus improvement in one). Both "
+     "readings are evaluated and reported; the verdict does not depend on "
+     "which one wins."),
+)
+
+
+def _arm_rows(arm: str, workdir: Path) -> tuple[str, dict, list[dict]]:
+    """Execute one arm and return ``(run_id, published_metrics, rows)``.
+
+    Reuses the published entry points — :func:`run_baseline` for the baseline
+    and :func:`run_candidate` for a registry candidate — so every number in
+    the report is literally a published artifact, traceable to a run id. The
+    work dir is never the versioned results root, so arm runs cannot disturb
+    committed publications.
+    """
+    if arm == BASELINE_ARM:
+        run_dir = run_baseline(workdir)
+    else:
+        run_dir = run_candidate(arm, workdir)
+    rows = [json.loads(line)
+            for line in (run_dir / "observations.jsonl").read_text().splitlines()
+            if line.strip()]
+    published = json.loads((run_dir / "metrics.json").read_text())
+    return run_dir.name, published, rows
+
+
+def _gold_positions(scenario: Scenario) -> tuple[int, ...]:
+    """Absolute 1-based positions of *scenario*'s gold-bearing turns."""
+    return tuple(i for i, turn in enumerate(scenario.turns, start=1)
+                 if tuple(turn.gold_answers))
+
+
+def _canonical_rows(scenario: Scenario, rows: list[dict]) -> list[dict]:
+    """Rows of gold-bearing retrieval turns only, keyed by gold position.
+
+    The two arms publish different turn-index spaces for the FR40 scenario
+    (gold-position for the baseline sweep, absolute position for the candidate
+    path), and a candidate run also publishes non-gold turns. The scored set
+    has to be the same set in both arms, so the rows are filtered to gold-
+    bearing turns and re-keyed. Detection uses the rows-per-repetition count:
+    ``len(gold_turns(scenario))`` means gold-positional, ``len(turns)`` means
+    absolute; anything else is a shape the normalizer refuses rather than
+    guesses past.
+    """
+    gold_abs = _gold_positions(scenario)
+    per_run = {row["run_index"] for row in rows}
+    if len(per_run) != RUNS_PER_SCENARIO:
+        raise AssertionError(
+            f"{scenario.id}: expected {RUNS_PER_SCENARIO} repetitions, "
+            f"got {sorted(per_run)}")
+    counts = {sum(1 for row in rows if row["run_index"] == run_index)
+              for run_index in per_run}
+    gold_positional = counts <= {max(len(gold_abs), 1)}
+    if not gold_positional and counts > {len(scenario.turns)}:
+        raise AssertionError(
+            f"{scenario.id}: unexpected rows-per-repetition {counts}; "
+            f"expected {len(gold_abs)} (gold-positional) or "
+            f"{len(scenario.turns)} (absolute)")
+    kept: list[dict] = []
+    for row in rows:
+        index = int(row["turn_index"])
+        if gold_positional:
+            position = index
+        else:
+            if index not in gold_abs:
+                continue  # non-gold turn scored by the candidate path
+            position = gold_abs.index(index) + 1
+        if position > len(gold_abs):
+            raise AssertionError(
+                f"{scenario.id}: gold position {position} out of range "
+                f"({len(gold_abs)} gold turns)")
+        kept.append({**row, "gold_position": position})
+    if len(kept) != RUNS_PER_SCENARIO * len(gold_abs):
+        raise AssertionError(
+            f"{scenario.id}: canonicalized to {len(kept)} rows, expected "
+            f"{RUNS_PER_SCENARIO * len(gold_abs)}")
+    return kept
+
+
+def _subset_metrics(rows: list[dict], pricing: dict) -> dict:
+    """The Metric Contract aggregates over *rows*, plus the row count.
+
+    Delegates to :func:`_aggregate_metrics` so the bakeoff scores with the
+    same formulas the baseline publishes; adds ``n_observations`` so a reader
+    sees the scored set size next to every mean.
+    """
+    metrics = _aggregate_metrics(rows, pricing)
+    metrics["n_observations"] = len(rows)
+    return metrics
+
+
+def _tie_break_stage(outcomes: dict[str, dict], ranked: list[str]) -> str:
+    """The first FR21 stage at which the survivors actually differ.
+
+    With a single survivor nothing had to be traded off, so the stage that
+    selected it is the quality gate; with several, the report names the first
+    comparison that produced an order (irrelevant context/hallucination, then
+    cost, then latency), falling back to the last stage when they are equal on
+    everything and only the name-order tie-break applied.
+    """
+    if len(ranked) == 1:
+        return GATE_STAGES[1]
+    stages = (
+        (GATE_STAGES[2], ("irrelevant_context", "hallucination")),
+        (GATE_STAGES[3], ("cost",)),
+        (GATE_STAGES[4], ("latency_median",)),
+    )
+    for stage, keys in stages:
+        if len({tuple(outcomes[name][key] for key in keys)
+                for name in ranked}) > 1:
+            return stage
+    return GATE_STAGES[4]
+
+
+def evaluate_gate(baseline: dict, candidates: dict[str, dict]) -> dict:
+    """Apply FR21's lexicographic rule to per-arm gold-subset totals.
+
+    Returns the per-candidate outcome (with the delta on each gate metric),
+    the survivors, and the overall verdict: ``selected`` with a named default,
+    or ``no_go`` with ``selected_default`` null. Ties never win: stage 2 asks
+    for an improvement, so an arm equal to the baseline on correctness and
+    recall is eliminated even if it would rank well on later stages.
+    """
+    outcomes: dict[str, dict] = {}
+    survivors: list[str] = []
+    for name, arm in sorted(candidates.items()):
+        disqualified_by = [
+            f"{metric}: {arm[metric]} > baseline {baseline[metric]}"
+            for metric in _HARD_GATES
+            if arm[metric] > baseline[metric]
+        ]
+        delta_correctness = arm["correctness"] - baseline["correctness"]
+        delta_recall = arm["recall"] - baseline["recall"]
+        no_regression = delta_correctness >= 0 and delta_recall >= 0
+        improved_any = delta_correctness > 0 or delta_recall > 0
+        outcomes[name] = {
+            "disqualified_by": disqualified_by,
+            "delta_correctness": delta_correctness,
+            "delta_recall": delta_recall,
+            "stage": (GATE_STAGES[0] if disqualified_by else
+                      GATE_STAGES[1] if not (no_regression and improved_any)
+                      else GATE_STAGES[2]),
+            "qualified_on_no_regression_reading": bool(
+                not disqualified_by and no_regression and improved_any),
+            "qualified_on_strict_both_reading": bool(
+                not disqualified_by and delta_correctness > 0
+                and delta_recall > 0),
+            "irrelevant_context": arm["irrelevant_context"],
+            "hallucination": arm["hallucination"],
+            "cost": arm["cost"],
+            "latency_median": arm["latency"]["median"],
+        }
+        if outcomes[name]["qualified_on_no_regression_reading"]:
+            survivors.append(name)
+
+    if not survivors:
+        all_hard = bool(outcomes) and all(
+            outcome["disqualified_by"] for outcome in outcomes.values())
+        return {
+            "candidates": outcomes,
+            "survivors": [],
+            "selected_default": None,
+            "status": "no_go",
+            "deciding_stage": (GATE_STAGES[0] if all_hard
+                               else GATE_STAGES[1]),
+        }
+    ranked = sorted(
+        survivors,
+        key=lambda name: (outcomes[name]["irrelevant_context"],
+                          outcomes[name]["hallucination"],
+                          outcomes[name]["cost"],
+                          outcomes[name]["latency_median"],
+                          name))
+    return {
+        "candidates": outcomes,
+        "survivors": ranked,
+        "selected_default": ranked[0],
+        "status": "selected",
+        "deciding_stage": _tie_break_stage(outcomes, ranked),
+    }
+
+
+def run_bakeoff(output_root: Path | None = None, *,
+                arms: Sequence[str] | None = None,
+                scenarios: Sequence[str] | None = None) -> Path:
+    """Run the baseline and every candidate under identical inputs/budgets,
+    apply the FR21 gate and publish ``<root>/backend-bakeoff.json``.
+
+    Inputs stay fixed: only the *selection* of corpus scenarios and candidate
+    arms is parameterized (so a test can drive a couple of scenarios), never
+    their content or budgets. A partial run is refused when writing to the
+    versioned results root — the committed report is always the full bakeoff.
+
+    No wall-clock value enters the report, so a publication reproduces byte
+    for byte from the same committed inputs, like the arms themselves.
+    """
+    import tempfile
+
+    from evals.continuity.candidates import CANDIDATES
+
+    root = Path(output_root) if output_root is not None else DEFAULT_OUTPUT_ROOT
+    arm_ids = [BASELINE_ARM] + list(arms if arms is not None
+                                    else sorted(CANDIDATES))
+    unknown = [a for a in arm_ids if a != BASELINE_ARM and a not in CANDIDATES]
+    if unknown:
+        raise KeyError(f"unknown candidate arm(s) {unknown}; "
+                       f"registry: {sorted(CANDIDATES)}")
+    scenario_ids = list(scenarios if scenarios is not None else CORPUS)
+    missing = [s for s in scenario_ids if s not in CORPUS]
+    if missing:
+        raise KeyError(f"unknown scenario(s) {missing}")
+    full_run = arms is None and scenarios is None
+    if not full_run and root.resolve() == DEFAULT_OUTPUT_ROOT.resolve():
+        raise ValueError(
+            "a partial bakeoff cannot overwrite the published report; pass "
+            "an explicit output_root")
+
+    pricing = load_pricing()
+    run_ids: dict[str, str] = {}
+    published: dict[str, dict] = {}
+    rows_by_arm: dict[str, list[dict]] = {}
+    with tempfile.TemporaryDirectory(prefix="sr2-bakeoff-") as workdir:
+        for arm in arm_ids:
+            run_id, arm_published, rows = _arm_rows(
+                arm, Path(workdir) / arm)
+            run_ids[arm] = run_id
+            published[arm] = arm_published
+            rows_by_arm[arm] = [row for row in rows
+                                if row["scenario_id"] in scenario_ids]
+
+    per_scenario: dict[str, dict[str, dict]] = {}
+    totals: dict[str, dict] = {}
+    canonical: dict[str, list[dict]] = {}
+    for arm, rows in rows_by_arm.items():
+        canonical[arm] = []
+        for scenario_id in scenario_ids:
+            scenario = CORPUS[scenario_id]
+            rows_in_arm = [r for r in rows if r["scenario_id"] == scenario_id]
+            if not rows_in_arm:
+                raise AssertionError(
+                    f"{arm}: no observations for {scenario_id}")
+            subset = _canonical_rows(scenario, rows_in_arm)
+            canonical[arm].extend(subset)
+            table = per_scenario.setdefault(scenario_id, {})
+            table[arm] = _subset_metrics(subset, pricing)
+            table[arm]["closed_residency"] = (
+                arm_published.get("closed_residency") if arm != BASELINE_ARM
+                else None)
+        totals[arm] = _subset_metrics(canonical[arm], pricing)
+        totals[arm]["closed_residency"] = (
+            published[arm].get("closed_residency") if arm != BASELINE_ARM
+            else None)
+
+    gate = evaluate_gate(totals[BASELINE_ARM],
+                         {name: totals[name] for name in arm_ids
+                          if name != BASELINE_ARM})
+    payload = {
+        "schema_version": 1,
+        "bead": "sr2-100",
+        "acceptance_criterion": "AC19",
+        "spec": "specs/autonomous-context-continuity.md",
+        "selection_rule_stages": list(GATE_STAGES),
+        "hard_gates": list(_HARD_GATES),
+        "inputs": {
+            "arms": arm_ids,
+            "scenario_ids": scenario_ids,
+            "runs_per_scenario": RUNS_PER_SCENARIO,
+            "run_ids": run_ids,
+            "pricing": pricing,
+            "scoring_set": ("gold-bearing retrieval turns only, keyed by "
+                            "position within gold_turns(scenario)"),
+            # The arms' run ids identify the publishing checkout (HEAD when
+            # its tree is committed, a tree hash otherwise), so a re-run from
+            # another checkout legitimately prints different strings here.
+            "run_ids_note": (
+                "Echoed from each arm's publication directory name; it names "
+                "the checkout that generated this report, not the results. "
+                "Metrics, gate outcome and verdict reproduce byte for byte "
+                "from any checkout carrying the same committed inputs."),
+        },
+        "published_metrics": published,
+        "per_scenario_gold_subset": per_scenario,
+        "totals_gold_subset": totals,
+        "gate": gate,
+        "verdict": {
+            "status": gate["status"],
+            "selected_default": gate["selected_default"],
+            "deciding_stage": gate["deciding_stage"],
+            "consequence": (
+                "no candidate qualifies: the feature stops before product "
+                "assembly/cutover and returns to a spec session with this "
+                "evidence (spec Implementation Notes, task 10 gate)"
+                if gate["status"] == "no_go" else
+                "selected backend becomes the continuity default; downstream "
+                "assembly may proceed"),
+        },
+        "limitations": list(BAKEOFF_LIMITATIONS),
+    }
+    root.mkdir(parents=True, exist_ok=True)
+    report = root / BAKEOFF_FILENAME
+    report.write_text(json.dumps(payload, sort_keys=True, indent=2,
+                                 allow_nan=False) + "\n")
+    return report
+
+
 def main(argv: Sequence[str] | None = None) -> Path:
     import sys
 
     args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "bakeoff":
+        args = args[1:]
+        return run_bakeoff(Path(args[0]) if args else None)
     return run_baseline(Path(args[0]) if args else None)
 
 
