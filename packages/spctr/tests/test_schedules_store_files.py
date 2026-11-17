@@ -155,6 +155,58 @@ class TestAC38RoundTrip:
         assert "channel:" in text
         assert "café" not in text
 
+    def test_created_file_with_unknown_extra_key_parses_back_equal(self, tmp_path):
+        """AC38-r1: parse-back equality holds when the frontmatter carries
+        an unknown extra key (spc-994 Agent G test-strength finding).
+
+        The extra key is injected after ``store.create`` — the same
+        mechanics the runtime-rewrite test uses for ``extra_note`` — so the
+        equality check runs against a file the store itself wrote plus one
+        user line, not a hand-authored fixture.
+        """
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        row = _make_schedule(
+            label="wördly ✓ 日本語 🎯",
+            next_run_at=datetime(2026, 10, 21, 7, 0, tzinfo=UTC),
+            payload=json.dumps({"command": "echo héllo — ünïcode ✓", "cwd": "/tmp"}),
+        )
+        store.create(row)
+        path = tmp_path / "schedules" / "s1.md"
+        original = path.read_text(encoding="utf-8")
+        # Inject one unknown key line into the frontmatter block, right
+        # after the opening fence.
+        path.write_text(
+            original.replace("---\n", "---\nzz_extra: keep-me 🎯\n", 1),
+            encoding="utf-8",
+        )
+        assert "zz_extra: keep-me 🎯" in path.read_text(encoding="utf-8")
+
+        parsed = store.get("s1")
+        assert parsed is not None
+        assert (
+            parsed.id, parsed.agent, parsed.platform, parsed.requester_id,
+            parsed.requester_mention, parsed.dest_channel_id,
+            parsed.dest_channel_name, parsed.label, parsed.cron,
+            parsed.payload_type, parsed.payload, parsed.on_miss,
+            parsed.next_run_at, parsed.last_run_at, parsed.created_at,
+            parsed.status, parsed.last_status, parsed.last_error,
+        ) == (
+            "s1", row.agent, row.platform, row.requester_id,
+            row.requester_mention, row.dest_channel_id,
+            "", row.label, row.cron,
+            row.payload_type, row.payload, row.on_miss,
+            row.next_run_at, row.last_run_at, row.created_at,
+            row.status, row.last_status, row.last_error,
+        )
+        # The unknown key is still on disk and its value byte-intact (the
+        # emoji is pinned by its UTF-8 bytes, not just the ASCII prefix).
+        after = path.read_text(encoding="utf-8")
+        assert "zz_extra: keep-me" in after
+        assert "zz_extra: keep-me \U0001F3AF" in after  # 🎯 on disk
+        # The unicode/emoji label and command survived on disk too.
+        assert "wördly ✓ 日本語 🎯" in after
+        assert "héllo — ünïcode ✓" in after
+
     def test_agent_body_survives_byte_for_byte(self, tmp_path):
         """AC38-r1: unicode/emoji agent bodies survive create + parse."""
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
