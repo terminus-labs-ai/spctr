@@ -8,7 +8,10 @@ contract (``Schedule`` dataclass, one-path constructor, method names and
 signatures) is unchanged so the engine, executors, tool and interface
 wiring compile untouched.  The constructor takes the owning agent
 (FR36: one directory per agent); rows carry it as ``Schedule.agent`` —
-frontmatter never does.
+frontmatter never does.  Files are read and written as bytes with no
+newline translation, so a body round-trips byte-for-byte through a
+runtime rewrite and a file authored with ``\\r\\n`` endings keeps them
+(AC38).
 
 Concurrent writers are serialized by an advisory ``flock`` on a lockfile
 in the directory (FR41); every mutation writes a temp file in the same
@@ -138,29 +141,59 @@ def _parse_ts(raw) -> datetime:
     return value
 
 
+#: Opening-fence prefixes in recognition order, longest first so a CRLF
+#: file is never mistaken for an LF file whose first line ends early.  The
+#: tail of the matched prefix is the separator the renderer reuses.
+_OPEN_FENCES = ("---\r\n", "---\n")
+#: Closing fence plus its line terminator, for every mix of line endings
+#: around the fence line.
+_CLOSE_FENCES = ("\r\n---\r\n", "\r\n---\n", "\n---\r\n", "\n---\n")
+#: Closing fence at EOF with no trailing newline.
+_CLOSE_AT_EOF = ("\r\n---", "\n---")
+
+
 def _split_document(text: str) -> dict[str, str] | None:
     """Split one file into frontmatter head and body.
 
     Returns ``None`` when the file does not start with a ``---`` fence or
     has no closing fence.  The body is everything after the second fence
-    line, byte-for-byte; a missing body is empty.
+    line, byte-for-byte; a missing body is empty.  Fence lines are
+    recognized with either ``\\n`` or ``\\r\\n`` terminators, and the
+    result carries the separator that terminated the opening fence
+    (``eol``) so a rewrite renders frontmatter in the style the file was
+    authored with: a hand-authored CRLF file keeps CRLF and its body
+    stays byte-for-byte across runtime rewrites (AC38).
     """
-    if not text.startswith("---\n"):
+    open_fence = next((f for f in _OPEN_FENCES if text.startswith(f)), "")
+    if not open_fence:
         return None
-    end = text.find("\n---\n", 4)
-    if end == -1:
+    open_len, eol = len(open_fence), open_fence[len("---") :]
+    # Search from index 3: every closing candidate starts with the newline
+    # that ends the opening fence line, which sits at index 3 either way.
+    found = [(text.find(f, 3), f) for f in _CLOSE_FENCES]
+    found = [(end, fence) for end, fence in found if end != -1]
+    if not found:
         # A closing fence at EOF (no trailing newline) is valid; the
         # body is empty.
-        if text.endswith("\n---"):
-            return {"head": text[4 : len(text) - 4], "body": ""}
+        for tail in _CLOSE_AT_EOF:
+            if text.endswith(tail):
+                return {
+                    "head": text[open_len : len(text) - len(tail)],
+                    "body": "",
+                    "eol": eol,
+                }
         return None
-    head = text[4:end]
+    end, fence = min(found)
+    head = text[open_len:end]
     # Body: everything after the closing fence line, byte-for-byte, minus
-    # exactly one separator newline (the blank line the renderer puts
-    # between the fence and the body).
-    rest = text[end + len("\n---\n") :]
-    body = rest[1:] if rest.startswith("\n") else rest
-    return {"head": head, "body": body}
+    # exactly one separator line terminator (the blank line the renderer
+    # puts between the fence and the body).
+    rest = text[end + len(fence) :]
+    for term in ("\r\n", "\n"):
+        if rest.startswith(term):
+            rest = rest[len(term) :]
+            break
+    return {"head": head, "body": rest, "eol": eol}
 
 
 def _render_scalar(key: str, value: object) -> str:
@@ -181,12 +214,20 @@ def _render_scalar(key: str, value: object) -> str:
     return key + ": " + "\n".join(lines)
 
 
-def _render_document(user: list[tuple[str, object]], runtime: list[tuple[str, str]], body: str) -> str:
+def _render_document(
+    user: list[tuple[str, object]],
+    runtime: list[tuple[str, str]],
+    body: str,
+    eol: str = "\n",
+) -> str:
     """Render ``---`` fences, user keys, runtime keys, blank line, body.
 
     User keys render in their recorded order, then runtime keys in the
     canonical order; the body is emitted byte-for-byte, never re-rendered
-    through a markdown library.
+    through a markdown library.  *eol* is the line separator for the
+    structure this renderer owns (fences and frontmatter lines): ``"\\n"``
+    for tool-created files, the file's own ``"\\r\\n"`` on a rewrite of a
+    CRLF file, so the rewrite is byte-stable across polls.
     """
     parts = ["---"]
     for key, value in user:
@@ -197,7 +238,7 @@ def _render_document(user: list[tuple[str, object]], runtime: list[tuple[str, st
     if body:
         parts.append("")
     parts.append(body)
-    return "\n".join(parts)
+    return eol.join(parts)
 
 
 def _payload_json(
@@ -292,14 +333,27 @@ class ScheduleStore:
             os.close(fd)
 
     def _replace(self, filename: str, content: str) -> None:
-        """Write *content* to *filename* atomically (temp + ``os.replace``)."""
+        """Write *content* to *filename* atomically (temp + ``os.replace``).
+
+        Bytes, not text mode: text mode would translate every ``\\n`` to
+        the platform separator, so a CRLF body read from disk would come
+        back as LF (and vice versa).  The string is encoded exactly as
+        parsed so the file round-trips byte-for-byte (AC38).
+        """
         tmp = self._dir / f".tmp-{os.getpid()}-{secrets.token_hex(4)}-{filename}"
-        tmp.write_text(content, encoding="utf-8")
+        tmp.write_bytes(content.encode("utf-8"))
         os.replace(tmp, self._dir / filename)
 
     def _read_file(self, filename: str) -> str | None:
+        """Read one file without newline translation.
+
+        ``Path.read_text`` applies universal-newline decoding (``\\r\\n``
+        becomes ``\\n``), which silently rewrites a hand-authored CRLF
+        file on the first engine pass.  Decoding the raw bytes keeps the
+        body byte-for-byte through claim and advance_after_run (AC38).
+        """
         try:
-            return (self._dir / filename).read_text(encoding="utf-8")
+            return (self._dir / filename).read_bytes().decode("utf-8")
         except (OSError, UnicodeDecodeError):
             return None
 
@@ -448,7 +502,11 @@ class ScheduleStore:
             last_error=(str(data["last_error"]) if data.get("last_error") else None),
             topic=str(data.get("topic", "") or ""),
         )
-        return row, None, {"user": ordered, "body": doc["body"]}
+        return row, None, {
+            "user": ordered,
+            "body": doc["body"],
+            "eol": doc["eol"],
+        }
 
     def _render_row(self, row: Schedule) -> str:
         """Render a fresh file from a Schedule (create path)."""
@@ -514,7 +572,15 @@ class ScheduleStore:
 
     def _rewrite(self, filename: str, row: Schedule, extra: dict) -> None:
         user = _user_keys(extra["user"], row)
-        self._replace(filename, _render_document(user, _runtime_list(row), extra["body"]))
+        self._replace(
+            filename,
+            _render_document(
+                user,
+                _runtime_list(row),
+                extra["body"],
+                extra.get("eol", "\n"),
+            ),
+        )
 
     # ---- sync core ----
 
