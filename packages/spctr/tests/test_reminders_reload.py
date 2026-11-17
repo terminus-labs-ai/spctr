@@ -118,13 +118,19 @@ class FakeAgent:
         return self._runtime.new_session(frame_id=frame_id)
 
 
-def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
+def _make_interface(
+    monkeypatch: pytest.MonkeyPatch, store_dir: Path, poll_seconds: float = 0.01
+):
     """A ZulipInterface with a fake client: no server, no credentials, no
     network (same shape as spc-139's test helper).
 
     ``poll_seconds`` overrides each built delivery loop's real sleep
     interval (tiny — injected clocks mean no reminder timing depends on
     it), so loop churn between tests stays cheap.
+
+    The fakes are installed with monkeypatch.setattr, so pytest restores
+    the real ZulipClient and load_zulip_credentials when the test ends —
+    no fake outlives the test that installed it.
     """
     import spctr.interfaces.zulip.interface as iface_mod
     from spctr.interfaces.zulip.client import ZulipCredentials
@@ -164,10 +170,15 @@ def _make_interface(store_dir: Path, poll_seconds: float = 0.01):
         async def update_message(self, message_id, content):
             pass
 
-    iface_mod.load_zulip_credentials = lambda path: ZulipCredentials(
-        email="bot@test.local", api_key="k", site="http://127.0.0.1:1"
+    # monkeypatch.setattr restores the real objects at test teardown.
+    monkeypatch.setattr(
+        iface_mod,
+        "load_zulip_credentials",
+        lambda path: ZulipCredentials(
+            email="bot@test.local", api_key="k", site="http://127.0.0.1:1"
+        ),
     )
-    iface_mod.ZulipClient = lambda **kw: _FakeClient()
+    monkeypatch.setattr(iface_mod, "ZulipClient", lambda **kw: _FakeClient())
     interface = iface_mod.ZulipInterface(config)
 
     real_start_reminders = interface._start_reminders
@@ -279,13 +290,15 @@ async def _drive_message(interface: Any, agent: Any, message_id: int) -> None:
 
 
 class TestR1EnableOnReload:
-    async def test_reload_enable_registers_tool_and_starts_loop(self, tmp_path):
+    async def test_reload_enable_registers_tool_and_starts_loop(
+        self, monkeypatch, tmp_path
+    ):
         """R1: reloading a config that switches reminders from disabled to
         enabled registers the reminder tool and starts the Zulip delivery
         loop without restarting the interface — and a row already due at
         that moment is delivered through the interface's own send path."""
         store_file = tmp_path / "r.sqlite"
-        interface = _make_interface(tmp_path)
+        interface = _make_interface(monkeypatch, tmp_path)
         runtime = _runtime(_config(store_file))  # no block = disabled
         agent = FakeAgent(runtime)
         assert "reminder" not in runtime.registry
@@ -318,11 +331,11 @@ class TestR1EnableOnReload:
         finally:
             await interface.stop()
 
-    async def test_running_interface_starts_loop_on_next_message(self, tmp_path):
+    async def test_running_interface_starts_loop_on_next_message(self, monkeypatch, tmp_path):
         """R1 through the message path: the loop is None after start(), a
         reload-then-message leaves it running (sync fires in _run_turn)."""
         store_file = tmp_path / "r.sqlite"
-        interface = _make_interface(tmp_path)
+        interface = _make_interface(monkeypatch, tmp_path)
         runtime = _runtime(_config(store_file))
         agent = FakeAgent(runtime)
 
@@ -344,7 +357,7 @@ class TestR1EnableOnReload:
 
 
 class TestR2DisableOnReload:
-    async def test_reload_disable_unregisters_tool_and_stops_loop(self, tmp_path):
+    async def test_reload_disable_unregisters_tool_and_stops_loop(self, monkeypatch, tmp_path):
         """R2: reloading a config that switches reminders from enabled to
         disabled unregisters the tool and stops the loop; pending rows are
         left intact."""
@@ -352,7 +365,7 @@ class TestR2DisableOnReload:
         runtime = _runtime(_enabled(store_file, poll_seconds=30))
         agent = FakeAgent(runtime)
         assert "reminder" in runtime.registry
-        interface = _make_interface(tmp_path)
+        interface = _make_interface(monkeypatch, tmp_path)
 
         await interface.start(agent)
         try:
@@ -390,7 +403,7 @@ class TestR2DisableOnReload:
 
 class TestR3UnchangedIsQuiet:
     async def test_unchanged_block_neither_restarts_loop_nor_re_registers(
-        self, tmp_path
+        self, monkeypatch, tmp_path
     ):
         """R3: reloading with an unchanged reminders block neither restarts
         the loop nor re-registers the tool — every identity is preserved,
@@ -398,7 +411,7 @@ class TestR3UnchangedIsQuiet:
         store_file = tmp_path / "r.sqlite"
         runtime = _runtime(_enabled(store_file, poll_seconds=30))
         agent = FakeAgent(runtime)
-        interface = _make_interface(tmp_path)
+        interface = _make_interface(monkeypatch, tmp_path)
 
         await interface.start(agent)
         try:
@@ -434,7 +447,7 @@ class TestR3UnchangedIsQuiet:
             await interface.stop()
 
     async def test_no_op_reload_with_other_fields_leaves_reminders_alone(
-        self, tmp_path
+        self, monkeypatch, tmp_path
     ):
         """R3: a reload that changes something else (the model) applies it
         but the reminders branch stays untouched — no restart, no
@@ -442,7 +455,7 @@ class TestR3UnchangedIsQuiet:
         store_file = tmp_path / "r.sqlite"
         runtime = _runtime(_enabled(store_file, poll_seconds=30))
         agent = FakeAgent(runtime)
-        interface = _make_interface(tmp_path)
+        interface = _make_interface(monkeypatch, tmp_path)
 
         await interface.start(agent)
         try:
@@ -472,7 +485,7 @@ class TestR3UnchangedIsQuiet:
 
 class TestR4SettingsChangeWhileEnabled:
     async def test_poll_and_timezone_change_take_effect_without_restart(
-        self, tmp_path
+        self, monkeypatch, tmp_path
     ):
         """R4: a reload that changes reminders settings while enabled
         (poll_seconds, timezone) takes effect without restarting the
@@ -481,7 +494,7 @@ class TestR4SettingsChangeWhileEnabled:
         store_file = tmp_path / "r.sqlite"
         runtime = _runtime(_enabled(store_file, poll_seconds=30))
         agent = FakeAgent(runtime)
-        interface = _make_interface(tmp_path, poll_seconds=0.01)
+        interface = _make_interface(monkeypatch, tmp_path, poll_seconds=0.01)
 
         await interface.start(agent)
         try:

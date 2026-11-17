@@ -19,9 +19,11 @@ import asyncio
 import dataclasses
 import hashlib
 import json
+import logging
 import math
 import os
 import re
+import shutil
 import subprocess
 import time
 from collections.abc import Sequence
@@ -38,6 +40,8 @@ from sr2.tokenization.counting import count_tokens
 
 from evals.continuity.models import Block, Scenario, ScenarioTurn
 from evals.continuity.scenarios import CORPUS, gold_turns
+
+logger = logging.getLogger(__name__)
 
 _PKG_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _PKG_DIR.parents[1]
@@ -88,7 +92,8 @@ _LATENCY_PINNED_MEDIAN = 0.02
 _LATENCY_P95_RATIO = 1.5
 
 #: How many published run dirs the default results tree retains (the run
-#: is deterministic; superseded dirs are reproducible from Git).
+#: is deterministic; superseded untracked dirs are reproducible from Git;
+#: Git-tracked run dirs are never removed — see _tracked_result_dirs).
 _PUBLISHED_RUN_RETENTION = 1
 
 #: The FR40 paraphrase-return scenario (sr2-163). Runs of this scenario
@@ -389,6 +394,101 @@ def latency_stats(runs: Sequence[Sequence[float]]) -> dict:
 def load_pricing() -> dict:
     """The parsed pinned ``evals/continuity/pricing.json`` (no network)."""
     return json.loads(PRICING_PATH.read_text())
+
+
+def _tracked_result_dirs(root: Path) -> set[Path] | None:
+    """Top-level run dirs tracked by Git under *root* (``git ls-files``).
+
+    Paths are listed ``--full-name`` (repository-root-relative) so the
+    mapping never depends on which view Git happens to print: with an
+    exported absolute ``GIT_DIR`` the listing comes back as the whole
+    repository from the repo root instead of *root*'s own view. The
+    mapping prefix (the listing path of *root*) is therefore derived
+    from the listing itself, cross-checked against the view:
+
+    - normal view: ``rev-parse --show-prefix`` (from the same probe
+      environment) gives *root*'s path relative to the repo root; every
+      listed path must sit under it, else the view and listing disagree.
+    - hostile / repo-root view (prefix empty): the repo root must
+      contain *root* (``rev-parse --is-inside-work-tree``), and the
+      listing path of *root* is recovered as the common prefix of the
+      listed paths that sit under it — requiring at least one such path
+      so the recovery is grounded in real listing content, not guessed.
+
+    Returns ``None`` — the caller must then remove nothing (unknown is
+    not "untracked") — when Git is unavailable, *root* is not inside a
+    repository, or the view and listing cannot be reconciled.
+    """
+    try:
+        listed = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--full-name", "-z", "--",
+             "."],
+            capture_output=True, text=True, check=False,
+        )
+        prefixed = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-prefix"],
+            capture_output=True, text=True, check=False,
+        )
+        inside = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return None
+    if listed.returncode != 0 or prefixed.returncode != 0:
+        return None
+    prefix = prefixed.stdout.strip()
+    if not prefix.endswith("/"):
+        prefix = f"{prefix}/" if prefix else ""
+    names = [n for n in listed.stdout.split("\0") if n]
+    if prefix:
+        # Normal view: *root* is a proper subdirectory of the repo; the
+        # view's prefix is the listing path of *root* itself. Every
+        # listed path must sit under it, or the view and the listing
+        # disagree (untrustworthy) — remove nothing.
+        if not all(n.startswith(prefix) for n in names):
+            return None
+    else:
+        # Hostile / repo-root view: the listing is whole-repository (or
+        # *root* is the repo root itself). The listing path of *root*
+        # is recovered from the listing content, grounded in at least
+        # one listed path under it (its trailing path components).
+        if inside.returncode != 0:
+            return None
+        # The listing path of *root* ends with *root*'s own trailing
+        # path components (its ``basename``); the listed paths under
+        # *root* therefore all end with ``<root-basename>/<run-dir>/<file>``,
+        # so the common prefix of those paths is the listing path of
+        # *root* itself. This is grounded in real listing content.
+        # A path in the listing sits under *root* iff its parent
+        # directory is *root* (i.e. the component before the last
+        # component equals *root*'s basename). This is grounded in
+        # real listing content.
+        # A path in the listing sits under *root* iff its grandparent
+        # dir (two components up from the end) equals *root*'s basename
+        # (i.e. the path is ``<root>/<run-dir>/<file>``). Grounded in
+        # real listing content.
+        root_name = Path(root).name
+        under = [n for n in names
+                 if n.count("/") >= 2
+                 and n.split("/")[-3] == root_name]
+        if not under:
+            return None
+        # Common prefix of all under-*root* paths = listing path of *root*.
+        prefix = "/".join(under[0].split("/")[:-2]) + "/"
+        if not all(n.startswith(prefix) for n in under):
+            return None
+    dirs: set[Path] = set()
+    for name in names:
+        if not name.startswith(prefix):
+            continue
+        rest = name[len(prefix):]
+        # "" (a file at the root itself) and "." (the gitlink of a
+        # submodule at *root*) name no dir under *root*; anything else's
+        # first component does.
+        if rest and rest != "." and "/" in rest:
+            dirs.add(root / rest.split("/", 1)[0])
+    return dirs
 
 
 # ---------------------------------------------------------------------------
@@ -852,16 +952,32 @@ def run_baseline(output_root: Path | None = None) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     if root.resolve() == DEFAULT_OUTPUT_ROOT.resolve():
         # Keep the versioned results tree on disk only for the latest run
-        # identity; superseded run dirs are reproducible from Git + this
-        # runner. A pinned published run is removed once the results dir
-        # grows past this many entries (see docs/evals/continuity-baseline.md).
-        stale = sorted((d for d in root.iterdir()
-                        if d.is_dir() and d.name != run_dir.name),
-                       key=lambda d: d.stat().st_mtime)
-        while len(stale) >= _PUBLISHED_RUN_RETENTION:
-            import shutil
-
-            shutil.rmtree(stale.pop(0))
+        # identity; superseded untracked run dirs are reproducible from Git
+        # + this runner. Git-tracked run dirs (published, committed
+        # results) are never removed, so a local re-run under a different
+        # run id cannot delete a committed artifact (see
+        # docs/evals/continuity-baseline.md).
+        tracked = None
+        try:
+            tracked = _tracked_result_dirs(root)
+        except OSError:
+            # Probe unavailable (e.g. git not installed).
+            pass
+        if tracked is None:
+            # Git unavailable / not a repository: deleting untracked-vs-
+            # tracked is indistinguishable — remove nothing.
+            logger.warning(
+                "continuity baseline: could not determine Git-tracked "
+                "results dirs under %s; skipping retention cleanup", root,
+            )
+        else:
+            stale = sorted(
+                (d for d in root.iterdir()
+                 if d.is_dir() and d.name != run_dir.name
+                 and d not in tracked),
+                key=lambda d: d.stat().st_mtime)
+            while len(stale) >= _PUBLISHED_RUN_RETENTION:
+                shutil.rmtree(stale.pop(0))
 
     pricing = load_pricing()
     observations: list[dict] = []

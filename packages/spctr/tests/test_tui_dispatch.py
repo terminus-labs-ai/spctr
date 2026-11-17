@@ -79,9 +79,9 @@ async def test_exit_command_exits_app(tui_app: SpctrTUI) -> None:
 
 @pytest.mark.asyncio
 async def test_reset_command_starts_new_session(tui_app: SpctrTUI) -> None:
-    """/reset must call agent.new_session() and show confirmation."""
+    """/new must call agent.new_session() and show confirmation."""
     async with tui_app.run_test(headless=True) as pilot:
-        await submit_input(pilot, tui_app, "/reset")
+        await submit_input(pilot, tui_app, "/new")
         await pilot.pause()
         tui_app.agent.new_session.assert_called_once()
         assert_log_contains(tui_app, "New session started")

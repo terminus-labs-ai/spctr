@@ -269,6 +269,14 @@ class ZulipClient:
             timeout=self._event_poll_timeout,
         )
 
+    @staticmethod
+    def _topic_narrow(channel_id: int, topic: str) -> list[dict[str, Any]]:
+        """The exact-topic narrow shared by the history and opener reads."""
+        return [
+            {"operator": "channel", "operand": channel_id},
+            {"operator": "topic", "operand": topic},
+        ]
+
     async def get_topic_messages(
         self, channel_id: int, topic: str
     ) -> dict[str, Any]:
@@ -279,18 +287,35 @@ class ZulipClient:
         operator with the exact topic string. The answer's ``messages``
         key holds the protocol message list.
         """
-        narrow = [
-            {"operator": "channel", "operand": channel_id},
-            {"operator": "topic", "operand": topic},
-        ]
         return await self._request(
             "GET",
             "/messages",
             query={
-                "narrow": json.dumps(narrow),
+                "narrow": json.dumps(self._topic_narrow(channel_id, topic)),
                 "anchor": "newest",
                 "num_before": 100,
                 "num_after": 0,
+            },
+        )
+
+    async def get_topic_opener(
+        self, channel_id: int, topic: str
+    ) -> dict[str, Any]:
+        """Fetch a topic's first message (GET /api/v1/messages, anchor oldest).
+
+        Same narrow as :meth:`get_topic_messages`; ``anchor: "oldest"``
+        with ``num_after: 1`` returns the single oldest message of the
+        topic under the same bounded request timeout — the topic's true
+        opener, independent of how many later messages exist (spc-1071).
+        """
+        return await self._request(
+            "GET",
+            "/messages",
+            query={
+                "narrow": json.dumps(self._topic_narrow(channel_id, topic)),
+                "anchor": "oldest",
+                "num_before": 0,
+                "num_after": 1,
             },
         )
 

@@ -47,6 +47,26 @@ whole-config reload:
   ``realm_users``/``user_id``) never do, and unadmitted channels are
   ignored without model work. With ``mention_only`` a topic with no active
   Session starts only on a mention of the bot (spc-1013).
+- With ``topic_owner_routing`` (spc-1071) one owner bot answers per topic:
+  the first event for an unrecorded topic resolves that topic's opener
+  (its oldest message, one bounded fetch via ``anchor: "oldest"``) and
+  records the owner — ``self`` when the opener mentions this bot,
+  ``other`` when it mentions a non-wildcard realm identity that is not
+  this bot (a human's included), ``unowned`` when it carries no such
+  mention or was itself bot-/self-authored. After the opener only BOT
+  mentions move the owner (Diego ruling 2026-11-16): a later message
+  mentioning this bot re-records ``self``, one mentioning another
+  registered bot (by name or ``|id``) re-records ``other``, and a
+  mention of a human — a quote-reply ``@_**Name|id** [said]``
+  attribution included — or an untagged message changes nothing. A
+  message in a topic recorded ``other`` is dropped silently before the
+  ``!stop`` check, the Session probe, the ``mention_only`` gate and the
+  indicator; a topic recorded ``self`` plays the role an active Session
+  plays for ``mention_only``. A failed opener fetch records nothing —
+  not even a claim from the trigger message itself — and evaluation
+  proceeds as today (fail-open: a transport error is never a lockout,
+  and the next event retries the fetch). The map is in-process, survives
+  whole-config reloads, and clears on restart.
 - An admitted turn posts ``thinking_message`` in its topic before the
   model call, streams through ``Session.stream_message``, and the answer
   (or ``error_message``) replaces the placeholder by edit, chunked past
@@ -68,10 +88,11 @@ whole-config reload:
 from __future__ import annotations
 
 import asyncio
+import enum
 import logging
-import re
 import time
 import urllib.parse
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Callable
 
 from spctr.core import RunContext, RunMode
@@ -82,7 +103,11 @@ from spctr.events import (
     AgentToolResult,
     AgentToolStart,
 )
-from spctr.interfaces.common import chunk_message, tail_for_stream
+from spctr.interfaces.common import (
+    chunk_message,
+    render_progress_message,
+    render_tool_line,
+)
 from spctr.interfaces.zulip.client import (
     ZulipClient,
     ZulipError,
@@ -92,8 +117,11 @@ from spctr.interfaces.zulip.client import (
 from spctr.interfaces.zulip.config import (
     ZulipConfig,
     bot_ids_from_registration,
+    bot_names_from_registration,
     is_configured_no_area_channel,
     mentions_bot,
+    mentions_other,
+    mentions_other_bot,
     resolve_channel_area,
     validate_no_area_only_routing,
 )
@@ -104,6 +132,12 @@ from spctr.reminders import (
     ReminderOrigin,
 )
 from spctr.reminders import tool as reminders_tool
+from spctr.schedules import ScheduleEngine
+from spctr.tools.schedule_tool import (
+    ScheduleOrigin,
+    ScheduleTurnScope,
+    schedule_turn_scope,
+)
 
 if TYPE_CHECKING:
     from spctr.config_source import SpctrConfigSource
@@ -123,24 +157,35 @@ _PROBE_FAILURE_TEXT = (
     "answer without its history. Please try again later."
 )
 
+# FR47: the topic of the schedule whose result is posting in this task.
+# The engine's send seam carries only the destination channel; a Zulip
+# post also needs the row's topic.
+_schedule_post_topic: ContextVar[str] = ContextVar(
+    "spctr_zulip_schedule_post_topic", default=""
+)
 
-_TOOL_PLACEHOLDER = re.compile(r"\{(name|input|content)\}")
 
+class _ZulipScheduleEngine(ScheduleEngine):
+    """The schedule engine whose posts carry each row's Zulip topic (FR47).
 
-def render_tool_line(
-    template: str, name: str, value: str, max_chars: int
-) -> str:
-    """Fill one tool-line template (spc-1015).
-
-    *value* (a tool's ``str(input)`` or its result content) is cut to
-    *max_chars* plus ``...`` and fills both ``{input}`` and ``{content}``;
-    ``{name}`` is the tool name. One substitution pass, so a value that
-    itself contains ``{name}`` is never re-filled.
+    Posting stays the engine's (FR26/FR27 forms unchanged); this only
+    exposes the posting row's ``topic`` to the interface's send callable
+    for the duration of that row's posts.
     """
-    if len(value) > max_chars:
-        value = value[:max_chars] + "..."
-    values = {"name": name, "input": value, "content": value}
-    return _TOOL_PLACEHOLDER.sub(lambda m: values[m.group(1)], template)
+
+    async def _handle_command_result(self, sched: Any, result: Any) -> None:
+        token = _schedule_post_topic.set(sched.topic)
+        try:
+            await super()._handle_command_result(sched, result)
+        finally:
+            _schedule_post_topic.reset(token)
+
+    async def _handle_agent_result(self, sched: Any, result: Any) -> None:
+        token = _schedule_post_topic.set(sched.topic)
+        try:
+            await super()._handle_agent_result(sched, result)
+        finally:
+            _schedule_post_topic.reset(token)
 
 
 def is_stop_command(content: str) -> bool:
@@ -224,14 +269,11 @@ class _ProgressView:
     def _render(self) -> None:
         if self._placeholder_id is None:
             return
-        parts: list[str] = []
-        if self._lines:
-            parts.append("\n".join(self._lines))
-        parts.append(
-            self._text + "..." if self._text else self._config.thinking_message
-        )
-        content = tail_for_stream(
-            "\n\n".join(parts), self._config.max_message_length
+        content = render_progress_message(
+            self._lines,
+            self._text,
+            self._config.thinking_message,
+            self._config.max_message_length,
         )
         if self._pending is not None and not self._pending.done():
             self._pending.cancel()
@@ -253,6 +295,87 @@ def topic_frame_id(agent_name: str, origin: str, channel_id: int, topic: str) ->
     """
     escaped = urllib.parse.quote(topic, safe="")
     return f"zulip:{agent_name}:{origin}#{channel_id}#{escaped}"
+
+
+class TopicOwner(enum.Enum):
+    """Who owns one Zulip topic under ``topic_owner_routing`` (spc-1071)."""
+
+    SELF = "self"
+    OTHER = "other"
+    UNOWNED = "unowned"
+
+
+def _claimed_owner(
+    content: Any,
+    *,
+    full_name: str | None,
+    user_id: int | None,
+    bot_ids: set[int],
+    bot_names: set[str],
+) -> TopicOwner | None:
+    """The owner a LATER message's content claims, or None for no change
+    (spc-1071, Diego ruling 2026-11-16).
+
+    Applied by the routing block to every message in a recorded topic: a
+    mention resolving to this bot claims the topic for itself
+    (``self``); a mention of ANOTHER BOT — a registered bot identity by
+    name or ``|id`` — hands it over (``other``); a mention of a human —
+    Zulip's quote-reply ``@_**Name|id** [said]`` attribution included —
+    and an untagged message change nothing.
+    """
+    if not isinstance(content, str):
+        return None
+    if mentions_bot(content, full_name=full_name, user_id=user_id):
+        return TopicOwner.SELF
+    if mentions_other_bot(
+        content,
+        full_name=full_name,
+        user_id=user_id,
+        bot_ids=bot_ids,
+        bot_names=bot_names,
+    ):
+        # Another bot's mention hands the topic over (dec: dec-713).
+        return TopicOwner.OTHER
+    return None
+
+
+def classify_topic_opener(
+    opener: dict[str, Any],
+    *,
+    full_name: str | None,
+    user_id: int | None,
+    bot_ids: set[int],
+) -> TopicOwner:
+    """Ownership class of a topic's opener (spc-1071, Diego's rule 2026-11-15).
+
+    The realm-mention syntax is exactly spc-1013's (see
+    :func:`spctr.interfaces.zulip.config.mentions_bot` and
+    :func:`mentions_other`): literal ``@**<name>**`` /
+    ``@**<name>|<id>**`` or the silent ``@_**…**`` form of either; plain
+    typed ``@edi`` is no mention, and a wildcard (``@**all**``,
+    ``@**everyone**``, ...) names no user and is never ownership
+    material. Unlike the later-message rule (:func:`_claimed_owner`),
+    ANY non-wildcard mention decides an opener — a human's included: a
+    mention resolving to this bot records ``self``, any other records
+    ``other``, none records ``unowned``. An opener sent by a bot or by
+    this very account (the loop-guard classes) always records
+    ``unowned``.
+    """
+    sender_id = opener.get("sender_id")
+    if isinstance(sender_id, int) and (
+        sender_id in bot_ids or sender_id == user_id
+    ):
+        return TopicOwner.UNOWNED
+    content = opener.get("content")
+    if not isinstance(content, str):
+        return TopicOwner.UNOWNED
+    if mentions_bot(content, full_name=full_name, user_id=user_id):
+        return TopicOwner.SELF
+    if mentions_other(content, full_name=full_name, user_id=user_id):
+        # An opener mentioning someone else — a human included — makes
+        # this bot record other and drop the topic. (dec: dec-712)
+        return TopicOwner.OTHER
+    return TopicOwner.UNOWNED
 
 
 class ZulipInterface:
@@ -315,8 +438,11 @@ class ZulipInterface:
         # fetched topic history") without making the new topic look
         # populated. Refused triggers never join: they stay prior content.
         self._admitted_ids: set[int] = set()
-        # Bot user IDs from registration realm metadata (see _read_bot_ids).
+        # Bot user IDs and full names from registration realm metadata
+        # (see _read_bot_ids / bot_names_from_registration); the names let
+        # the ownership rule recognize a mention of another bot.
         self._bot_ids: set[int] = set()
+        self._bot_names: set[str] = set()
         # The bot's own account (registration ``user_id``/``full_name``):
         # never a trigger, and the name a mention_only message must mention.
         self._bot_user_id: int | None = None
@@ -326,6 +452,10 @@ class ZulipInterface:
         # distinct topics run concurrently.
         self._topic_tails: dict[str, asyncio.Task[None]] = {}
         self._topic_tasks: dict[str, set[asyncio.Task[None]]] = {}
+        # (stream_id, topic) -> TopicOwner under topic_owner_routing
+        # (spc-1071). In-process like the Session map above: survives
+        # whole-config reloads, cleared on restart.
+        self._topic_owners: dict[tuple[int, str], TopicOwner] = {}
         # Serializes delivery-loop restarts now that turns overlap.
         self._reminders_lock = asyncio.Lock()
         # Reminders (spc-139, FR6): delivery loop + the per-turn origin.
@@ -336,6 +466,12 @@ class ZulipInterface:
         # stops or restarts the loop when the Runtime's stamp differs.
         self._reminders_stamp: int | None = None
         self._reminders_start_task: Any = None
+        # Schedules (FR47): the platform-scoped engine this interface owns
+        # and the reload stamp it started under (see _sync_schedules).
+        self._schedules_lock = asyncio.Lock()
+        self._schedules_engine: Any = None
+        self._schedules_stamp: int | None = None
+        self._schedules_start_task: Any = None
         # Channel name → ID from the latest registration snapshot
         # (spc-140, FR10); empty when the snapshot is unavailable or
         # malformed, and a name then lives only in a later refresh.
@@ -359,6 +495,7 @@ class ZulipInterface:
         await self._register()
         self._wire_reminder_channel_lookup(agent)
         self._start_reminders(agent)
+        self._start_schedules(agent)
         self._running = True
         logger.info(
             "Zulip interface started: origin=%s queue registered bot=%s",
@@ -372,6 +509,7 @@ class ZulipInterface:
         self._queue_id: str = str(registration["queue_id"])
         self._last_event_id: int = int(registration["last_event_id"])
         self._bot_ids = self._read_bot_ids(registration)
+        self._bot_names = bot_names_from_registration(registration)
         own_id = registration.get("user_id")
         self._bot_user_id = own_id if isinstance(own_id, int) else None
         full_name = registration.get("full_name")
@@ -398,6 +536,7 @@ class ZulipInterface:
             task.cancel()
         await asyncio.gather(*tails, return_exceptions=True)
         await self._stop_reminders()
+        await self._stop_schedules()
         for session, _seen in self._sessions.values():
             session.close()
         self._sessions.clear()
@@ -560,6 +699,108 @@ class ZulipInterface:
             if self._reminders_loop is None and handle is not None:
                 self._start_reminders(self._agent)
 
+    # ---- schedules (FR47) ---------------------------------------------------
+
+    def _start_schedules(self, agent: Any) -> None:
+        """Start this interface's Zulip-scoped schedule engine (FR47).
+
+        Disabled is None: no engine, nothing scanned (FR46). The engine
+        claims only ``platform: zulip`` files of the shared directory and
+        posts through this interface's Zulip client to the row's stream
+        and topic; the tool gets the engine (``run_now``), the stream
+        resolver and the stream-name lookup through its seams.
+        """
+        schedules = getattr(agent, "schedules", None)
+        if schedules is None:
+            return
+        if not asyncio.iscoroutinefunction(
+            getattr(schedules.store, "recover_claimed_async", None)
+        ):
+            return
+
+        async def send(channel_id: str, content: str) -> None:
+            # Raised, not swallowed: the engine logs a failed post.
+            await self._client.send_message(
+                type="stream",
+                to=int(channel_id),
+                topic=_schedule_post_topic.get() or self._schedules_topic(),
+                content=content,
+            )
+
+        engine = _ZulipScheduleEngine(
+            schedules.store,
+            send=send,
+            poll_seconds=schedules.poll_seconds,
+            tz=schedules.tz,
+            agent_name=schedules.agent_name,
+            command_timeout=schedules.command_timeout,
+            agent_timeout=schedules.agent_timeout,
+            platform="zulip",
+        )
+        tool = getattr(schedules, "tool", None)
+        if tool is not None:
+            tool._engine = engine
+            tool.set_channel_resolver(self._resolve_channel)
+            tool.set_channel_namer(self._schedule_channel_name)
+        self._schedules_engine = engine
+        self._schedules_stamp = getattr(agent, "schedules_stamped", 0)
+        self._schedules_start_task = asyncio.ensure_future(engine.start())
+
+    async def _stop_schedules(self) -> None:
+        """End the engine; unrun files are left intact (FR35)."""
+        engine = self._schedules_engine
+        self._schedules_engine = None
+        self._schedules_stamp = None
+        if engine is None:
+            return
+        try:
+            await engine.stop()
+        except asyncio.CancelledError:
+            pass
+
+    async def _sync_schedules(self) -> None:
+        """Re-seat the engine after a live config reload (FR23).
+
+        Same edges as ``_sync_reminders``; overlapping turns serialize the
+        restart on their own lock.
+        """
+        async with self._schedules_lock:
+            runtime = self._runtime_of(self._agent)
+            stamp = getattr(runtime, "schedules_stamped", None) if runtime else None
+            if self._schedules_stamp is not None:
+                if stamp == self._schedules_stamp:
+                    return
+                await self._stop_schedules()
+            handle = getattr(self._agent, "schedules", None)
+            if self._schedules_engine is None and handle is not None:
+                self._start_schedules(self._agent)
+
+    def _schedules_topic(self) -> str:
+        """``schedules.zulip_topic`` from the agent config in force."""
+        return self._agent.config.agent.schedules.zulip_topic
+
+    def _schedule_channel_name(self, platform: str, channel_id: str) -> str:
+        """Stream name for a stored Zulip stream ID ("" when unknown)."""
+        if platform != "zulip" or not str(channel_id).isdigit():
+            return ""
+        name = self._channel_display_name(int(channel_id))
+        return "" if name == str(channel_id) else name
+
+    def _schedules_origin_for(
+        self, channel_id: int, message: dict[str, Any]
+    ) -> ScheduleOrigin:
+        """The schedule origin of THIS turn (same capture as reminders)."""
+        sender_id = message.get("sender_id")
+        return ScheduleOrigin(
+            agent=self._agent.config.agent.name,
+            platform="zulip",
+            requester_id=str(sender_id) if sender_id is not None else "",
+            requester_mention=f"@{sender_id}" if sender_id is not None else "",
+            channel_id=str(channel_id),
+            channel_name=self._channel_display_name(channel_id),
+            default_topic=self._schedules_topic(),
+        )
+
     async def run(self, agent: Any) -> None:
         """Poll the Zulip event queue until stopped, never waiting on a turn.
 
@@ -641,7 +882,16 @@ class ZulipInterface:
         channel_id = message["stream_id"]
         topic = str(message.get("subject", ""))
         if is_stop_command(str(message.get("content", ""))):
-            asyncio.create_task(self._stop_topic(channel_id, topic))
+            if config.topic_owner_routing:
+                # The stop stays a fast path, but ownership gates it
+                # first (spc-1071): a non-owner's !stop is dropped.
+                asyncio.create_task(
+                    self._owned_stop(
+                        channel_id, topic, message.get("content")
+                    )
+                )
+            else:
+                asyncio.create_task(self._stop_topic(channel_id, topic))
             return
         frame_id = topic_frame_id(
             self._agent.config.agent.name,
@@ -690,6 +940,21 @@ class ZulipInterface:
                 text = self._config.stop_idle_message
         await self._send_reply(channel_id, topic, text)
         return text
+
+    async def _owned_stop(
+        self, channel_id: int, topic: str, content: Any
+    ) -> str | None:
+        """A ``!stop`` under ``topic_owner_routing`` (spc-1071).
+
+        The ownership drop runs first — the fast path cannot answer a
+        ``!stop`` in a topic another bot owns — and the stop itself stays
+        off the topic queue, exactly as the flag-off path.
+        """
+        if await self._dropped_by_owner(channel_id, topic, content):
+            # Another bot owns this topic: no stop, no reply.
+            # (dec: dec-712)
+            return None
+        return await self._stop_topic(channel_id, topic)
 
     async def _handle_in_topic(
         self,
@@ -769,6 +1034,80 @@ class ZulipInterface:
             bot_user_id=self._bot_user_id,
         )
 
+    async def _topic_opener(
+        self, channel_id: int, topic: str
+    ) -> dict[str, Any] | None:
+        """The topic's oldest message, or None when the lookup failed.
+
+        One bounded fetch (``anchor: "oldest"``, the client's request
+        timeout applies). ANY failure — a transport exception, an empty
+        answer, or a malformed first entry — is one warning and a fail-open
+        ``None``: the caller records nothing (not even a claim from the
+        trigger message itself), evaluates as today, and the next event
+        retries the fetch. A lookup failure is never a lockout.
+        """
+        try:
+            response = await self._client.get_topic_opener(channel_id, topic)
+            messages = (
+                response.get("messages") if isinstance(response, dict) else None
+            )
+            opener = messages[0] if isinstance(messages, list) and messages else None
+            if not (
+                isinstance(opener, dict)
+                and isinstance(opener.get("id"), int)
+            ):
+                raise TypeError("opener answer carries no message with an id")
+        except Exception as exc:  # noqa: BLE001 — fail-open by contract (spc-1071)
+            logger.warning(
+                "Topic opener lookup failed for channel %s topic %r (fail-open): %s",
+                channel_id,
+                topic,
+                exc,
+            )
+            return None
+        return opener
+
+    async def _dropped_by_owner(
+        self, channel_id: int, topic: str, content: Any
+    ) -> bool:
+        """True when this topic's recorded owner is ANOTHER BOT and the
+        message is silently dropped (spc-1071, dec: dec-712).
+
+        Called only under ``topic_owner_routing``, by ``_handle_message``
+        (before the ``!stop`` check and all turn machinery) and by the
+        ``!stop`` fast path (:meth:`_owned_stop`). The first event for an
+        unrecorded topic resolves the opener — one fetch, cached whatever
+        its value; a failed lookup records nothing (not even a claim from
+        this message's own mentions) and the caller routes as today. Then
+        the later-message claim rule applies to *content*: a self-mention
+        claims the topic, a mention of another bot hands it away, and a
+        human mention or an untagged message changes nothing.
+        """
+        key = (channel_id, topic)
+        if key not in self._topic_owners:
+            opener = await self._topic_opener(channel_id, topic)
+            if opener is not None:
+                # One fetch per topic per process: the recorded value
+                # is cached whatever it is.
+                self._topic_owners[key] = classify_topic_opener(
+                    opener,
+                    full_name=self._bot_full_name,
+                    user_id=self._bot_user_id,
+                    bot_ids=self._bot_ids,
+                )
+        if key not in self._topic_owners:
+            return False
+        claimed = _claimed_owner(
+            content,
+            full_name=self._bot_full_name,
+            user_id=self._bot_user_id,
+            bot_ids=self._bot_ids,
+            bot_names=self._bot_names,
+        )
+        if claimed is not None:
+            self._topic_owners[key] = claimed
+        return self._topic_owners[key] is TopicOwner.OTHER
+
     async def _handle_message(
         self,
         message: dict[str, Any],
@@ -793,6 +1132,15 @@ class ZulipInterface:
         channel_id = message["stream_id"]
         message_id = message["id"]
         topic = str(message.get("subject", ""))
+        # Topic ownership (spc-1071): before ANY turn machinery — the
+        # !stop command, the area/frame resolution, the Session probe, the
+        # mention_only gate and the indicator all sit behind this block.
+        # With the flag off (the default) nothing here runs: byte-for-byte
+        # the pre-bead route.
+        if config.topic_owner_routing and await self._dropped_by_owner(
+            channel_id, topic, message.get("content")
+        ):
+            return
         if is_stop_command(str(message.get("content", ""))):
             await self._stop_topic(channel_id, topic)
             return
@@ -820,7 +1168,15 @@ class ZulipInterface:
             # mention_only (Discord parity): a topic with no active
             # Session starts only on a mention of the bot; a topic
             # that already has one needs none. No probe, no reply.
-            return
+            # With topic_owner_routing (spc-1071) a topic recorded
+            # ``self`` plays that same exemption: this bot owns the
+            # topic, so its follow-ups need no mention.
+            if not (
+                config.topic_owner_routing
+                and self._topic_owners.get((channel_id, topic))
+                is TopicOwner.SELF
+            ):
+                return
         if entry is None:
             # Admit-and-remember only on success. The topic chain covers
             # probe and turn. Eligible siblings from this batch are fresh
@@ -929,13 +1285,16 @@ class ZulipInterface:
         # FR 9a: what the probe found besides the trigger is this account's
         # own writing. It enters the new Session as assistant-authored context
         # in chronological order — never a user turn — so the trigger answers
-        # from it without the model ever being asked to act on it. An entry
-        # whose text is unreadable carries no context: it is skipped rather
-        # than ending the turn the amendment just admitted.
+        # from it without the model ever being asked to act on it. The
+        # chronological list is built by sorting the probe answer ascending on
+        # the message id, so context order never depends on the order the
+        # probe happened to return. An entry whose text is unreadable carries
+        # no context: it is skipped rather than ending the turn the amendment
+        # just admitted.
         from sr2.models import Message, TextBlock
 
         history = getattr(session, "history", None)
-        for entry in messages:
+        for entry in sorted(messages, key=lambda e: int(e.get("id", 0))):
             if not _is_own_account(entry):
                 continue  # the trigger, an admitted sibling, or a malformed entry
             content = entry.get("content")
@@ -983,11 +1342,21 @@ class ZulipInterface:
                 origin=self._reminders_origin_for(channel_id, message)
             )
         )
+        # This task's schedule scope (FR47), only when schedules are on:
+        # with no handle there is no tool to read it.
+        schedule_token = None
+        if getattr(self._agent, "schedules", None) is not None:
+            schedule_token = schedule_turn_scope.set(
+                ScheduleTurnScope(
+                    origin=self._schedules_origin_for(channel_id, message)
+                )
+            )
         try:
             # Live reload happens upstream once per batch; re-seat the
             # delivery loop here so an enable/settings change lands before
             # this turn's tool could create a row (spc-143).
             await self._sync_reminders()
+            await self._sync_schedules()
             placeholder_id = await self._send_reply(
                 channel_id, topic, config.thinking_message
             )
@@ -1033,6 +1402,8 @@ class ZulipInterface:
                 channel_id, topic, placeholder_id, text, config
             )
         finally:
+            if schedule_token is not None:
+                schedule_turn_scope.reset(schedule_token)
             reminders_tool.turn_scope.reset(scope_token)
 
     async def _deliver_answer(

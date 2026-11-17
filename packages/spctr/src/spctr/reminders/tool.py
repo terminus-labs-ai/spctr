@@ -6,10 +6,12 @@ economy). ``create`` optionally resolves a same-platform named channel
 FR19/FR20.
 
 Origin plumbing: the owning interface records each turn's origin —
-platform, channel, requester and mention — on its ``Agent`` under
-``reminders_origin`` BEFORE the turn runs (and clears it afterwards), so
+platform, channel, requester and mention — in that turn's task-local
+``turn_scope`` BEFORE the turn runs (and resets it afterwards), so
 concurrent turns in different channels never record each other's origin.
-The tool reads it at call time, inside the turn that owns it.
+The tool reads it at call time, inside the turn that owns it, and from
+nowhere else: outside a turn scope there is no origin and every action
+refuses with FR21's error.
 """
 from __future__ import annotations
 
@@ -86,8 +88,9 @@ class TurnScope:
 # owning interface around its turn, read by the tool at call time. A task
 # is the unit of isolation — concurrent tasks never share a context — so
 # two turns in different channels cannot record each other's origin, with
-# or without a lock. Outside a turn the default None leaves the tool on its
-# origin_getter, so every other interface is unchanged.
+# or without a lock. Outside a turn the default None is the whole story:
+# this scope is the tool's only origin source, so a non-chat turn has no
+# origin and refuses under FR21.
 turn_scope: ContextVar[TurnScope | None] = ContextVar(
     "spctr_reminders_turn_scope", default=None
 )
@@ -146,7 +149,6 @@ class ReminderTool:
         store: ReminderStore,
         timezone: str,
         agent_name: str,
-        origin_getter: Any,
         clock: Any = None,
         topic: str = "reminders",
         channel_resolver: Any = None,
@@ -157,8 +159,6 @@ class ReminderTool:
             timezone: IANA zone from ``reminders.timezone``; ``at`` is
                 interpreted in this zone and all replies render in it.
             agent_name: Agent name for log lines (never the text).
-            origin_getter: Callable returning the current turn's
-                ``ReminderOrigin`` (set by the interface) or None.
             clock: Callable returning the current UTC datetime. Injected
                 for tests; defaults to the real clock.
             topic: The Zulip topic reminders are posted to
@@ -173,7 +173,6 @@ class ReminderTool:
         self._store = store
         self._tz = ZoneInfo(timezone)
         self._agent_name = agent_name
-        self._origin_getter = origin_getter
         self._clock = clock or (lambda: datetime.now(tz=ZoneInfo("UTC")))
         self._topic = topic
         self._channel_resolver = channel_resolver
@@ -191,11 +190,11 @@ class ReminderTool:
         id: str | None = None,
     ) -> str:
         # FR21: without a chat turn there is no origin, and every action
-        # refuses (checked before anything else). This turn's scope wins
-        # over the shared getter, so an overlapping turn can never supply
-        # another channel's origin.
+        # refuses (checked before anything else). This turn's task-local
+        # scope is the only source, so a turn that has none can never be
+        # handed another channel's origin.
         scoped = turn_scope.get()
-        origin = scoped.origin if scoped is not None else self._origin_getter()
+        origin = scoped.origin if scoped is not None else None
         if origin is None:
             return NO_INTERFACE_ERROR
         if action == "create":

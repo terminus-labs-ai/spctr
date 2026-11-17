@@ -24,7 +24,8 @@ from spctr.schedules.store import Schedule, ScheduleStore
 
 logger = logging.getLogger(__name__)
 
-# FR34: no schedule delivery (non-Discord interfaces).
+# FR34/FR47: no schedule delivery (an interface with neither Discord nor
+# Zulip); FR47 keeps the increment-2 text verbatim.
 NO_INTERFACE_ERROR = "Error: Schedules need the Discord interface"
 
 # FR25: max payload sizes.
@@ -56,6 +57,9 @@ class ScheduleOrigin:
     requester_mention: str
     channel_id: str
     channel_name: str
+    # FR47: the post topic a create from this origin stores when the call
+    # names none (Zulip: ``schedules.zulip_topic``; Discord: unused).
+    default_topic: str = ""
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,10 @@ class ScheduleTool:
                 "type": "string",
                 "description": "Same-platform channel name; omit for this channel",
             },
+            "topic": {
+                "type": "string",
+                "description": "Zulip post topic; omit for the default",
+            },
             "label": {
                 "type": "string",
                 "description": "Short name shown in posts and list",
@@ -129,6 +137,14 @@ class ScheduleTool:
         # exists, so the seam is post-construction, mirroring how the
         # engine is wired.
         self._schedule_channel_resolver: Any = None
+        # FR47: the owning interface's ``(platform, channel_id) -> name``
+        # lookup, so ``list`` can name a stored destination ID ("" when
+        # it cannot). Same post-construction seam as the resolver.
+        self._schedule_channel_namer: Any = None
+
+    def set_channel_namer(self, namer: Any) -> None:
+        """Register the owning interface's channel-ID -> name lookup (FR47)."""
+        self._schedule_channel_namer = namer
 
     def set_channel_resolver(self, resolver: Any) -> None:
         """Register the owning interface's named-channel resolver (FR10/FR11).
@@ -156,6 +172,7 @@ class ScheduleTool:
         channel: str | None = None,
         label: str | None = None,
         id: str | None = None,
+        topic: str | None = None,
     ) -> str:
         scoped = schedule_turn_scope.get()
         origin = scoped.origin if scoped is not None else self._get_origin()
@@ -164,7 +181,8 @@ class ScheduleTool:
 
         if action == "create":
             return await self._create(
-                cron, type, command, cwd, instruction, agent, channel, label, origin
+                cron, type, command, cwd, instruction, agent, channel, label, origin,
+                topic,
             )
         if action == "cancel":
             return await self._cancel(id, origin)
@@ -185,6 +203,7 @@ class ScheduleTool:
         channel: str | None,
         label: str | None,
         origin: ScheduleOrigin,
+        topic: str | None = None,
     ) -> str:
         # FR25 validation
         if not cron or not cron.strip():
@@ -225,6 +244,11 @@ class ScheduleTool:
                 return resolved
             dest_channel_id = str(resolved.channel_id)
             dest_channel_name = str(resolved.channel_name)
+        # FR47: a Zulip schedule records its post topic, the given one or
+        # the origin's default; other platforms have no topic.
+        dest_topic = ""
+        if origin.platform == "zulip":
+            dest_topic = (topic or "").strip() or origin.default_topic
 
         now = self._now()
         next_run = spec.next_after(now, self._timezone)
@@ -248,6 +272,7 @@ class ScheduleTool:
             status="active",
             last_status=None,
             last_error=None,
+            topic=dest_topic,
         )
         new_id = await self._schedule_store.create_async(row)
         logger.info("schedule create: agent=%s id=%s", self._name, new_id)
@@ -257,7 +282,8 @@ class ScheduleTool:
         next_str = next_local.strftime("%a %H:%M %Z")
         payload_summary = (command or instruction or "")[:40]
         return (
-            f"Schedule {new_id} set: {next_str} in #{dest_channel_name} "
+            f"Schedule {new_id} set: {next_str} in "
+            f"{_destination(dest_channel_name, dest_topic)} "
             f"({payload_type}: {payload_summary})"
         )
 
@@ -344,7 +370,29 @@ class ScheduleTool:
             payload = json.loads(s.payload)
             summary = (payload.get("command") or payload.get("instruction") or "")[:40]
             lines.append(
-                f"{s.id} {next_str} cron={s.cron} #{s.dest_channel_name} "
+                # The channel *name* resolves through the interface seam
+                # (spc-996); until a file has been through it, show the
+                # stored destination string (the resolved ID).
+                f"{s.id} {next_str} cron={s.cron} "
+                f"{_destination(self._channel_name(s), s.topic)} "
                 f"{s.payload_type}: {summary} [{s.last_status or 'never run'}]"
             )
         return "\n".join(lines)
+
+    def _channel_name(self, row: Schedule) -> str:
+        """The destination's display name: the row's, the owning
+        interface's lookup (FR47), else the stored destination string."""
+        if row.dest_channel_name:
+            return row.dest_channel_name
+        if self._schedule_channel_namer is not None:
+            name = self._schedule_channel_namer(row.platform, row.dest_channel_id)
+            if name:
+                return str(name)
+        return row.dest_channel_id
+
+
+def _destination(channel_name: str, topic: str) -> str:
+    """``#channel``, or Zulip's ``#stream > topic`` when a topic is set."""
+    if topic:
+        return f"#{channel_name} > {topic}"
+    return f"#{channel_name}"

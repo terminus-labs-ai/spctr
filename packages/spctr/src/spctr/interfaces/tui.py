@@ -3,7 +3,7 @@
 Phase 4 polish features:
 - Streaming output (AgentTextDelta rendered in real time)
 - Tool execution visibility (name/args preview, success/failure)
-- Slash commands: /quit, /exit, /reset, /help, /tools, /history, /save, /load
+- Slash commands: /quit, /exit, /new, /help, /tools, /history, /save, /load
 - Session save/load (JSON serialization of agent.history)
 - Status bar after each turn (session ID, message count, tool count)
 - Markdown rendering via rich (falls back gracefully if rich is unavailable)
@@ -42,7 +42,7 @@ _HELP = """\
 Commands:
   /quit     — exit the TUI
   /exit     — exit the TUI
-  /reset    — start a new session
+  /new    — start a new session
   /help     — show this help
   /tools    — list available tools
   /history  — show conversation history
@@ -399,7 +399,7 @@ class SpctrTUI(App):
         handlers = {
             "/quit": self._cmd_quit,
             "/exit": self._cmd_exit,
-            "/reset": self._cmd_reset,
+            "/new": self._cmd_reset,
             "/help": self._cmd_help,
             "/tools": self._cmd_tools,
             "/history": self._cmd_history,

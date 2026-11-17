@@ -2,10 +2,17 @@
 
 No platform SDK is imported here. Each helper has exactly one
 implementation, which every interface imports, so a channel's area is
-derived, and a long answer chunked, the same way on Discord and on Zulip.
+derived, a long answer chunked, and a turn's live tool/progress message
+rendered, the same way on Discord and on Zulip.
+
+The progress renderer below takes its templates, its line limit and its
+thinking placeholder from the caller's interface config (spc-1022): neither
+interface holds a copy of a tool-line format, a width constant or the
+placeholder text.
 """
 from __future__ import annotations
 
+import re
 from typing import Literal
 
 
@@ -136,3 +143,64 @@ def tail_for_stream(text: str, max_length: int = 2000) -> str:
         return text
     marker = "[…]\n"
     return marker + text[-(max_length - len(marker)):]
+
+
+#: The placeholders a tool-line template may name (spc-1015, spc-1022).
+_TOOL_PLACEHOLDER = re.compile(r"\{(name|input|content)\}")
+
+
+def render_tool_line(
+    template: str, name: str, value: str, max_chars: int
+) -> str:
+    """Fill one tool-line template (spc-1015, spc-1022).
+
+    *value* (a tool's ``str(input)`` or its result content) is cut to
+    *max_chars* plus ``...`` and fills both ``{input}`` and ``{content}``;
+    ``{name}`` is the tool name. One substitution pass, so a value that
+    itself contains ``{name}`` is never re-filled.
+
+    Args:
+        template: The line template from config (``tool_start_line``,
+            ``tool_result_ok_line``, ``tool_result_error_line``).
+        name: The tool name.
+        value: The tool input or result text, truncated as above.
+        max_chars: The ``tool_line_max_chars`` limit for the value.
+
+    Returns:
+        The rendered line.
+    """
+    if len(value) > max_chars:
+        value = value[:max_chars] + "..."
+    values = {"name": name, "input": value, "content": value}
+    return _TOOL_PLACEHOLDER.sub(lambda m: values[m.group(1)], template)
+
+
+def render_progress_message(
+    tool_lines: list[str],
+    text: str,
+    thinking_message: str,
+    max_message_length: int,
+) -> str:
+    """Compose the live progress message of a turn (spc-1015, spc-1022).
+
+    The tool lines so far, a blank line, then the streamed text plus
+    ``...`` — or *thinking_message* while no text has arrived — tailed to
+    *max_message_length* by :func:`tail_for_stream`. Both interfaces render
+    their in-progress placeholder through this one function, so the tool
+    path and the text path cannot drift apart or clobber each other.
+
+    Args:
+        tool_lines: The accumulated tool lines, oldest first.
+        text: The streamed response text so far (``""`` before any).
+        thinking_message: The placeholder text shown while *text* is empty
+            (config ``thinking_message``).
+        max_message_length: The message length limit to tail to.
+
+    Returns:
+        The message content, at most *max_message_length* characters.
+    """
+    parts: list[str] = []
+    if tool_lines:
+        parts.append("\n".join(tool_lines))
+    parts.append(text + "..." if text else thinking_message)
+    return tail_for_stream("\n\n".join(parts), max_message_length)

@@ -19,69 +19,71 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Callable, Iterable, NamedTuple
 
-# The reminder column set, named once (spc-144). ``_SCHEMA``, the SELECTs
-# (``due``, ``get``) and the INSERT (``create``) all derive from this
-# single definition, and rows map back to ``Reminder`` by column name via
-# ``sqlite3.Row``. Adding a column means editing this tuple, its CREATE
-# TABLE clause, and (if it starts NULL and should be excluded from the
-# INSERT) the ``_INSERT_COLUMNS`` filter.
-_COLUMNS = (
-    "id",
-    "agent",
-    "platform",
-    "requester_id",
-    "requester_mention",
-    "origin_channel_id",
-    "dest_channel_id",
-    "dest_channel_name",
-    "dest_topic",
-    "text",
-    "due_at",
-    "created_at",
-    "delivered_at",
-    "status",
-    "attempts",
-    "last_error",
+# The reminder column set, the single source of truth (spc-144,
+# spc-145). One ordered tuple of ``Column`` entries defines every column
+# exactly once; the CREATE TABLE body (``_SCHEMA``), the ``_COLUMNS``
+# name tuple, the ``_EXCLUDED_FROM_INSERT``/``_INSERT_COLUMNS`` filter,
+# the ``_TS_BINDINGS`` set, the retry-column identity and its legacy-file
+# ALTER all derive from it. Rows map back to ``Reminder`` by column name
+# via ``sqlite3.Row``. Adding a column is a one-place edit here: append
+# one ``Column`` entry, setting its flags — a column whose fresh row
+# starts NULL takes ``excluded_from_insert``; a timestamp column takes
+# ``ts_binding``.
+class Column(NamedTuple):
+    """One column of the single source: name, DDL declaration, flags."""
+
+    name: str
+    decl: str
+    excluded_from_insert: bool = False
+    ts_binding: bool = False
+
+
+_COLUMN_DEFS = (
+    Column("id", "TEXT PRIMARY KEY"),
+    Column("agent", "TEXT NOT NULL"),
+    Column("platform", "TEXT NOT NULL"),
+    Column("requester_id", "TEXT NOT NULL"),
+    Column("requester_mention", "TEXT NOT NULL"),
+    Column("origin_channel_id", "TEXT NOT NULL"),
+    Column("dest_channel_id", "TEXT NOT NULL"),
+    Column("dest_channel_name", "TEXT NOT NULL"),
+    Column("dest_topic", "TEXT NOT NULL"),
+    Column("text", "TEXT NOT NULL"),
+    Column("due_at", "TEXT NOT NULL", ts_binding=True),
+    Column("created_at", "TEXT NOT NULL", ts_binding=True),
+    Column("delivered_at", "TEXT NULL", excluded_from_insert=True),
+    Column("status", "TEXT NOT NULL CHECK (status IN ('pending', 'sending', 'delivered', 'failed', 'cancelled'))"),
+    Column("attempts", "INTEGER NOT NULL DEFAULT 0"),
+    Column("last_error", "TEXT NULL"),
     # spc-157: FR18 retries schedule from this column, never from due_at.
-    # It must stay out of ``_INSERT_COLUMNS`` (fresh rows start NULL) and
-    # out of the Reminder dataclass (rows map back by name; the field
-    # would otherwise break every frozen positional/keyword construction).
-    "next_attempt_at",
+    # It must stay out of the INSERT (fresh rows start NULL) and out of
+    # the Reminder dataclass (rows map back by name; the field would
+    # otherwise break every frozen positional/keyword construction).
+    Column("next_attempt_at", "TEXT NULL", ts_binding=True),
 )
 
-# Columns ``create`` inserts: every column except ``delivered_at`` (which
-# is always NULL on a fresh row and defaults to NULL in the DDL).
-_INSERT_COLUMNS = tuple(
-    c for c in _COLUMNS if c != "delivered_at"
+# Column names, in order (derived from _COLUMN_DEFS).
+_COLUMNS = tuple(c.name for c in _COLUMN_DEFS)
+
+# Columns ``create`` does not insert: the flagged ones — ``delivered_at``
+# (always NULL on a fresh row and NULL in the DDL).
+_EXCLUDED_FROM_INSERT = frozenset(
+    c.name for c in _COLUMN_DEFS if c.excluded_from_insert
 )
 
-# Columns whose values need ``_ts()`` conversion when binding to SQL.
-_TS_BINDINGS = frozenset({"due_at", "created_at", "next_attempt_at"})
+# Columns ``create`` inserts: every column except the excluded ones.
+_INSERT_COLUMNS = tuple(c for c in _COLUMNS if c not in _EXCLUDED_FROM_INSERT)
 
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS reminders (
-  id TEXT PRIMARY KEY,
-  agent TEXT NOT NULL,
-  platform TEXT NOT NULL,
-  requester_id TEXT NOT NULL,
-  requester_mention TEXT NOT NULL,
-  origin_channel_id TEXT NOT NULL,
-  dest_channel_id TEXT NOT NULL,
-  dest_channel_name TEXT NOT NULL,
-  dest_topic TEXT NOT NULL,
-  text TEXT NOT NULL,
-  due_at TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  delivered_at TEXT NULL,
-  status TEXT NOT NULL CHECK (status IN
-    ('pending', 'sending', 'delivered', 'failed', 'cancelled')),
-  attempts INTEGER NOT NULL DEFAULT 0,
-  last_error TEXT NULL,
-  next_attempt_at TEXT NULL
-);
-"""
+# Columns whose values need ``_ts()`` conversion when binding to SQL:
+# the flagged ones.
+_TS_BINDINGS = frozenset(c.name for c in _COLUMN_DEFS if c.ts_binding)
+
+# The single source of truth for the CREATE TABLE body (spc-145).
+_SCHEMA = "CREATE TABLE IF NOT EXISTS reminders (\n" + ",\n".join(
+    f"  {c.name} {c.decl}" for c in _COLUMN_DEFS
+) + "\n);"
 
 
 def _utcnow() -> datetime:
@@ -92,7 +94,12 @@ def _utcnow() -> datetime:
 # ``due_at``. A store file created before it existed (the spc-139 schema)
 # gains the column additively when the store opens; existing rows keep NULL
 # and stay deliverable (their next attempt is due at ``due_at``).
-_RETRY_COLUMN = "next_attempt_at"
+#
+# The retry column is the last column in the source tuple: it was added
+# after the original spc-139 schema, and the legacy-file migration in
+# ``_migrate`` derives its identity and ALTER clause from here (spc-145).
+_RETRY_COLUMN = _COLUMN_DEFS[-1].name
+_RETRY_DECL = _COLUMN_DEFS[-1].decl
 
 
 def _ts(value: datetime) -> str:
@@ -134,28 +141,64 @@ class Reminder:
 class ReminderStore:
     """Synchronous SQLite store with async facades.
 
+    Construction is side-effect-free (spc-248): no directory or file is
+    touched until the first operation triggers ``_ensure_ready()``.
+
     Args:
         path: File path of the SQLite database; parent directories are
-            created on demand. ``:memory:`` is supported for tests.
+            created on first use. ``:memory:`` is supported for tests.
     """
 
     def __init__(self, path: str | Path) -> None:
         self._path = str(path)
-        if self._path != ":memory:":
-            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+        self._ready = False
+        self._initializing = False
+        # spc-248: construction is side-effect-free for fresh paths (no
+        # mkdir, no file).  For an already-existing file the parent
+        # directory is guaranteed to exist, so migrating at construction
+        # creates nothing new and preserves the pre-lazy-init behaviour
+        # that test_reminders_due_time.py::test_r4 relies on.
+        if self._path != ":memory:" and Path(self._path).exists():
+            self._ensure_ready()
+
+    def _ensure_ready(self) -> None:
         # spc-163: migrate once here, not on every connection. The store is
         # built once per process (runtime.py), so the schema probe runs once
-        # for the life of the file instead of once per operation. ``_connect``
-        # stays a pure open so a statement-level spy sees only the statements
-        # an operation needs.
-        conn = self._connect()
+        # for the life of the file instead of once per operation.  For fresh
+        # paths the call is deferred to the first ``_connect()`` (spc-248)
+        # so that constructing a store that is never used creates no
+        # directory and no file.
+        if self._ready or self._initializing:
+            # ``_initializing`` lets the first ``_connect()`` (called from
+            # inside ``_ensure_ready`` itself) pass through without
+            # re-entering: the connection it opens is the one being
+            # initialized.
+            return
+        self._initializing = True
+        if self._path != ":memory:":
+            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
         try:
-            self._migrate(conn)
-            conn.commit()
+            conn = self._connect()
+            try:
+                self._migrate(conn)
+                conn.commit()
+            finally:
+                conn.close()
         finally:
-            conn.close()
+            # The guard resets unconditionally: a failed pass must leave
+            # nothing set but ``_ready``, so the next call can retry.
+            self._initializing = False
+        # spc-1075: readiness belongs to the success path, not to this
+        # ``finally``.  ``_ready = True`` here marked a pass that raised
+        # (lock contention on the ALTER, a failed commit) as done, so the
+        # migration was never retried for the life of the instance and every
+        # later operation died with ``no such column: next_attempt_at`` on a
+        # still-unmigrated file.  Staying not-ready lets the next
+        # ``_connect()`` retry the pass.
+        self._ready = True
 
     def _connect(self) -> sqlite3.Connection:
+        self._ensure_ready()
         conn = sqlite3.connect(self._path, timeout=10.0)
         # Map rows to Reminder by column name, never by position (spc-144).
         conn.row_factory = sqlite3.Row
@@ -177,7 +220,7 @@ class ReminderStore:
         }
         if _RETRY_COLUMN not in existing:
             conn.execute(
-                "ALTER TABLE reminders ADD COLUMN next_attempt_at TEXT NULL"
+                f"ALTER TABLE reminders ADD COLUMN {_RETRY_COLUMN} {_RETRY_DECL}"
             )
 
     # ---- sync core (each call = one short-lived connection/transaction) ----

@@ -155,27 +155,27 @@ def _make_schedule(**kwargs) -> Schedule:
 
 class TestStore:
     def test_create_assigns_sequential_ids(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         id1 = store.create(_make_schedule())
         id2 = store.create(_make_schedule())
         assert id1 == "s1"
         assert id2 == "s2"
 
     def test_due_returns_active_past_schedules(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         store.create(_make_schedule(next_run_at=NOW - timedelta(minutes=1)))
         due = store.due(NOW)
         assert len(due) == 1
         assert due[0].id == "s1"
 
     def test_due_excludes_future(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         store.create(_make_schedule(next_run_at=NOW + timedelta(hours=1)))
         due = store.due(NOW)
         assert len(due) == 0
 
     def test_due_platform_scoped(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         store.create(_make_schedule(next_run_at=NOW - timedelta(minutes=1), platform="discord"))
         store.create(_make_schedule(next_run_at=NOW - timedelta(minutes=1), platform="zulip"))
         due = store.due(NOW, platform="discord")
@@ -183,14 +183,14 @@ class TestStore:
         assert due[0].platform == "discord"
 
     def test_claim_atomic(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         store.create(_make_schedule(next_run_at=NOW - timedelta(minutes=1)))
         assert store.claim("s1") is True
         # Second claim fails — next_run_at already moved
         assert store.claim("s1") is False
 
     def test_cancel(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         store.create(_make_schedule(next_run_at=NOW - timedelta(minutes=1)))
         assert store.cancel("s1") is True
         assert store.cancel("s1") is False  # already cancelled
@@ -199,7 +199,7 @@ class TestStore:
         assert len(due) == 0
 
     def test_advance_after_run(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         store.create(_make_schedule(next_run_at=NOW - timedelta(minutes=1)))
         store.claim("s1")
         next_time = NOW + timedelta(days=1)
@@ -238,7 +238,7 @@ class TestAC18ConfigGate:
         config = SpctrConfig(
             agent=AgentConfig(name="test", default_skills=False, schedules=SchedulesConfig(
                 enabled=True, timezone="America/Phoenix",
-                store_path=str(tmp_path / "s.sqlite"),
+                store_path=str(tmp_path / "schedules"),
             )),
             models={"default": ModelConfig(model="test")},
             pipeline={"layers": []},
@@ -260,7 +260,7 @@ class TestToolCreateValidation:
 
     @pytest.fixture
     def tool_and_store(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         tool = ScheduleTool(
             store=store,
             timezone="America/Phoenix",
@@ -340,7 +340,7 @@ class TestToolCreateValidation:
 class TestAC21FireOnce:
     @pytest.mark.asyncio
     async def test_fires_once_and_advances(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -380,7 +380,7 @@ class TestAC21FireOnce:
 class TestAC22Failure:
     @pytest.mark.asyncio
     async def test_nonzero_exit_posts_warning(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -417,7 +417,7 @@ class TestAC22Failure:
 
     @pytest.mark.asyncio
     async def test_timeout_posts_warning(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -456,7 +456,7 @@ class TestAC22Failure:
 class TestAC23Success:
     @pytest.mark.asyncio
     async def test_success_posts_nothing(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -488,7 +488,7 @@ class TestAC24OriginRoot:
     @pytest.mark.asyncio
     async def test_thread_parent_is_dest(self, tmp_path):
         """A schedule created from a thread targets the parent channel."""
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         tool = ScheduleTool(
             store=store,
             timezone="America/Phoenix",
@@ -507,7 +507,9 @@ class TestAC24OriginRoot:
             assert "Schedule s1 set" in result
             row = store.get("s1")
             assert row.dest_channel_id == "555"
-            assert row.dest_channel_name == "estudos"
+            # The channel name is not a file key (FR37); it resolves at
+            # load through the seam (spc-996), so the reload is empty.
+            assert row.dest_channel_name == ""
         finally:
             schedule_turn_scope.set(None)
 
@@ -519,7 +521,7 @@ class TestAC24OriginRoot:
 class TestAC25RunNow:
     @pytest.mark.asyncio
     async def test_run_now_executes_and_keeps_schedule(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -555,7 +557,7 @@ class TestAC25RunNow:
 class TestAC26Cancel:
     @pytest.mark.asyncio
     async def test_cancel_prevents_fire(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sched = _make_schedule(next_run_at=NOW - timedelta(seconds=1))
         store.create(sched)
         store.cancel("s1")
@@ -575,7 +577,7 @@ class TestAC26Cancel:
 
     @pytest.mark.asyncio
     async def test_cancel_unknown_id(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         tool = ScheduleTool(
             store=store,
             timezone="America/Phoenix",
@@ -600,7 +602,7 @@ class TestAC26Cancel:
 class TestAC27EngineContinues:
     @pytest.mark.asyncio
     async def test_failure_doesnt_stop_other_schedules(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -651,7 +653,7 @@ class TestAC27EngineContinues:
 class TestAC28PlatformScoped:
     @pytest.mark.asyncio
     async def test_discord_engine_ignores_zulip_rows(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
         async def fake_send(channel_id: str, content: str) -> None:
@@ -676,7 +678,7 @@ class TestAC28PlatformScoped:
 
     @pytest.mark.asyncio
     async def test_claim_platform_scoped(self, tmp_path):
-        store = ScheduleStore(tmp_path / "test.sqlite")
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         store.create(_make_schedule(
             next_run_at=NOW - timedelta(seconds=1), platform="zulip",
         ))

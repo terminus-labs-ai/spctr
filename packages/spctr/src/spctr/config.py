@@ -152,11 +152,14 @@ class SchedulesConfig(BaseModel):
         enabled: Register the tool and start the engine.
         timezone: IANA zone; cron is interpreted in this zone.
             Required (nonempty) when enabled.
-        store_path: SQLite file for this agent's schedules. Defaults to
-            ``$SR2_HOME/state/{agent}/schedules.sqlite``.
+        store_path: Directory holding this agent's schedule files (one
+            ``<id>.md`` per schedule, spc-994). Defaults to
+            ``$SR2_HOME/state/{agent}/schedules/``.
         poll_seconds: Engine poll interval.
         command_timeout_seconds: Default timeout for command payloads.
         agent_timeout_seconds: Default timeout for agent payloads (spc-187).
+        zulip_topic: Default post topic for schedules created from Zulip,
+            and for a Zulip schedule file without a ``topic`` key (FR47).
     """
 
     enabled: bool = False
@@ -165,6 +168,7 @@ class SchedulesConfig(BaseModel):
     poll_seconds: float = Field(default=30.0, gt=0)
     command_timeout_seconds: float = Field(default=600.0, gt=0)
     agent_timeout_seconds: float = Field(default=600.0, gt=0)
+    zulip_topic: str = "schedules"
 
     def resolved_store_path(self, agent_name: str) -> str:
         """Store path with ``{agent}`` substituted, then expanded."""
@@ -172,7 +176,7 @@ class SchedulesConfig(BaseModel):
             return str(
                 Path(self.store_path.replace("{agent}", agent_name)).expanduser()
             )
-        return str(resolve_sr2_home() / "state" / agent_name / "schedules.sqlite")
+        return str(resolve_sr2_home() / "state" / agent_name / "schedules")
 
 
 class SituationSourceConfig(BaseModel):

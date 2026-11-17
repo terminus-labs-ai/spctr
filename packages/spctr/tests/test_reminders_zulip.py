@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,9 @@ from spctr.reminders import (
     ReminderStore,
     ReminderTool,
 )
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from reminders_turn_support import _in_turn  # noqa: E402
 
 TZ = ZoneInfo("America/Phoenix")
 UTC = ZoneInfo("UTC")
@@ -93,14 +97,19 @@ def _origin(**overrides) -> ReminderOrigin:
 def _tool(
     store: ReminderStore,
     now: datetime = NOW,
-    origin: ReminderOrigin | None = None,
     channel_resolver=None,
 ) -> ReminderTool:
+    """A ReminderTool on the frozen clock (spc-170).
+
+    The constructor carries no origin: the tool reads this turn's
+    ``turn_scope`` at call time. Call it inside :func:`_in_turn` to supply
+    an origin through that real seam, or unwrapped to exercise the FR21
+    refusal.
+    """
     return ReminderTool(
         store=store,
         timezone="America/Phoenix",
         agent_name="miranda",
-        origin_getter=lambda: origin,
         clock=_clock_at(now),
         channel_resolver=channel_resolver,
     )
@@ -171,13 +180,13 @@ def _make_agent(config: Any) -> Any:
         return Agent(config=config)
 
 
-def _make_interface(tmp_path: Path) -> Any:
+def _make_interface(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Any:
     """A ZulipInterface with a fake client: no server, no credentials,
     no network. Only the reminders wiring is exercised via start/stop.
 
-    The fake client stays patched for the interface's life; the test's
-    event loop is the single loop, so the patch's exit is a no-op re-entry
-    guard (same object swapped back in).
+    The fakes are installed with monkeypatch.setattr, so pytest restores
+    the real ZulipClient and load_zulip_credentials when the test ends —
+    no fake outlives the test that installed it.
     """
     from spctr.interfaces.zulip.client import ZulipCredentials
     import spctr.interfaces.zulip.interface as iface_mod
@@ -222,12 +231,16 @@ def _make_interface(tmp_path: Path) -> Any:
             self.sends.append(kwargs)
             return 1
 
-    # Patch for the interface's whole life (construction + start + stop all
-    # happen inside one test, one event loop).
-    iface_mod.load_zulip_credentials = lambda path: ZulipCredentials(
-        email="bot@test.local", api_key="k", site="http://127.0.0.1:1"
+    # Installed via monkeypatch so the real objects are restored at test
+    # teardown (no fake outlives the test that installed it).
+    monkeypatch.setattr(
+        iface_mod,
+        "load_zulip_credentials",
+        lambda path: ZulipCredentials(
+            email="bot@test.local", api_key="k", site="http://127.0.0.1:1"
+        ),
     )
-    iface_mod.ZulipClient = lambda **kw: _FakeClient()
+    monkeypatch.setattr(iface_mod, "ZulipClient", lambda **kw: _FakeClient())
     return iface_mod.ZulipInterface(config)
 
 
@@ -237,7 +250,7 @@ def _make_interface(tmp_path: Path) -> Any:
 
 
 class TestAC3Switch:
-    async def test_disabled_registers_nothing(self, tmp_path):
+    async def test_disabled_registers_nothing(self, monkeypatch, tmp_path):
         """AC3: reminders disabled (the default) registers no tool and
         starts no loop."""
         agent = _make_agent(_agent_config(reminders=None))
@@ -245,7 +258,7 @@ class TestAC3Switch:
             assert "reminder" not in agent.registry
             assert agent.reminders is None
             assert agent._runtime.reminders_enabled is False
-            interface = _make_interface(tmp_path)
+            interface = _make_interface(monkeypatch, tmp_path)
             await interface.start(agent)
             try:
                 assert interface._reminders_loop is None
@@ -254,7 +267,7 @@ class TestAC3Switch:
         finally:
             await agent.aclose()
 
-    async def test_enabled_registers_tool_and_starts_loop(self, tmp_path):
+    async def test_enabled_registers_tool_and_starts_loop(self, monkeypatch, tmp_path):
         """AC3: reminders enabled registers the tool and the interface
         start() begins the delivery loop on the shared store."""
         config = _agent_config(
@@ -271,7 +284,7 @@ class TestAC3Switch:
             assert agent.reminders is not None
             assert agent._runtime.reminders_enabled is True
 
-            interface = _make_interface(tmp_path)
+            interface = _make_interface(monkeypatch, tmp_path)
             await interface.start(agent)
             try:
                 assert interface._reminders_loop is not None
@@ -301,78 +314,88 @@ class TestAC3Switch:
 class TestAC4CreateValidation:
     async def test_empty_text(self, store):
         """AC4: empty/whitespace text → tool error, store unchanged."""
-        tool = _tool(store, origin=_origin())
-        result = await tool(action="create", text="   ", in_minutes=60)
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            result = await tool(action="create", text="   ", in_minutes=60)
         assert result.startswith("Error:")
         assert store.count_by_status() == {}
 
     async def test_missing_text(self, store):
         """AC4: text omitted → tool error, store unchanged."""
-        tool = _tool(store, origin=_origin())
-        result = await tool(action="create", in_minutes=60)
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            result = await tool(action="create", in_minutes=60)
         assert result.startswith("Error:")
         assert store.count_by_status() == {}
 
     async def test_text_over_1000_chars(self, store):
         """AC4: text > 1000 chars → tool error, store unchanged."""
-        tool = _tool(store, origin=_origin())
-        result = await tool(action="create", text="x" * 1001, in_minutes=60)
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            result = await tool(action="create", text="x" * 1001, in_minutes=60)
         assert result.startswith("Error:")
         assert store.count_by_status() == {}
 
     async def test_both_fields(self, store):
         """AC4: both in_minutes and at → tool error, store unchanged."""
-        tool = _tool(store, origin=_origin())
-        result = await tool(
-            action="create", text="hi", in_minutes=60, at="2026-10-15 16:00"
-        )
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            result = await tool(
+                action="create", text="hi", in_minutes=60, at="2026-10-15 16:00"
+            )
         assert result.startswith("Error:")
         assert store.count_by_status() == {}
 
     async def test_neither_field(self, store):
         """AC4: neither in_minutes nor at → tool error, store unchanged."""
-        tool = _tool(store, origin=_origin())
-        result = await tool(action="create", text="hi")
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            result = await tool(action="create", text="hi")
         assert result.startswith("Error:")
         assert store.count_by_status() == {}
 
     async def test_past_time(self, store):
         """AC4: at in the past → tool error, store unchanged."""
-        tool = _tool(store, origin=_origin())
-        result = await tool(action="create", text="hi", at="2026-10-15 14:00")
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            result = await tool(action="create", text="hi", at="2026-10-15 14:00")
         assert result.startswith("Error:")
         assert store.count_by_status() == {}
 
     async def test_due_less_than_one_minute_ahead(self, store):
         """AC4: due < 1 minute ahead (in_minutes and at) → tool error."""
-        tool = _tool(store, origin=_origin())
+        tool = _tool(store)
         # in_minutes=1: due exactly 1 minute ahead, not ahead of it.
-        r1 = await tool(action="create", text="hi", in_minutes=1)
+        with _in_turn(_origin()):
+            r1 = await tool(action="create", text="hi", in_minutes=1)
         assert r1.startswith("Error:")
         # at: 30s ahead of now (15:00:30 MST) — less than one minute.
-        r2 = await tool(action="create", text="hi", at="2026-10-15 15:00:30")
+        with _in_turn(_origin()):
+            r2 = await tool(action="create", text="hi", at="2026-10-15 15:00:30")
         assert r2.startswith("Error:")
         assert store.count_by_status() == {}
 
     async def test_in_minutes_out_of_range(self, store):
         """AC4: in_minutes 0, negative, or > 525600 → tool error."""
-        tool = _tool(store, origin=_origin())
+        tool = _tool(store)
         for bad in (0, -5, 525601):
-            result = await tool(action="create", text="hi", in_minutes=bad)
+            with _in_turn(_origin()):
+                result = await tool(action="create", text="hi", in_minutes=bad)
             assert result.startswith("Error:"), f"in_minutes={bad}: {result}"
         assert store.count_by_status() == {}
 
     async def test_malformed_at(self, store):
         """AC4: at not in YYYY-MM-DD HH:MM → tool error, store unchanged."""
-        tool = _tool(store, origin=_origin())
+        tool = _tool(store)
         for bad in ("2026-10-15T16:00", "15:00", "2026-13-40 25:99", "soon"):
-            result = await tool(action="create", text="hi", at=bad)
+            with _in_turn(_origin()):
+                result = await tool(action="create", text="hi", at=bad)
             assert result.startswith("Error:"), f"at={bad!r}: {result}"
         assert store.count_by_status() == {}
 
     async def test_no_origin_errors(self, store):
         """AC4 (FR21): no turn origin (non-chat interface) → tool error."""
-        tool = _tool(store, origin=None)
+        tool = _tool(store)
         result = await tool(action="create", text="hi", in_minutes=60)
         assert result.startswith("Error:")
         assert store.count_by_status() == {}
@@ -387,8 +410,9 @@ class TestAC5CreateDefaultDestination:
     async def test_stores_origin_channel_and_topic(self, store):
         """AC5 (FR9): destination = origin channel, topic = the configured
         Zulip topic (default 'reminders'); text and requester stored."""
-        tool = _tool(store, origin=_origin())
-        result = await tool(action="create", text="look into x", in_minutes=180)
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            result = await tool(action="create", text="look into x", in_minutes=180)
         assert result.startswith("Reminder r")
 
         assert store.count_by_status() == {"pending": 1}
@@ -406,8 +430,9 @@ class TestAC5CreateDefaultDestination:
 
     async def test_at_interpreted_in_timezone(self, store):
         """AC5: 'at' is local time in reminders.timezone (stored UTC)."""
-        tool = _tool(store, origin=_origin())
-        result = await tool(action="create", text="t", at="2026-10-15 17:00")
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            result = await tool(action="create", text="t", at="2026-10-15 17:00")
         assert result.startswith("Reminder r")
         row = store.due(now=NOW + timedelta(hours=3))[0]
         # 17:00 MST == 00:00 UTC the next day.
@@ -416,16 +441,19 @@ class TestAC5CreateDefaultDestination:
     async def test_reply_has_id_local_time_and_channel(self, store):
         """AC5 (FR12): reply returns ID, local due time (weekday, date,
         time, zone) and the destination channel name."""
-        tool = _tool(store, origin=_origin())
-        result = await tool(action="create", text="t", in_minutes=180)
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            result = await tool(action="create", text="t", in_minutes=180)
         # 15:00 MST now + 3h = Thu 18:00 MST.
         assert result == "Reminder r1 set for Thu 2026-10-15 18:00 MST in #spctr"
 
     async def test_id_format_r_n_increasing(self, store):
         """AC5: IDs are r<N>, unique per store and increasing."""
-        tool = _tool(store, origin=_origin())
-        r1 = await tool(action="create", text="a", in_minutes=60)
-        r2 = await tool(action="create", text="b", in_minutes=120)
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            r1 = await tool(action="create", text="a", in_minutes=60)
+        with _in_turn(_origin()):
+            r2 = await tool(action="create", text="b", in_minutes=120)
         assert r1.startswith("Reminder r1 set for")
         assert r2.startswith("Reminder r2 set for")
 
@@ -433,10 +461,11 @@ class TestAC5CreateDefaultDestination:
         """spc-140 replaces the spc-139 placeholder: without a resolver
         (the Runtime builds the tool before any interface exists) a channel
         argument errors and stores nothing."""
-        tool = _tool(store, origin=_origin())
-        result = await tool(
-            action="create", text="t", in_minutes=60, channel="general"
-        )
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            result = await tool(
+                action="create", text="t", in_minutes=60, channel="general"
+            )
         assert result.startswith("Error:")
         assert store.count_by_status() == {}
 
@@ -456,8 +485,9 @@ class TestAC7Delivery:
         loop = _loop(store, sender, now=NOW + timedelta(minutes=101))
         await loop.start()
 
-        tool = _tool(store, now=NOW, origin=_origin())
-        await tool(action="create", text="look into https://example.com/x", in_minutes=100)
+        tool = _tool(store, now=NOW)
+        with _in_turn(_origin()):
+            await tool(action="create", text="look into https://example.com/x", in_minutes=100)
 
         await _settle(loop)
         await loop.stop()
@@ -478,8 +508,9 @@ class TestAC7Delivery:
         loop = _loop(store, sender, now=NOW + timedelta(minutes=10))
         await loop.start()
 
-        tool = _tool(store, now=NOW, origin=_origin())
-        await tool(action="create", text="later", in_minutes=120)
+        tool = _tool(store, now=NOW)
+        with _in_turn(_origin()):
+            await tool(action="create", text="later", in_minutes=120)
 
         await _settle(loop)
         await loop.stop()
@@ -494,9 +525,11 @@ class TestAC7Delivery:
         # r2: due NOW+19min, poll at NOW+20min → 1 min late → no suffix.
         loop = _loop(store, sender, now=NOW + timedelta(minutes=20))
         await loop.start()
-        tool = _tool(store, now=NOW, origin=_origin())
-        await tool(action="create", text="late one", in_minutes=10)
-        await tool(action="create", text="on time", at="2026-10-15 15:19")
+        tool = _tool(store, now=NOW)
+        with _in_turn(_origin()):
+            await tool(action="create", text="late one", in_minutes=10)
+        with _in_turn(_origin()):
+            await tool(action="create", text="on time", at="2026-10-15 15:19")
 
         await _settle(loop)
         await loop.stop()
@@ -520,10 +553,12 @@ class TestAC8StartupCatchup:
         """AC8 (FR16): reminders overdue at start are sent in due-time
         order, each marked late per FR15."""
         # Seed two overdue rows (created before this process started).
-        tool_old = _tool(store, now=NOW - timedelta(hours=3), origin=_origin())
-        await tool_old(action="create", text="oldest", at="2026-10-15 13:00")
-        tool_newer = _tool(store, now=NOW - timedelta(hours=2), origin=_origin())
-        await tool_newer(action="create", text="newer", at="2026-10-15 14:00")
+        tool_old = _tool(store, now=NOW - timedelta(hours=3))
+        with _in_turn(_origin()):
+            await tool_old(action="create", text="oldest", at="2026-10-15 13:00")
+        tool_newer = _tool(store, now=NOW - timedelta(hours=2))
+        with _in_turn(_origin()):
+            await tool_newer(action="create", text="newer", at="2026-10-15 14:00")
         assert [r.text for r in store.due(now=NOW)] == ["oldest", "newer"]
 
         sender = FakeSender()
@@ -546,8 +581,9 @@ class TestAC8StartupCatchup:
     async def test_sending_rows_are_resent_on_start(self, store):
         """AC8 (FR17): a row left 'sending' by a crashed process is returned
         to pending at start and resent."""
-        tool = _tool(store, now=NOW - timedelta(hours=2), origin=_origin())
-        await tool(action="create", text="crash mid-send", at="2026-10-15 14:00")
+        tool = _tool(store, now=NOW - timedelta(hours=2))
+        with _in_turn(_origin()):
+            await tool(action="create", text="crash mid-send", at="2026-10-15 14:00")
         assert store.claim("r1") is True  # pending → sending, as a crash left it
         assert store.get("r1").status == "sending"
 
@@ -578,18 +614,21 @@ class TestAC12Stop:
         await loop.start()
 
         # One reminder due before the loop polls; one far in the future.
-        tool = _tool(store, now=NOW - timedelta(minutes=10), origin=_origin())
-        await tool(action="create", text="due", at="2026-10-15 15:00")
-        tool2 = _tool(store, now=NOW - timedelta(minutes=10), origin=_origin())
-        await tool2(action="create", text="future", at="2027-01-01 00:00")
+        tool = _tool(store, now=NOW - timedelta(minutes=10))
+        with _in_turn(_origin()):
+            await tool(action="create", text="due", at="2026-10-15 15:00")
+        tool2 = _tool(store, now=NOW - timedelta(minutes=10))
+        with _in_turn(_origin()):
+            await tool2(action="create", text="future", at="2027-01-01 00:00")
 
         await _settle(loop)
         assert [s[2] for s in sender.sends] == ["@8 Reminder: due"]
 
         # A third row is claimed (mid-flight) when the loop stops before
         # its mark: the next start must resend it.
-        tool3 = _tool(store, now=NOW - timedelta(minutes=10), origin=_origin())
-        await tool3(action="create", text="interrupted", at="2026-10-15 15:30")
+        tool3 = _tool(store, now=NOW - timedelta(minutes=10))
+        with _in_turn(_origin()):
+            await tool3(action="create", text="interrupted", at="2026-10-15 15:30")
         assert store.claim("r3") is True  # simulate an in-flight claim
 
         await loop.stop()
@@ -624,10 +663,11 @@ class TestAC6NamedChannel:
         case-insensitively; the resolved ID and name are stored and the
         reply names the resolved destination."""
         resolver = _resolver({"general": [FakeChannel(7, "general")]})
-        tool = _tool(store, origin=_origin(), channel_resolver=resolver)
-        result = await tool(
-            action="create", text="t", in_minutes=60, channel="#General"
-        )
+        tool = _tool(store, channel_resolver=resolver)
+        with _in_turn(_origin()):
+            result = await tool(
+                action="create", text="t", in_minutes=60, channel="#General"
+            )
         assert result == "Reminder r1 set for Thu 2026-10-15 16:00 MST in #general"
         row = store.get("r1")
         assert row.dest_channel_id == "7"
@@ -637,10 +677,11 @@ class TestAC6NamedChannel:
 
     async def test_unknown_channel_errors_stores_nothing(self, store):
         """AC6 (FR10): a name with no match is a tool error, stored nothing."""
-        tool = _tool(store, origin=_origin(), channel_resolver=_resolver({}))
-        result = await tool(
-            action="create", text="t", in_minutes=60, channel="nope"
-        )
+        tool = _tool(store, channel_resolver=_resolver({}))
+        with _in_turn(_origin()):
+            result = await tool(
+                action="create", text="t", in_minutes=60, channel="nope"
+            )
         assert result.startswith("Error:")
         assert store.count_by_status() == {}
 
@@ -649,10 +690,11 @@ class TestAC6NamedChannel:
         resolver = _resolver(
             {"dup": [FakeChannel(1, "Dup"), FakeChannel(2, "dup")]}
         )
-        tool = _tool(store, origin=_origin(), channel_resolver=resolver)
-        result = await tool(
-            action="create", text="t", in_minutes=60, channel="dup"
-        )
+        tool = _tool(store, channel_resolver=resolver)
+        with _in_turn(_origin()):
+            result = await tool(
+                action="create", text="t", in_minutes=60, channel="dup"
+            )
         assert result.startswith("Error:")
         assert store.count_by_status() == {}
 
@@ -665,20 +707,21 @@ class TestAC6NamedChannel:
             calls.append((platform, name))
             return []
 
-        tool = _tool(store, origin=_origin(), channel_resolver=spy)
+        tool = _tool(store, channel_resolver=spy)
         for bad in ("discord#general", "discord#general"):
-            result = await tool(
-                action="create", text="t", in_minutes=60, channel=bad
-            )
+            with _in_turn(_origin()):
+                result = await tool(
+                    action="create", text="t", in_minutes=60, channel=bad
+                )
             assert result == "Error: Cross-platform reminders are not supported"
         assert store.count_by_status() == {}
         assert calls == []
 
-    async def test_interface_resolver_from_registration_snapshot(self, tmp_path):
+    async def test_interface_resolver_from_registration_snapshot(self, monkeypatch, tmp_path):
         """AC6 through the real ZulipInterface: registration streams give
         the origin its channel NAME (FR12), and the interface resolver
         matches by name case-insensitively, dropping can_send=False."""
-        interface = _make_interface(tmp_path)
+        interface = _make_interface(monkeypatch, tmp_path)
         await interface.start(object())  # start() only reads .reminders
         try:
             assert interface._channel_display_name(42) == "spctr"
@@ -692,7 +735,7 @@ class TestAC6NamedChannel:
         finally:
             await interface.stop()
 
-    async def test_seam_named_channel_through_the_real_resolver(self, tmp_path):
+    async def test_seam_named_channel_through_the_real_resolver(self, monkeypatch, tmp_path):
         """AC6 seam (spc-166): start() registers the real interface
         resolver on the agent's Runtime seam, which seats a tool built
         with it in the startup tool's place — so a named-channel create
@@ -718,7 +761,7 @@ class TestAC6NamedChannel:
             )
         )
         try:
-            interface = _make_interface(tmp_path)
+            interface = _make_interface(monkeypatch, tmp_path)
             tool_before = agent.reminders.tool
             await interface.start(agent)
             try:
@@ -726,11 +769,13 @@ class TestAC6NamedChannel:
                 # Runtime's single construction site.
                 tool = agent.reminders.tool
                 assert tool is not tool_before
-                tool._origin_getter = lambda: _origin()  # READBACK
                 tool._clock = _clock_at(NOW)  # READBACK
-                result = await tool(
-                    action="create", text="t", in_minutes=60, channel="general"
-                )
+                # spc-170: the origin now arrives through the real seam —
+                # this task's turn_scope — instead of a private attribute.
+                with _in_turn(_origin()):  # READBACK
+                    result = await tool(
+                        action="create", text="t", in_minutes=60, channel="general"
+                    )
                 assert result == "Reminder r1 set for Thu 2026-10-15 16:00 MST in #general"
                 row = ReminderStore(store_file).get("r1")
                 assert row.dest_channel_id == "7"
@@ -748,10 +793,11 @@ class TestAC6NamedChannel:
         async def bad_resolver(platform, name):
             return [{"stream_id": 7, "name": "general"}]
 
-        tool = _tool(store, origin=_origin(), channel_resolver=bad_resolver)
-        result = await tool(
-            action="create", text="t", in_minutes=60, channel="general"
-        )
+        tool = _tool(store, channel_resolver=bad_resolver)
+        with _in_turn(_origin()):
+            result = await tool(
+                action="create", text="t", in_minutes=60, channel="general"
+            )
         assert result == MALFORMED_RESOLVER_ERROR
         assert store.count_by_status() == {}
 
@@ -936,8 +982,9 @@ class TestAC10ListCancel:
         r_done = _seed(store, "delivered one", NOW + timedelta(minutes=15), status="delivered")
         _seed(store, "other agent", NOW + timedelta(minutes=5), agent="anna")
 
-        tool = _tool(store, origin=_origin())
-        result = await tool(action="list")
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            result = await tool(action="list")
         lines = result.splitlines()
         assert [line.split()[0] for line in lines] == [
             r_old, r_recent, r_first, r_long, r_second,
@@ -956,15 +1003,17 @@ class TestAC10ListCancel:
 
     async def test_list_empty(self, store):
         """AC10 (FR19): nothing pending → an explicit empty list."""
-        tool = _tool(store, origin=_origin())
-        assert await tool(action="list") == "No reminders."
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            assert await tool(action="list") == "No reminders."
 
     async def test_cancel_pending_never_sent(self, store):
         """AC10 (FR20): a pending reminder becomes cancelled; a loop
         running past its due time never sends it."""
         _seed(store, "cancelled one", NOW + timedelta(minutes=10))
-        tool = _tool(store, origin=_origin())
-        assert await tool(action="cancel", id="r1") == "Cancelled reminder r1"
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            assert await tool(action="cancel", id="r1") == "Cancelled reminder r1"
         assert store.get("r1").status == "cancelled"
 
         sender = FakeSender()
@@ -978,15 +1027,17 @@ class TestAC10ListCancel:
         """AC10 (FR20): unknown IDs and delivered/failed/cancelled rows
         each return a tool error and change nothing."""
         _seed(store, "a", NOW + timedelta(minutes=10))
-        tool = _tool(store, origin=_origin())
+        tool = _tool(store)
 
-        err = await tool(action="cancel", id="r99")
+        with _in_turn(_origin()):
+            err = await tool(action="cancel", id="r99")
         assert err.startswith("Error:")
         # create() allocates the next free r<N>; a terminal/cancelled row
         # is parked and out of the way, so each seed gets a fresh ID.
         for status in ("delivered", "failed", "cancelled"):
             rid = _seed(store, "b", NOW + timedelta(minutes=10), status=status)
-            err = await tool(action="cancel", id=rid)
+            with _in_turn(_origin()):
+                err = await tool(action="cancel", id=rid)
             assert err.startswith("Error:"), status
             assert store.get(rid).status == status
 
@@ -995,8 +1046,9 @@ class TestAC10ListCancel:
         its send; cancel only reports it as already being delivered."""
         _seed(store, "in flight", NOW - timedelta(minutes=1))
         assert store.claim("r1") is True
-        tool = _tool(store, origin=_origin())
-        result = await tool(action="cancel", id="r1")
+        tool = _tool(store)
+        with _in_turn(_origin()):
+            result = await tool(action="cancel", id="r1")
         assert result == "Reminder r1 is already being delivered"
         assert store.get("r1").status == "sending"
 
@@ -1019,7 +1071,7 @@ class TestAC11NoChatInterface:
         """AC11 (FR21): an interface that is neither Discord nor Zulip
         records no origin; create, list and cancel each return the exact
         FR21 tool error and the store stays untouched."""
-        tool = _tool(store, origin=None)
+        tool = _tool(store)
         expected = "Error: Reminders need the Discord or Zulip interface"
         results = [
             await tool(action="create", text="t", in_minutes=60),
@@ -1028,3 +1080,25 @@ class TestAC11NoChatInterface:
         ]
         assert results == [expected, expected, expected]
         assert store.count_by_status() == {}
+
+
+# ---------------------------------------------------------------------------
+# spc-1020 — no fake outlives the test that installed it
+# ---------------------------------------------------------------------------
+
+
+class TestNoModuleAttributeLeak:
+    def test_interface_module_attributes_are_restored(self):
+        """spc-1020 (AC1): after every test in this file has run (each
+        installs fake ZulipClient / load_zulip_credentials via monkeypatch),
+        the interface module again carries the REAL objects, verified by
+        identity against the client module's own definitions."""
+        import spctr.interfaces.zulip.client as client_mod
+        import spctr.interfaces.zulip.interface as iface_mod
+
+        assert (
+            iface_mod.ZulipClient is client_mod.ZulipClient
+        ), f"ZulipClient leaked: {iface_mod.ZulipClient!r}"
+        assert (
+            iface_mod.load_zulip_credentials is client_mod.load_zulip_credentials
+        ), f"load_zulip_credentials leaked: {iface_mod.load_zulip_credentials!r}"

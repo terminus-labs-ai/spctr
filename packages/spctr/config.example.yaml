@@ -109,6 +109,8 @@ pipeline:
 #                           # strings, booleans and floats are rejected; ignored in stream mode
 #   users: []               # integer user IDs that may trigger a turn; empty = any human
 #   mention_only: false     # stream mode: a new topic starts only on @**<bot name>**
+#   topic_owner_routing: false  # stream mode: one owner bot per topic (first message decides;
+#                           # a later mention of another bot hands it over)
 #   channels: []            # integer channel IDs; empty = every channel the queue delivers
 #   channel_areas:          # string channel ID -> area; "" = no area; else the channel name
 #     "2": ""
@@ -137,4 +139,23 @@ pipeline:
 #   peer_id: 8
 #   users: [8]              # nonempty must include peer_id; empty still admits only that peer
 # Direct mode rejects stream posts and bot senders; no topics or area routing.
-# It ignores mention_only, channels, channel_areas and the working-indicator fields.
+# It ignores mention_only, topic_owner_routing, channels, channel_areas and the working-indicator fields.
+
+# Discord interface (--interface discord) — see docs/CONFIG-REFERENCE.md
+# discord:
+#   token: "your-bot-token"
+#   channels: []            # integer channel IDs; empty = every channel the bot sees
+#   guilds: []              # integer guild IDs; empty = every guild (DMs exempt)
+#   users: []               # integer user IDs; empty = any user
+#   mention_only: false     # reply only when the bot is mentioned
+#   max_message_length: 2000                   # Discord's limit; longer answers are chunked
+#   edit_stream_interval: 1.0                  # min seconds between progress edits; 0 = off
+#   tool_embed_enabled: true                   # show a line per tool start/result
+#   tool_line_max_chars: 80                    # {input}/{content} cut to this + "..."
+#   tool_start_line: "▶ `{name}` - `{input}`"
+#   tool_result_ok_line: "✓ `{name}` - `{content}`"     # newlines in {content} become |
+#   tool_result_error_line: "✖ `{name}` - `{content}`"
+#   thinking_message: "⏳ Thinking..."          # posted before the model call
+#   auto_thread: false      # open a thread per new conversation
+#   channel_areas:          # string channel ID -> area; "" = no area; else the channel name
+#     "123456789": ""

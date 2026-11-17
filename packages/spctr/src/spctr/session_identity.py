@@ -12,7 +12,7 @@ at turn start is visible to the tool calls that turn makes.
 Mirrors the documented ``turn_scope`` idiom in
 ``spctr.reminders.tool``: consumers must treat a ``ContextVar.set``
 inside a function's own frame as making that function a coroutine whose
-context attaches to whoever awaits it (PEP 550) — the set/reset here
+context attaches to whoever awaits it (PEP 550) — the set/new here
 lives in ``Session.stream_message``, which is an async generator started
 by the turn's own task.
 """

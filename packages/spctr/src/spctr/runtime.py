@@ -171,7 +171,6 @@ class Runtime:
         # _reminders_for so the new one takes it there too (spc-166).
         # None until an owning interface registers one.
         self._reminders_channel_resolver: Any = None
-        self._reminders_origin: Any = None
         self._reminders_seq: int = 0
         self._reminders_invalidated: int = 0
         self._reminders_for(config)
@@ -218,7 +217,6 @@ class Runtime:
             store=store,
             timezone=block.timezone,
             agent_name=agent_name,
-            origin_getter=self._reminders_origin_getter,
             topic=block.zulip_topic,
             # spc-159: the constructor is the resolver's only
             # construction path; the Runtime passes the seam's resolver
@@ -286,24 +284,6 @@ class Runtime:
         if self.reminders is not None:
             self._reminders_for(self.config)
 
-    def _reminders_origin_getter(self) -> Any:
-        """The current turn's reminder origin, or None outside one.
-
-        The owning interface records the origin on this Runtime right
-        before its turn runs (and clears it after), so concurrent turns in
-        different channels never record each other's origin — this reads
-        per-turn state, not shared mutable config.
-        """
-        return getattr(self, "_reminders_origin", None)
-
-    def set_reminders_origin(self, origin: Any) -> None:
-        """Record the origin of the turn about to run (interface-owned)."""
-        self._reminders_origin = origin
-
-    def clear_reminders_origin(self) -> None:
-        """Clear the turn origin after the turn ends (interface-owned)."""
-        self._reminders_origin = None
-
     @property
     def reminders_seq(self) -> int:
         """Count of reminder re-seats — enabled constructions, startup
@@ -354,7 +334,7 @@ class Runtime:
                 "is empty; an IANA timezone is required when schedules are "
                 "enabled."
             )
-        store = ScheduleStore(block.resolved_store_path(agent_name))
+        store = ScheduleStore(block.resolved_store_path(agent_name), agent=agent_name)
         tz = ZoneInfo(block.timezone)
         tool = ScheduleTool(
             store=store,

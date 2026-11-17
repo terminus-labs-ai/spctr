@@ -6,7 +6,7 @@ adapter objects. Does NOT require discord.py installed.
 Covers:
 1.  Interface protocol (name, start, stop, run)
 2.  Message routing (mention filter, channel filter)
-3.  Slash command processing (/reset, /help, /status, /ask)
+3.  Slash command processing (/new, /help, /status, /ask)
 4.  Agent stream integration (text delta collection, history management)
 5.  Session isolation per channel
 6.  Error handling during agent streaming
@@ -239,7 +239,7 @@ async def test_mention_filter_blocks_non_mentions() -> None:
 
 @pytest.mark.asyncio
 async def test_slash_resets_channel_session() -> None:
-    """/reset clears the channel's conversation history."""
+    """/new clears the channel's conversation history."""
     interface = DiscordInterface(DiscordConfig())
     agent = _make_mock_agent()
 
@@ -254,7 +254,7 @@ async def test_slash_resets_channel_session() -> None:
         session.history.append({"role": "user", "content": []})
         assert len(session.history) == 1
 
-        msg = _make_mock_message(content="/reset", channel_id=12345)
+        msg = _make_mock_message(content="/new", channel_id=12345)
         await interface._process_message(msg)
 
         assert session.history == []
@@ -887,7 +887,7 @@ async def test_slash_help_responds_via_interaction() -> None:
 
 @pytest.mark.asyncio
 async def test_slash_reset_clears_session_via_interaction() -> None:
-    """/reset slash command clears channel history and confirms via interaction."""
+    """/new slash command clears channel history and confirms via interaction."""
     interface, mock_adapter = await _started_interface(DiscordConfig(), _make_mock_agent())
     session = interface._session_map.get_or_create(12345)
     session.history.append({"role": "user", "content": []})

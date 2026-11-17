@@ -136,18 +136,25 @@ class SequentialMockLLM:
     Constructed with a list of call-sequences. Each element in `call_sequences`
     is the list of StreamEvents returned on that call (0-indexed).
 
-    Once all sequences are exhausted, subsequent calls return the last sequence.
+    A call past the last sequence raises AssertionError unless repeat_last=True,
+    which repeats the last sequence.
     This makes writing multi-iteration tests declarative.
     """
 
-    def __init__(self, call_sequences: list[list[StreamEvent]]) -> None:
+    def __init__(self, call_sequences: list[list[StreamEvent]], *, repeat_last: bool = False) -> None:
         assert call_sequences, "Must provide at least one call sequence"
         self._sequences = call_sequences
+        self._repeat_last = repeat_last
         self.stream_calls: list[CompletionRequest] = []
 
     async def stream(self, request: CompletionRequest) -> AsyncIterator[StreamEvent]:
-        idx = min(len(self.stream_calls), len(self._sequences) - 1)
+        call = len(self.stream_calls) + 1
         self.stream_calls.append(request)
+        if call > len(self._sequences) and not self._repeat_last:
+            raise AssertionError(
+                f"SequentialMockLLM script exhausted: call {call} with {len(self._sequences)} scripted sequences"
+            )
+        idx = min(call - 1, len(self._sequences) - 1)
         for event in self._sequences[idx]:
             yield event
 

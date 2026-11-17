@@ -1,66 +1,88 @@
-"""SQLite persistence for schedules (spc-185, FR23–FR35).
+"""Markdown-file persistence for schedules (spc-994, FR36–FR41).
 
-Mirrors the reminder store pattern: synchronous SQLite with async facades,
-one short-lived connection per operation, platform-scoped claim.
+One ``.md`` file per schedule in one directory: YAML frontmatter between
+``---`` fence lines carries the config, the markdown body after the
+second fence carries the prompt (agent payload) or free-form notes
+(command payload).  The SQLite store is replaced outright; the public
+contract (``Schedule`` dataclass, one-path constructor, method names and
+signatures) is unchanged so the engine, executors, tool and interface
+wiring compile untouched.  The constructor takes the owning agent
+(FR36: one directory per agent); rows carry it as ``Schedule.agent`` —
+frontmatter never does.  Files are read and written as bytes with no
+newline translation, so a body round-trips byte-for-byte through a
+runtime rewrite and a file authored with ``\\r\\n`` endings keeps them
+(AC38).
+
+Concurrent writers are serialized by an advisory ``flock`` on a lockfile
+in the directory (FR41); every mutation writes a temp file in the same
+directory and ``os.replace``s it over the target so readers never see a
+partial file.  Leftover temp files older than one poll interval are
+deleted at scan time (``sweep_temp_files``); the poll interval is
+carried by the engine.
 """
 from __future__ import annotations
 
 import asyncio
-import sqlite3
-from dataclasses import dataclass
+import fcntl
+import hashlib
+import json
+import logging
+import os
+import re
+import secrets
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
-_COLUMNS = (
-    "id",
+import yaml
+
+from spctr.schedules.cron import CronParseError, parse_cron
+
+logger = logging.getLogger(__name__)
+
+# Claim sentinel (FR41): the exact string a claimed row carries in
+# ``next_run_at``; startup recovery treats a sentinel-stuck file as a
+# payload killed mid-run.
+CLAIM_SENTINEL = "9999-12-31T23:59:59+00:00"
+
+# FR43: a stem is valid when it matches this (stems are lowercase;
+# uppercase stems are invalid files, never silently folded).
+_ID_STEM_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+# FR40: keys the store owns.  User keys are config; runtime keys are
+# engine-owned and rewritten after each run.  Any other key is
+# "user-space": accepted and preserved, never clobbered.  These are the
+# FR37 "Schedule file (increment 3)" keys: ``agent`` is an agent
+# payload's target (default the owning agent, which the store carries —
+# FR36's one-directory-per-agent — never frontmatter) and ``channel``
+# is the opaque destination string (FR9/FR38; the resolved ID for
+# tool-created files).  ``requester_id``/``requester_mention``/
+# ``created_at`` are not spec keys: the create path writes them as
+# accepted-and-preserved extras (FR40), and a hand-authored file simply
+# lacks them.
+USER_KEYS = (
     "agent",
     "platform",
-    "requester_id",
-    "requester_mention",
-    "dest_channel_id",
-    "dest_channel_name",
     "label",
     "cron",
-    "payload_type",
-    "payload",
+    "type",
+    "command",
+    "cwd",
     "on_miss",
-    "next_run_at",
-    "last_run_at",
-    "created_at",
-    "status",
-    "last_status",
-    "last_error",
+    "channel",
+    "topic",
 )
+# Create-path extras: written after the known keys when set, preserved
+# on rewrite, never required.
+CREATE_EXTRA_KEYS = ("requester_id", "requester_mention", "created_at")
+RUNTIME_KEYS = ("next_run_at", "last_run_at", "last_status", "last_error")
 
-_TS_BINDINGS = frozenset({"next_run_at", "last_run_at", "created_at"})
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS schedules (
-  id TEXT PRIMARY KEY,
-  agent TEXT NOT NULL,
-  platform TEXT NOT NULL,
-  requester_id TEXT NOT NULL,
-  requester_mention TEXT NOT NULL,
-  dest_channel_id TEXT NOT NULL,
-  dest_channel_name TEXT NOT NULL,
-  label TEXT NOT NULL DEFAULT '',
-  cron TEXT NOT NULL,
-  payload_type TEXT NOT NULL CHECK (payload_type IN ('command', 'agent')),
-  payload TEXT NOT NULL,
-  on_miss TEXT NOT NULL DEFAULT 'run_late' CHECK (on_miss IN ('run_late', 'skip')),
-  next_run_at TEXT NOT NULL,
-  last_run_at TEXT NULL,
-  created_at TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'cancelled')),
-  last_status TEXT NULL,
-  last_error TEXT NULL
-);
-"""
-
-
-def _ts(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat()
+# Leftover mutation temps (possibly orphaned by a kill between temp write
+# and os.replace); swept after one poll interval (FR41).  The lockfile is
+# NOT matched: deleting it would let two writers hold different inodes.
+_TEMP_RE = re.compile(r"^\.tmp-")
 
 
 @dataclass(frozen=True)
@@ -85,61 +107,506 @@ class Schedule:
     status: str
     last_status: str | None
     last_error: str | None
+    # FR37: the Zulip post topic (``topic`` key); empty for Discord rows
+    # and for a Zulip file that leaves it to ``schedules.zulip_topic``.
+    topic: str = ""
+
+
+@dataclass(frozen=True)
+class InvalidEntry:
+    """A file the scan could not parse as a Schedule (FR40).
+
+    ``content_hash`` is the SHA-256 of the file's content, so the engine
+    logs an invalid file at most once per content hash.
+    """
+
+    filename: str
+    reason: str
+    content_hash: str = ""
+
+
+def _ts(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat()
+
+
+def _parse_ts(raw) -> datetime:
+    # yaml.safe_load turns unquoted ISO timestamps into datetime objects;
+    # quoted scalars come back as strings.
+    if isinstance(raw, datetime):
+        value = raw
+    else:
+        value = datetime.fromisoformat(str(raw))
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value
+
+
+#: Opening-fence prefixes in recognition order, longest first so a CRLF
+#: file is never mistaken for an LF file whose first line ends early.  The
+#: tail of the matched prefix is the separator the renderer reuses.
+_OPEN_FENCES = ("---\r\n", "---\n")
+#: Closing fence plus its line terminator, for every mix of line endings
+#: around the fence line.
+_CLOSE_FENCES = ("\r\n---\r\n", "\r\n---\n", "\n---\r\n", "\n---\n")
+#: Closing fence at EOF with no trailing newline.
+_CLOSE_AT_EOF = ("\r\n---", "\n---")
+
+
+def _split_document(text: str) -> dict[str, str] | None:
+    """Split one file into frontmatter head and body.
+
+    Returns ``None`` when the file does not start with a ``---`` fence or
+    has no closing fence.  The body is everything after the second fence
+    line, byte-for-byte; a missing body is empty.  Fence lines are
+    recognized with either ``\\n`` or ``\\r\\n`` terminators, and the
+    result carries the separator that terminated the opening fence
+    (``eol``) so a rewrite renders frontmatter in the style the file was
+    authored with: a hand-authored CRLF file keeps CRLF and its body
+    stays byte-for-byte across runtime rewrites (AC38).
+    """
+    open_fence = next((f for f in _OPEN_FENCES if text.startswith(f)), "")
+    if not open_fence:
+        return None
+    open_len, eol = len(open_fence), open_fence[len("---") :]
+    # Search from index 3: every closing candidate starts with the newline
+    # that ends the opening fence line, which sits at index 3 either way.
+    found = [(text.find(f, 3), f) for f in _CLOSE_FENCES]
+    found = [(end, fence) for end, fence in found if end != -1]
+    if not found:
+        # A closing fence at EOF (no trailing newline) is valid; the
+        # body is empty.
+        for tail in _CLOSE_AT_EOF:
+            if text.endswith(tail):
+                return {
+                    "head": text[open_len : len(text) - len(tail)],
+                    "body": "",
+                    "eol": eol,
+                }
+        return None
+    end, fence = min(found)
+    head = text[open_len:end]
+    # Body: everything after the closing fence line, byte-for-byte, minus
+    # exactly one separator line terminator (the blank line the renderer
+    # puts between the fence and the body).
+    rest = text[end + len(fence) :]
+    for term in ("\r\n", "\n"):
+        if rest.startswith(term):
+            rest = rest[len(term) :]
+            break
+    return {"head": head, "body": rest, "eol": eol}
+
+
+def _render_scalar(key: str, value: object) -> str:
+    """Render one frontmatter key as a single line, round-trippable.
+
+    ``safe_dump`` emits a YAML ``...`` document-end marker on plain
+    scalar values that is invalid mid-document; a ``---``/``...`` dump
+    minus the fences is the faithful one-line form, keeping whatever
+    quoting YAML chose (quoted strings, block scalars, ...) exactly.
+    """
+    text = yaml.safe_dump(value, default_flow_style=True, allow_unicode=True)
+    lines = text.split("\n")
+    if lines and lines[0] == "---":
+        lines = lines[1:]
+    if lines and lines[-1] in ("", "..."):
+        while lines and lines[-1] in ("", "..."):
+            lines.pop()
+    return key + ": " + "\n".join(lines)
+
+
+def _render_document(
+    user: list[tuple[str, object]],
+    runtime: list[tuple[str, str]],
+    body: str,
+    eol: str = "\n",
+) -> str:
+    """Render ``---`` fences, user keys, runtime keys, blank line, body.
+
+    User keys render in their recorded order, then runtime keys in the
+    canonical order; the body is emitted byte-for-byte, never re-rendered
+    through a markdown library.  *eol* is the line separator for the
+    structure this renderer owns (fences and frontmatter lines): ``"\\n"``
+    for tool-created files, the file's own ``"\\r\\n"`` on a rewrite of a
+    CRLF file, so the rewrite is byte-stable across polls.
+    """
+    parts = ["---"]
+    for key, value in user:
+        parts.append(_render_scalar(key, value))
+    for key, value in runtime:
+        parts.append(_render_scalar(key, value))
+    parts.append("---")
+    if body:
+        parts.append("")
+    parts.append(body)
+    return eol.join(parts)
+
+
+def _payload_json(
+    payload_type: str, data: dict, body: str, owner: str
+) -> str:
+    """Reconstruct the increment-2 JSON ``payload`` string from the file."""
+    if payload_type == "agent":
+        # FR37: the optional frontmatter ``agent`` key is the payload's
+        # target; it defaults to the owning agent (the store's, never a
+        # file-level owner key).
+        target = data.get("agent")
+        if not target:
+            target = owner or ""
+        return json.dumps(
+            {"agent": str(target), "instruction": body}, ensure_ascii=False
+        )
+    return json.dumps({"command": data.get("command", "") or "", "cwd": data.get("cwd")})
+
+
+def _user_keys(user: list[tuple[str, object]], row: Schedule) -> list[tuple[str, object]]:
+    """Order the file's user keys as: known user keys, then extras."""
+    values = dict(user)
+    ordered: list[tuple[str, object]] = []
+    for key in USER_KEYS:
+        if key in values:
+            ordered.append((key, values[key]))
+    seen = {key for key, _ in ordered}
+    for key, value in user:
+        if key not in seen:
+            ordered.append((key, value))
+    return ordered
+
+
+def _content_hash(path: Path, text: str | None) -> str:
+    """SHA-256 of a file's content (its raw bytes when it is not UTF-8)."""
+    if text is not None:
+        return hashlib.sha256(text.encode("utf-8", "surrogatepass")).hexdigest()
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return ""
+
+
+def _runtime_list(row: Schedule) -> list[tuple[str, str]]:
+    return [
+        ("next_run_at", _ts(row.next_run_at)),
+        ("last_run_at", "" if row.last_run_at is None else _ts(row.last_run_at)),
+        ("last_status", row.last_status or ""),
+        ("last_error", row.last_error or ""),
+    ]
 
 
 class ScheduleStore:
-    """Synchronous SQLite store with async facades.
+    """Directory-backed markdown store with async facades.
 
     Args:
-        path: File path of the SQLite database; parent directories are
-            created on demand. ``:memory:`` is supported for tests.
+        path: Directory holding one ``<id>.md`` file per schedule;
+            created on demand along with its parents.
+        agent: The owning agent (FR36: one directory per agent, the
+            ``{agent}`` in ``schedules.store_path``).  Every row loaded
+            from or created in this store belongs to this agent; the
+            frontmatter never carries an owning agent.
     """
 
-    def __init__(self, path: str | Path) -> None:
-        self._path = str(path)
-        if self._path != ":memory:":
-            Path(self._path).parent.mkdir(parents=True, exist_ok=True)
-        conn = self._connect()
-        try:
-            conn.commit()
-        finally:
-            conn.close()
+    def __init__(self, path: str | Path, *, agent: str) -> None:
+        self._dir = Path(path)
+        self._agent = agent
+        self._dir.mkdir(parents=True, exist_ok=True)
+        self._lock_path = self._dir / ".lock"
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._path, timeout=10.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA busy_timeout = 10000")
-        conn.execute(_SCHEMA)
-        return conn
+    @property
+    def agent(self) -> str:
+        """The owning agent for every row in this store (FR36)."""
+        return self._agent
+
+    # ---- locking and atomic file IO ----
+
+    @contextmanager
+    def _lock(self, exclusive: bool = True):
+        """Advisory ``flock`` on the directory lockfile (FR41).
+
+        The lockfile is created lazily and never removed: deleting it
+        would let two writers hold different inodes and both believe they
+        hold the lock.
+        """
+        fd = os.open(self._lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+    def _replace(self, filename: str, content: str) -> None:
+        """Write *content* to *filename* atomically (temp + ``os.replace``).
+
+        Bytes, not text mode: text mode would translate every ``\\n`` to
+        the platform separator, so a CRLF body read from disk would come
+        back as LF (and vice versa).  The string is encoded exactly as
+        parsed so the file round-trips byte-for-byte (AC38).
+        """
+        tmp = self._dir / f".tmp-{os.getpid()}-{secrets.token_hex(4)}-{filename}"
+        tmp.write_bytes(content.encode("utf-8"))
+        os.replace(tmp, self._dir / filename)
+
+    def _read_file(self, filename: str) -> str | None:
+        """Read one file without newline translation.
+
+        ``Path.read_text`` applies universal-newline decoding (``\\r\\n``
+        becomes ``\\n``), which silently rewrites a hand-authored CRLF
+        file on the first engine pass.  Decoding the raw bytes keeps the
+        body byte-for-byte through claim and advance_after_run (AC38).
+        """
+        try:
+            return (self._dir / filename).read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError):
+            return None
+
+    def sweep_temp_files(self, now: datetime, poll_seconds: float) -> None:
+        """Delete leftover temp files older than one poll interval (FR41).
+
+        A process killed between temp write and ``os.replace`` leaves the
+        original readable and its temp file here.  The engine calls this
+        on every poll with the store's poll interval.
+        """
+        cutoff = now.timestamp() - poll_seconds
+        with self._lock():
+            try:
+                entries = list(self._dir.iterdir())
+            except FileNotFoundError:
+                return
+            for entry in entries:
+                if not _TEMP_RE.match(entry.name):
+                    continue
+                try:
+                    mtime = entry.stat().st_mtime
+                except FileNotFoundError:
+                    continue
+                if mtime <= cutoff:
+                    try:
+                        entry.unlink()
+                    except OSError:
+                        pass
+
+    # ---- parse / render one file ----
+
+    def _parse_file(self, filename: str, text: str | None) -> tuple[Schedule | None, str | None, dict | None]:
+        """Parse one schedule file.
+
+        Returns ``(schedule, None, extra)`` when the file is valid, or
+        ``(None, reason, None)`` when it is not (FR40).  ``extra`` is the
+        ordered key/value list of user-space keys as written, for use by
+        the writer; it carries the file's user keys (known plus unknown
+        extras) with their on-disk ordering preserved.
+
+        A file with no ``next_run_at`` runtime key is VALID with
+        ``next_run_at=None`` — a first-seen hand-authored file the engine
+        schedules on its next poll (FR39).  ``enabled: false`` parses to
+        ``status="paused"`` — valid, but never due, never claimed and
+        never advanced (FR44).
+        """
+        stem = filename[:-3]
+        if not _ID_STEM_RE.match(stem):
+            return None, "invalid id stem", None
+        if text is None:
+            return None, "unreadable or not UTF-8", None
+        if len(text.encode("utf-8")) > 64 * 1024:
+            return None, "file exceeds 64 KiB", None
+        doc = _split_document(text)
+        if doc is None:
+            return None, "no frontmatter fences", None
+        try:
+            data = yaml.safe_load(doc["head"]) or {}
+        except yaml.YAMLError as exc:
+            return None, f"frontmatter does not parse: {exc}", None
+        if not isinstance(data, dict):
+            return None, "frontmatter is not a mapping", None
+        # User-space keys (user + unknown extras, minus runtime keys) in
+        # file order, so a rewrite preserves their order byte-for-byte.
+        seen = set()
+        ordered: list[tuple[str, object]] = []
+        for k, v in data.items():
+            if k in RUNTIME_KEYS or k in seen:
+                continue
+            ordered.append((k, v))
+            seen.add(k)
+        if not data.get("cron"):
+            return None, "missing required key 'cron'", None
+        try:
+            parse_cron(str(data["cron"]))
+        except CronParseError:
+            return None, f"invalid cron expression {data['cron']!r}", None
+        payload_type = data.get("type", "")
+        if payload_type not in ("command", "agent"):
+            return None, f"unknown type {payload_type!r}", None
+        if payload_type == "command" and not data.get("command"):
+            return None, "command schedule missing 'command'", None
+        if payload_type == "agent":
+            if not doc["body"].strip():
+                return None, "agent schedule has empty body", None
+            if len(doc["body"]) > 4000:
+                return None, "agent instruction exceeds 4000 characters", None
+        # FR37: an agent schedule's optional ``agent`` key is the payload
+        # target (default the owning agent); there is no file-level
+        # owning agent.  ``channel`` is the destination (FR9/FR38); the
+        # in-memory channel name resolves through the interface seam
+        # (spc-996) and is empty on load.
+        if payload_type == "agent" and "agent" in data and not isinstance(
+            data["agent"], str
+        ):
+            return None, "invalid agent value", None
+        on_miss = data.get("on_miss", "run_late")
+        if on_miss not in ("run_late", "skip"):
+            return None, f"unknown on_miss {on_miss!r}", None
+        enabled = data.get("enabled", True)
+        if not isinstance(enabled, bool):
+            return None, f"unknown enabled {enabled!r}", None
+        platform = data.get("platform", "")
+        if not platform:
+            return None, "platform required", None
+        if platform not in ("discord", "zulip"):
+            return None, f"invalid platform {platform!r}", None
+        raw_next = data.get("next_run_at")
+        if raw_next is None or raw_next in ("", "null"):
+            next_run_at = None
+        else:
+            try:
+                next_run_at = _parse_ts(raw_next)
+            except (ValueError, TypeError):
+                return None, f"invalid next_run_at {raw_next!r}", None
+        last_run_at = None
+        if data.get("last_run_at"):
+            try:
+                last_run_at = _parse_ts(data["last_run_at"])
+            except (ValueError, TypeError):
+                return None, f"invalid last_run_at {data['last_run_at']!r}", None
+        created_at = None
+        if data.get("created_at"):
+            try:
+                created_at = _parse_ts(data["created_at"])
+            except (ValueError, TypeError):
+                return None, f"invalid created_at {data['created_at']!r}", None
+        row = Schedule(
+            id=stem,
+            agent=self._agent,
+            platform=str(platform),
+            requester_id=str(data.get("requester_id", "")),
+            requester_mention=str(data.get("requester_mention", "")),
+            dest_channel_id=str(data.get("channel", "") or ""),
+            dest_channel_name="",
+            label=str(data.get("label", "")),
+            cron=str(data["cron"]),
+            payload_type=str(payload_type),
+            payload=_payload_json(payload_type, data, doc["body"], self._agent),
+            on_miss=str(on_miss),
+            next_run_at=next_run_at,
+            last_run_at=last_run_at,
+            created_at=created_at or next_run_at,
+            status="paused" if not enabled else "active",
+            last_status=(str(data["last_status"]) if data.get("last_status") else None),
+            last_error=(str(data["last_error"]) if data.get("last_error") else None),
+            topic=str(data.get("topic", "") or ""),
+        )
+        return row, None, {
+            "user": ordered,
+            "body": doc["body"],
+            "eol": doc["eol"],
+        }
+
+    def _render_row(self, row: Schedule) -> str:
+        """Render a fresh file from a Schedule (create path)."""
+        values: dict[str, object] = dict(
+            platform=row.platform,
+            label=row.label,
+            cron=row.cron,
+            type=row.payload_type,
+            on_miss=row.on_miss,
+        )
+        if row.dest_channel_id:
+            # FR37/FR38: tool-created files write the resolved ID string
+            # as ``channel``; a channel *name* is never persisted (the
+            # seam resolves names at load, spc-996).
+            values["channel"] = row.dest_channel_id
+        if row.topic:
+            values["topic"] = row.topic
+        body = ""
+        if row.payload_type == "command":
+            payload = json.loads(row.payload)
+            if payload.get("command"):
+                values["command"] = payload["command"]
+            if payload.get("cwd"):
+                values["cwd"] = payload["cwd"]
+        if row.payload_type == "agent":
+            payload = json.loads(row.payload)
+            # FR37: ``agent`` is the payload target, written only when it
+            # differs from the owning agent (its default); the owning
+            # agent itself is the store's, never frontmatter.
+            target = payload.get("agent", "")
+            if target and target != self._agent:
+                values["agent"] = target
+            body = payload.get("instruction", "")
+        ordered = [(k, values[k]) for k in USER_KEYS if k in values]
+        # Create-path extras (FR40 user-space): requester attribution and
+        # the creation timestamp, when the caller supplied them.
+        for key in CREATE_EXTRA_KEYS:
+            if key == "created_at":
+                if row.created_at is not None:
+                    ordered.append((key, _ts(row.created_at)))
+            elif key == "requester_id" and row.requester_id:
+                ordered.append((key, row.requester_id))
+            elif key == "requester_mention" and row.requester_mention:
+                ordered.append((key, row.requester_mention))
+        return _render_document(ordered, _runtime_list(row), body)
+
+    def _load_one(self, filename: str) -> Schedule | None:
+        text = self._read_file(filename)
+        if text is None:
+            return None
+        row, _reason, _extra = self._parse_file(filename, text)
+        return row
+
+    def _load_mutating(self, filename: str):
+        """Load one file for a mutation: returns (row, extra) or (None, reason)."""
+        text = self._read_file(filename)
+        if text is None:
+            return None, "missing"
+        row, reason, extra = self._parse_file(filename, text)
+        if row is None:
+            return None, reason
+        return (row, extra), None
+
+    def _rewrite(self, filename: str, row: Schedule, extra: dict) -> None:
+        user = _user_keys(extra["user"], row)
+        self._replace(
+            filename,
+            _render_document(
+                user,
+                _runtime_list(row),
+                extra["body"],
+                extra.get("eol", "\n"),
+            ),
+        )
 
     # ---- sync core ----
 
     def create(self, row: Schedule) -> str:
-        """Insert an active schedule. Returns the assigned ``s<N>`` ID."""
-        with self._connect() as conn:
-            cursor = conn.execute("SELECT id FROM schedules ORDER BY id")
+        """Insert an active schedule. Returns the assigned ``s<N>`` ID.
+
+        The incoming ``row.id`` is a placeholder and ignored: the ID is
+        the next free ``s<N>`` stem under the exclusive lock (highest
+        numeric suffix among existing ``s<N>.md`` files + 1, starting at
+        ``s1``), so a create never overwrites an existing file.  The
+        FR43 label→stem generation for hand-meaningful names is a later
+        slice.
+        """
+        text = self._render_row(row)
+        with self._lock():
             next_n = 1
-            for (existing,) in cursor:
-                if existing.startswith("s"):
-                    try:
-                        next_n = max(next_n, int(existing[1:]) + 1)
-                    except ValueError:
-                        continue
+            for path in self._dir.glob("*.md"):
+                stem = path.name[:-3]
+                if not stem.startswith("s"):
+                    continue
+                try:
+                    next_n = max(next_n, int(stem[1:]) + 1)
+                except ValueError:
+                    continue
             new_id = f"s{next_n}"
-            values = []
-            for col in _COLUMNS:
-                if col == "id":
-                    values.append(new_id)
-                elif col in _TS_BINDINGS:
-                    raw = getattr(row, col)
-                    values.append(None if raw is None else _ts(raw))
-                else:
-                    values.append(getattr(row, col))
-            conn.execute(
-                f"""INSERT INTO schedules ({", ".join(_COLUMNS)})
-                    VALUES ({", ".join(['?'] * len(_COLUMNS))})""",
-                values,
-            )
+            self._replace(f"{new_id}.md", text)
         return new_id
 
     def due(
@@ -148,52 +615,40 @@ class ScheduleStore:
         platform: str | None = None,
     ) -> list[Schedule]:
         """Active schedules whose next_run_at is at or before *now*."""
-        platform_clause = "AND platform = ?" if platform is not None else ""
-        params: list = [_ts(now)]
-        if platform is not None:
-            params.append(platform)
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""SELECT {", ".join(_COLUMNS)}
-                    FROM schedules
-                    WHERE status = 'active'
-                      AND next_run_at <= ?
-                      {platform_clause}
-                    ORDER BY next_run_at, id""",
-                params,
-            ).fetchall()
-        return [self._row_to_schedule(r) for r in rows]
+        rows = [
+            row
+            for row in self._scan()
+            if row.status == "active"
+            and row.next_run_at is not None
+            and row.next_run_at <= now
+            and (platform is None or row.platform == platform)
+        ]
+        return sorted(rows, key=lambda r: (r.next_run_at, r.id))
 
     def claim(self, schedule_id: str, platform: str | None = None) -> bool:
-        """Atomically mark one row as running (platform-scoped).
+        """Atomically mark one file as running (platform-scoped).
 
-        Returns True only if this call won the claim. The claim is
-        implemented by advancing next_run_at to a sentinel far future
-        value atomically; if the row was already claimed (next_run_at
-        changed), rowcount is 0.
+        Returns True only if this call won the claim.  The claim flips
+        ``next_run_at`` to the sentinel atomically under the lock; a
+        second call sees the sentinel and returns False.
         """
-        SENTINEL = "9999-12-31T23:59:59+00:00"
-        platform_clause = " AND platform = ?" if platform is not None else ""
-        params: list = [schedule_id]
-        if platform is not None:
-            params.append(platform)
-        with self._connect() as conn:
-            row = conn.execute(
-                f"SELECT next_run_at FROM schedules WHERE id = ? AND status = 'active'{platform_clause}",
-                tuple(params),
-            ).fetchone()
-            if row is None:
+        filename = f"{schedule_id}.md"
+        with self._lock():
+            loaded, reason = self._load_mutating(filename)
+            if loaded is None:
                 return False
-            current_next = row["next_run_at"]
-            if current_next == SENTINEL:
-                # Already claimed
+            row, extra = loaded
+            if (
+                row.status != "active"
+                or row.next_run_at is None
+                or _ts(row.next_run_at) == CLAIM_SENTINEL
+            ):
                 return False
-            cursor = conn.execute(
-                "UPDATE schedules SET next_run_at = '9999-12-31T23:59:59+00:00' "
-                "WHERE id = ? AND status = 'active' AND next_run_at = ?" + platform_clause,
-                (schedule_id, current_next) + (tuple(params[1:]) if platform is not None else ()),
-            )
-            return cursor.rowcount == 1
+            if platform is not None and row.platform != platform:
+                return False
+            new_row = replace(row, next_run_at=datetime.fromisoformat(CLAIM_SENTINEL))
+            self._rewrite(filename, new_row, extra)
+            return True
 
     def advance_after_run(
         self,
@@ -204,75 +659,149 @@ class ScheduleStore:
         last_error: str | None = None,
     ) -> None:
         """After a run completes, set next_run_at and record the outcome."""
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE schedules SET next_run_at = ?, last_run_at = ?, "
-                "last_status = ?, last_error = ? WHERE id = ?",
-                (_ts(next_run_at), _ts(last_run_at), last_status, last_error, schedule_id),
+        filename = f"{schedule_id}.md"
+        with self._lock():
+            loaded, reason = self._load_mutating(filename)
+            if loaded is None:
+                # File deleted while its payload ran (FR42): skip the
+                # result write; the run itself already completed.
+                if reason == "missing":
+                    logger.info(
+                        "schedule result write skipped, file gone: id=%s",
+                        schedule_id,
+                    )
+                return
+            row, extra = loaded
+            new_row = replace(
+                row,
+                next_run_at=next_run_at,
+                last_run_at=last_run_at,
+                last_status=last_status,
+                last_error=last_error,
             )
+            self._rewrite(filename, new_row, extra)
 
     def cancel(self, schedule_id: str) -> bool:
-        """Remove a schedule (FR32). Returns True if it was active."""
-        with self._connect() as conn:
-            cursor = conn.execute(
-                "UPDATE schedules SET status = 'cancelled' "
-                "WHERE id = ? AND status = 'active'",
-                (schedule_id,),
-            )
-            return cursor.rowcount == 1
+        """Delete the file (FR32); deleting the file cancels the schedule.
+
+        Returns False only when there is no file to remove — a paused
+        (``enabled: false``) file is still a schedule and is removed too
+        (FR44).
+        """
+        filename = f"{schedule_id}.md"
+        with self._lock():
+            try:
+                (self._dir / filename).unlink()
+            except FileNotFoundError:
+                return False
+            return True
 
     def get(self, schedule_id: str) -> Schedule | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                f"SELECT {', '.join(_COLUMNS)} FROM schedules WHERE id = ?",
-                (schedule_id,),
-            ).fetchone()
-        return None if row is None else self._row_to_schedule(row)
+        return self._load_one(f"{schedule_id}.md")
 
     def recover_claimed(self, now: datetime, platform: str | None = None) -> list[Schedule]:
         """On start, find rows stuck at the sentinel (crashed mid-run).
 
-        These are schedules whose next_run_at was advanced to the sentinel
-        but never restored — the process died mid-execution. They are
-        returned so the engine can treat them as missed occurrences.
+        These are schedules whose ``next_run_at`` was advanced to the
+        sentinel but never restored — the process died mid-execution.
+        They are returned so the engine can treat them as missed
+        occurrences.
         """
-        platform_clause = "AND platform = ?" if platform is not None else ""
-        params: list = ["9999-12-31T23:59:59+00:00"]
-        if platform is not None:
-            params.append(platform)
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""SELECT {", ".join(_COLUMNS)}
-                    FROM schedules
-                    WHERE status = 'active'
-                      AND next_run_at = ?
-                      {platform_clause}""",
-                params,
-            ).fetchall()
-        return [self._row_to_schedule(r) for r in rows]
+        rows = [
+            row
+            for row in self._scan()
+            if row.status == "active"
+            and row.next_run_at is not None
+            and _ts(row.next_run_at) == CLAIM_SENTINEL
+            and (platform is None or row.platform == platform)
+        ]
+        return rows
+
+    def reschedule(
+        self,
+        schedule_id: str,
+        expected_next_run_at: datetime | None,
+        next_run_at: datetime,
+    ) -> bool:
+        """Set only ``next_run_at`` on an active file, compare-and-set.
+
+        The engine's silent advances (FR39 first sight and cron edits,
+        FR44 resume) go through here: no run is recorded.  Returns False,
+        writing nothing, when the file is gone, invalid, paused, claimed,
+        or its ``next_run_at`` no longer equals *expected_next_run_at*.
+        """
+        filename = f"{schedule_id}.md"
+        with self._lock():
+            loaded, _reason = self._load_mutating(filename)
+            if loaded is None:
+                return False
+            row, extra = loaded
+            if row.status != "active" or row.next_run_at != expected_next_run_at:
+                return False
+            if row.next_run_at is not None and _ts(row.next_run_at) == CLAIM_SENTINEL:
+                return False
+            self._rewrite(filename, replace(row, next_run_at=next_run_at), extra)
+            return True
+
+    async def reschedule_async(
+        self,
+        schedule_id: str,
+        expected_next_run_at: datetime | None,
+        next_run_at: datetime,
+    ) -> bool:
+        return await asyncio.to_thread(
+            self.reschedule, schedule_id, expected_next_run_at, next_run_at
+        )
 
     def list_for_agent(
         self, agent: str, statuses: Iterable[str] = ("active",)
     ) -> list[Schedule]:
         statuses = tuple(statuses)
-        placeholders = ", ".join("?" for _ in statuses)
-        with self._connect() as conn:
-            rows = conn.execute(
-                f"""SELECT {", ".join(_COLUMNS)}
-                    FROM schedules
-                    WHERE agent = ? AND status IN ({placeholders})
-                    ORDER BY next_run_at, id""",
-                (agent, *statuses),
-            ).fetchall()
-        return [self._row_to_schedule(r) for r in rows]
+        rows = [
+            row
+            for row in self._scan()
+            if row.agent == agent and row.status in statuses
+        ]
+        return sorted(
+            rows,
+            key=lambda r: (
+                r.next_run_at is not None,
+                r.next_run_at or datetime.max.replace(tzinfo=timezone.utc),
+                r.id,
+            ),
+        )
 
-    @staticmethod
-    def _row_to_schedule(row: sqlite3.Row) -> Schedule:
-        values = dict(row)
-        for ts_field in ("next_run_at", "last_run_at", "created_at"):
-            raw = values[ts_field]
-            values[ts_field] = None if raw is None else datetime.fromisoformat(raw)
-        return Schedule(**values)
+    def _scan(self) -> list[Schedule]:
+        """The valid schedules from one directory scan."""
+        return self.scan()[0]
+
+    def scan(self) -> tuple[list[Schedule], list[InvalidEntry]]:
+        """One directory scan: valid Schedules plus invalid (filename, reason) pairs.
+
+        The engine calls this on every poll (FR39/FR40); reporting an
+        ERROR line per invalid file at most once per content hash is the
+        caller's job.  Invalid files never run, never claim, and do not
+        affect their siblings.
+        """
+        valid: list[Schedule] = []
+        invalid: list[InvalidEntry] = []
+        with self._lock(exclusive=False):
+            for path in sorted(self._dir.glob("*.md"), key=lambda p: p.name):
+                if not path.is_file() or _TEMP_RE.match(path.name):
+                    continue
+                text = self._read_file(path.name)
+                row, reason, _extra = self._parse_file(path.name, text)
+                if row is None:
+                    invalid.append(
+                        InvalidEntry(
+                            filename=path.name,
+                            reason=reason,
+                            content_hash=_content_hash(path, text),
+                        )
+                    )
+                else:
+                    valid.append(row)
+        return valid, invalid
 
     # ---- async facades ----
 

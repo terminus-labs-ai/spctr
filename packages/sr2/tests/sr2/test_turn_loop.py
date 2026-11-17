@@ -762,7 +762,8 @@ class TestToolLoopLimitError:
                     tool_use_event("call_loop", "infinite_tool"),
                     StreamEvent(type="end"),
                 ],
-            ]
+            ],
+            repeat_last=True,
         )
 
         sr2 = SR2(

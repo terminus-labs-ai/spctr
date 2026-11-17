@@ -11,6 +11,14 @@ mid-run) is treated as a missed occurrence.
 
 Payloads run serially (one at a time per process). A payload failure
 never stops the engine (FR29).
+
+Each poll scans the store directory (spc-995, FR39–FR44): leftover temp
+files are swept; invalid files are skipped and logged at ERROR once per
+content hash; a file first seen without ``next_run_at`` is scheduled for
+its next occurrence (never retro-fires); a file first seen with a past
+``next_run_at`` follows the FR30 ``on_miss`` policy; a cron edit
+reschedules; ``enabled: false`` files are never due or advanced, and a
+flip back to enabled advances silently to the next occurrence.
 """
 from __future__ import annotations
 
@@ -24,11 +32,12 @@ from zoneinfo import ZoneInfo
 from spctr.schedules.agent import AgentResult, run_agent_dispatch, split_message
 from spctr.schedules.command import CommandResult, run_command
 from spctr.schedules.cron import CronSpec, parse_cron
-from spctr.schedules.store import Schedule, ScheduleStore
+from spctr.schedules.store import CLAIM_SENTINEL, InvalidEntry, Schedule, ScheduleStore
 
 logger = logging.getLogger(__name__)
 
 LATE_THRESHOLD = timedelta(minutes=5)
+_SENTINEL = datetime.fromisoformat(CLAIM_SENTINEL)
 
 
 class ScheduleEngine:
@@ -71,9 +80,19 @@ class ScheduleEngine:
         self._now_fn = clock or (lambda: datetime.now(ZoneInfo("UTC")))
         self._agent_runner = agent_runner  # injectable for tests
         self._task: asyncio.Task | None = None
+        # FR39/FR44: last seen (status, cron) per schedule id, this process.
+        self._seen: dict[str, tuple[str, str]] = {}
+        # FR40: (filename, content hash) pairs already logged at ERROR.
+        self._invalid_logged: set[tuple[str, str]] = set()
 
     def _now(self) -> datetime:
         return self._now_fn()
+
+    def _next_after(self, cron: str, now: datetime) -> datetime:
+        try:
+            return parse_cron(cron).next_after(now, self._timezone)
+        except Exception:
+            return now + timedelta(hours=1)
 
     async def start(self) -> None:
         """Catch up missed runs, recover crashed runs, start the polling task."""
@@ -130,18 +149,7 @@ class ScheduleEngine:
         overdue = await self._schedule_store.due_async(now, self._platform)
         for sched in overdue:
             if sched.on_miss == "skip":
-                try:
-                    spec = parse_cron(sched.cron)
-                    next_run = spec.next_after(now, self._timezone)
-                except Exception:
-                    next_run = now + timedelta(hours=1)
-                await self._schedule_store.advance_after_run_async(
-                    sched.id, next_run, now, "skipped", None
-                )
-                logger.info(
-                    "schedule missed run skipped: agent=%s id=%s",
-                    self._name, sched.id,
-                )
+                await self._skip_missed(sched, now)
                 continue
             if not await self._schedule_store.claim_async(sched.id, self._platform):
                 continue
@@ -162,14 +170,104 @@ class ScheduleEngine:
                     sched.id, next_run, now, "failed", "catch-up error"
                 )
 
+    async def _skip_missed(self, sched: Schedule, now: datetime) -> None:
+        """FR30 ``on_miss: skip``: advance past now without firing."""
+        await self._schedule_store.advance_after_run_async(
+            sched.id, self._next_after(sched.cron, now), now, "skipped", None
+        )
+        logger.info(
+            "schedule missed run skipped: agent=%s id=%s",
+            self._name, sched.id,
+        )
+
     async def _run(self) -> None:
         while True:
             await self._poll_once()
             await asyncio.sleep(self._poll_seconds)
 
+    def _report_invalid(self, invalid: list[InvalidEntry]) -> None:
+        """FR40: one ERROR line per invalid file per content hash."""
+        for entry in invalid:
+            key = (entry.filename, entry.content_hash)
+            if key in self._invalid_logged:
+                continue
+            self._invalid_logged.add(key)
+            logger.error(
+                "schedule file invalid: agent=%s file=%s reason=%s",
+                self._name, entry.filename, entry.reason,
+            )
+
+    async def _reschedule(self, sched: Schedule, now: datetime, what: str) -> bool:
+        """Silently set ``next_run_at`` to the next occurrence after *now*."""
+        next_run = self._next_after(sched.cron, now)
+        done = await self._schedule_store.reschedule_async(
+            sched.id, sched.next_run_at, next_run
+        )
+        if done:
+            logger.info(
+                "schedule %s: agent=%s id=%s next_run_at=%s",
+                what, self._name, sched.id, next_run.isoformat(),
+            )
+        return done
+
+    async def _observe(self, sched: Schedule, now: datetime) -> bool:
+        """Per-file bookkeeping for one scanned row; True when it is due.
+
+        FR44: a paused file is never due, caught up or advanced; seeing it
+        flip back to enabled advances it silently.  FR39: a file with no
+        ``next_run_at`` is scheduled, never retro-fired; a cron edit
+        reschedules; a file first seen with a past ``next_run_at`` follows
+        its FR30 ``on_miss``.
+        """
+        prev = self._seen.get(sched.id)
+        self._seen[sched.id] = (sched.status, sched.cron)
+        if sched.status != "active" or sched.next_run_at == _SENTINEL:
+            return False
+        if sched.next_run_at is None:
+            what = "scheduled"
+        elif prev is not None and prev[0] != "active":
+            what = "resumed"
+        elif prev is not None and prev[1] != sched.cron:
+            what = "rescheduled"
+        else:
+            if sched.next_run_at > now:
+                return False
+            if prev is None and sched.on_miss == "skip":
+                await self._skip_missed(sched, now)
+                return False
+            return True
+        if not await self._reschedule(sched, now, what):
+            # The file changed under us: retry from the old view next poll.
+            if prev is None:
+                self._seen.pop(sched.id, None)
+            else:
+                self._seen[sched.id] = prev
+        return False
+
+    async def _scan(self, now: datetime) -> list[Schedule]:
+        """One poll's directory scan (FR39–FR41); returns the due rows."""
+        try:
+            await asyncio.to_thread(
+                self._schedule_store.sweep_temp_files, now, self._poll_seconds
+            )
+        except OSError:
+            logger.exception("schedule temp sweep error: agent=%s", self._name)
+        rows, invalid = await asyncio.to_thread(self._schedule_store.scan)
+        self._report_invalid(invalid)
+        present = {row.id for row in rows}
+        for gone in set(self._seen) - present:
+            del self._seen[gone]
+        due: list[Schedule] = []
+        for sched in rows:
+            if self._platform is not None and sched.platform != self._platform:
+                continue
+            if await self._observe(sched, now):
+                due.append(sched)
+        return sorted(due, key=lambda r: (r.next_run_at, r.id))
+
     async def _poll_once(self) -> None:
         now = self._now()
-        due = await self._schedule_store.due_async(now, self._platform)
+        due = await self._scan(now)
         for sched in due:
             if not await self._schedule_store.claim_async(sched.id, self._platform):
                 continue
