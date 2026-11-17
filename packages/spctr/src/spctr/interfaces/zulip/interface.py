@@ -92,6 +92,7 @@ import enum
 import logging
 import time
 import urllib.parse
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Callable
 
 from spctr.core import RunContext, RunMode
@@ -131,6 +132,12 @@ from spctr.reminders import (
     ReminderOrigin,
 )
 from spctr.reminders import tool as reminders_tool
+from spctr.schedules import ScheduleEngine
+from spctr.tools.schedule_tool import (
+    ScheduleOrigin,
+    ScheduleTurnScope,
+    schedule_turn_scope,
+)
 
 if TYPE_CHECKING:
     from spctr.config_source import SpctrConfigSource
@@ -149,6 +156,36 @@ _PROBE_FAILURE_TEXT = (
     "I could not check the earlier messages in this topic, so I will not "
     "answer without its history. Please try again later."
 )
+
+# FR47: the topic of the schedule whose result is posting in this task.
+# The engine's send seam carries only the destination channel; a Zulip
+# post also needs the row's topic.
+_schedule_post_topic: ContextVar[str] = ContextVar(
+    "spctr_zulip_schedule_post_topic", default=""
+)
+
+
+class _ZulipScheduleEngine(ScheduleEngine):
+    """The schedule engine whose posts carry each row's Zulip topic (FR47).
+
+    Posting stays the engine's (FR26/FR27 forms unchanged); this only
+    exposes the posting row's ``topic`` to the interface's send callable
+    for the duration of that row's posts.
+    """
+
+    async def _handle_command_result(self, sched: Any, result: Any) -> None:
+        token = _schedule_post_topic.set(sched.topic)
+        try:
+            await super()._handle_command_result(sched, result)
+        finally:
+            _schedule_post_topic.reset(token)
+
+    async def _handle_agent_result(self, sched: Any, result: Any) -> None:
+        token = _schedule_post_topic.set(sched.topic)
+        try:
+            await super()._handle_agent_result(sched, result)
+        finally:
+            _schedule_post_topic.reset(token)
 
 
 def is_stop_command(content: str) -> bool:
@@ -429,6 +466,12 @@ class ZulipInterface:
         # stops or restarts the loop when the Runtime's stamp differs.
         self._reminders_stamp: int | None = None
         self._reminders_start_task: Any = None
+        # Schedules (FR47): the platform-scoped engine this interface owns
+        # and the reload stamp it started under (see _sync_schedules).
+        self._schedules_lock = asyncio.Lock()
+        self._schedules_engine: Any = None
+        self._schedules_stamp: int | None = None
+        self._schedules_start_task: Any = None
         # Channel name → ID from the latest registration snapshot
         # (spc-140, FR10); empty when the snapshot is unavailable or
         # malformed, and a name then lives only in a later refresh.
@@ -452,6 +495,7 @@ class ZulipInterface:
         await self._register()
         self._wire_reminder_channel_lookup(agent)
         self._start_reminders(agent)
+        self._start_schedules(agent)
         self._running = True
         logger.info(
             "Zulip interface started: origin=%s queue registered bot=%s",
@@ -492,6 +536,7 @@ class ZulipInterface:
             task.cancel()
         await asyncio.gather(*tails, return_exceptions=True)
         await self._stop_reminders()
+        await self._stop_schedules()
         for session, _seen in self._sessions.values():
             session.close()
         self._sessions.clear()
@@ -653,6 +698,108 @@ class ZulipInterface:
             handle = getattr(self._agent, "reminders", None)
             if self._reminders_loop is None and handle is not None:
                 self._start_reminders(self._agent)
+
+    # ---- schedules (FR47) ---------------------------------------------------
+
+    def _start_schedules(self, agent: Any) -> None:
+        """Start this interface's Zulip-scoped schedule engine (FR47).
+
+        Disabled is None: no engine, nothing scanned (FR46). The engine
+        claims only ``platform: zulip`` files of the shared directory and
+        posts through this interface's Zulip client to the row's stream
+        and topic; the tool gets the engine (``run_now``), the stream
+        resolver and the stream-name lookup through its seams.
+        """
+        schedules = getattr(agent, "schedules", None)
+        if schedules is None:
+            return
+        if not asyncio.iscoroutinefunction(
+            getattr(schedules.store, "recover_claimed_async", None)
+        ):
+            return
+
+        async def send(channel_id: str, content: str) -> None:
+            # Raised, not swallowed: the engine logs a failed post.
+            await self._client.send_message(
+                type="stream",
+                to=int(channel_id),
+                topic=_schedule_post_topic.get() or self._schedules_topic(),
+                content=content,
+            )
+
+        engine = _ZulipScheduleEngine(
+            schedules.store,
+            send=send,
+            poll_seconds=schedules.poll_seconds,
+            tz=schedules.tz,
+            agent_name=schedules.agent_name,
+            command_timeout=schedules.command_timeout,
+            agent_timeout=schedules.agent_timeout,
+            platform="zulip",
+        )
+        tool = getattr(schedules, "tool", None)
+        if tool is not None:
+            tool._engine = engine
+            tool.set_channel_resolver(self._resolve_channel)
+            tool.set_channel_namer(self._schedule_channel_name)
+        self._schedules_engine = engine
+        self._schedules_stamp = getattr(agent, "schedules_stamped", 0)
+        self._schedules_start_task = asyncio.ensure_future(engine.start())
+
+    async def _stop_schedules(self) -> None:
+        """End the engine; unrun files are left intact (FR35)."""
+        engine = self._schedules_engine
+        self._schedules_engine = None
+        self._schedules_stamp = None
+        if engine is None:
+            return
+        try:
+            await engine.stop()
+        except asyncio.CancelledError:
+            pass
+
+    async def _sync_schedules(self) -> None:
+        """Re-seat the engine after a live config reload (FR23).
+
+        Same edges as ``_sync_reminders``; overlapping turns serialize the
+        restart on their own lock.
+        """
+        async with self._schedules_lock:
+            runtime = self._runtime_of(self._agent)
+            stamp = getattr(runtime, "schedules_stamped", None) if runtime else None
+            if self._schedules_stamp is not None:
+                if stamp == self._schedules_stamp:
+                    return
+                await self._stop_schedules()
+            handle = getattr(self._agent, "schedules", None)
+            if self._schedules_engine is None and handle is not None:
+                self._start_schedules(self._agent)
+
+    def _schedules_topic(self) -> str:
+        """``schedules.zulip_topic`` from the agent config in force."""
+        return self._agent.config.agent.schedules.zulip_topic
+
+    def _schedule_channel_name(self, platform: str, channel_id: str) -> str:
+        """Stream name for a stored Zulip stream ID ("" when unknown)."""
+        if platform != "zulip" or not str(channel_id).isdigit():
+            return ""
+        name = self._channel_display_name(int(channel_id))
+        return "" if name == str(channel_id) else name
+
+    def _schedules_origin_for(
+        self, channel_id: int, message: dict[str, Any]
+    ) -> ScheduleOrigin:
+        """The schedule origin of THIS turn (same capture as reminders)."""
+        sender_id = message.get("sender_id")
+        return ScheduleOrigin(
+            agent=self._agent.config.agent.name,
+            platform="zulip",
+            requester_id=str(sender_id) if sender_id is not None else "",
+            requester_mention=f"@{sender_id}" if sender_id is not None else "",
+            channel_id=str(channel_id),
+            channel_name=self._channel_display_name(channel_id),
+            default_topic=self._schedules_topic(),
+        )
 
     async def run(self, agent: Any) -> None:
         """Poll the Zulip event queue until stopped, never waiting on a turn.
@@ -1195,11 +1342,21 @@ class ZulipInterface:
                 origin=self._reminders_origin_for(channel_id, message)
             )
         )
+        # This task's schedule scope (FR47), only when schedules are on:
+        # with no handle there is no tool to read it.
+        schedule_token = None
+        if getattr(self._agent, "schedules", None) is not None:
+            schedule_token = schedule_turn_scope.set(
+                ScheduleTurnScope(
+                    origin=self._schedules_origin_for(channel_id, message)
+                )
+            )
         try:
             # Live reload happens upstream once per batch; re-seat the
             # delivery loop here so an enable/settings change lands before
             # this turn's tool could create a row (spc-143).
             await self._sync_reminders()
+            await self._sync_schedules()
             placeholder_id = await self._send_reply(
                 channel_id, topic, config.thinking_message
             )
@@ -1245,6 +1402,8 @@ class ZulipInterface:
                 channel_id, topic, placeholder_id, text, config
             )
         finally:
+            if schedule_token is not None:
+                schedule_turn_scope.reset(schedule_token)
             reminders_tool.turn_scope.reset(scope_token)
 
     async def _deliver_answer(
