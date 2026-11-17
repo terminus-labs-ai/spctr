@@ -9,6 +9,7 @@ import asyncio
 import json
 import os
 import stat
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -720,6 +721,26 @@ class TestCommandExecutor:
         )
         assert result.timed_out
         assert not result.success
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_forked_grandchild(self, tmp_path):
+        # spc-1091 (FR29): dash forks rather than execs its last command,
+        # so `(sleep 30)` runs as a grandchild of the shell process. If the
+        # timeout kill only takes down the shell, the grandchild keeps the
+        # stdout/stderr pipes open and the run waits out its full runtime.
+        # The kill must take down the whole process group.
+        t0 = time.monotonic()
+        result = await run_command(
+            "(sleep 30); true", agent="test", cwd=str(tmp_path), timeout=0.5,
+            clock=lambda: NOW,
+        )
+        elapsed = time.monotonic() - t0
+        assert result.timed_out
+        assert not result.success
+        assert elapsed < 5.0, (
+            f"timeout kill took {elapsed:.1f}s; the forked grandchild "
+            "outlived the kill"
+        )
 
     @pytest.mark.asyncio
     async def test_log_file_created(self, tmp_path):
