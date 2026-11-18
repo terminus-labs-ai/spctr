@@ -435,6 +435,24 @@ def _default_tier_paths(sr2_home: Path, cwd: Path) -> list[Path]:
     ]
 
 
+def _host_local_tier_paths(positional_file: Path, sr2_home: Path) -> list[Path]:
+    """Return the host-local tier for an agent config, if it applies.
+
+    An agent config at ``$SR2_HOME/agents/<name>.yaml`` gains a highest-priority
+    sibling tier ``$SR2_HOME/agents/<name>.local.yaml`` (gitignored in sr2-home,
+    so each host keeps its own values). Returns ``[]`` when the positional file
+    is missing, is not directly under ``$SR2_HOME/agents/``, or has no local
+    sibling — so a missing positional file still fails as the last tier.
+    """
+    if not positional_file.exists():
+        return []
+    resolved = positional_file.resolve()
+    if resolved.parent != (sr2_home / "agents").resolve():
+        return []
+    local = resolved.with_name(f"{resolved.stem}.local.yaml")
+    return [local] if local.exists() else []
+
+
 def resolve_sr2_home(env: dict[str, str] | None = None) -> Path:
     """Resolve SR2_HOME. Defaults to ~/.sr2 if env var unset.
 
@@ -497,6 +515,8 @@ def _tier_label(path: Path, sr2_home: Path, cwd: Path) -> str:
     try:
         path.relative_to(sr2_home)
         name = path.name
+        if name.endswith(".local.yaml"):
+            return f"{path} (host-local)"
         if name == "config.yaml":
             return f"{path} (global)"
         return f"{path} (global-spctr)"
@@ -737,9 +757,11 @@ def load_resolved_config_with_provenance(
     1. $SR2_HOME/config.yaml
     2. $SR2_HOME/spctr.yaml
     3. <cwd>/.spctr.yaml
-    4. extends-resolved(<positional_path>)  — wins over all
+    4. extends-resolved(<positional_path>)
+    5. $SR2_HOME/agents/<name>.local.yaml  — host-local, wins over all; only
+       when the positional file is $SR2_HOME/agents/<name>.yaml
 
-    Missing tier files (1-3) are silently skipped; the positional file must
+    Missing tier files (1-3, 5) are silently skipped; the positional file must
     exist (FileNotFoundError otherwise). If the positional path resolves to the
     same file as a lower tier, it is not merged twice. Circular extends in any
     file raises CircularExtendsError.
@@ -764,7 +786,7 @@ def load_resolved_config_with_provenance(
     paths = _default_tier_paths(sr2_home, cwd) + [positional_file]
 
     result, result_provenance = _resolve_tiers_with_provenance(
-        paths,
+        paths + _host_local_tier_paths(positional_file, sr2_home),
         sr2_home=sr2_home,
         cwd=cwd,
         env=env,

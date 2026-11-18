@@ -351,18 +351,21 @@ fallback, and no `path` or `on_missing` setting.
 
 ---
 
-## Config Resolution (4-tier merge)
+## Config Resolution (tiered merge)
 
-spctr uses a 4-tier configuration resolution system. Later tiers override earlier ones:
+spctr merges up to five configuration tiers. Later tiers override earlier ones:
 
 | Tier | File | Scope |
 |------|------|-------|
 | 1 | `$SR2_HOME/config.yaml` | User global defaults |
 | 2 | `$SR2_HOME/spctr.yaml` | spctr-specific defaults |
 | 3 | `<cwd>/.spctr.yaml` | Project overrides |
-| 4 | Positional file (`spctr my-config.yaml`) | Active run config |
+| 4 | Positional file (`spctr my-config.yaml`, or `--agent <name>` → `$SR2_HOME/agents/<name>.yaml`) | Active run config |
+| 5 | `$SR2_HOME/agents/<name>.local.yaml` | Host-local overrides for one agent |
 
 Missing tier files are silently skipped. The positional file (tier 4) must exist.
+
+Tier 5 applies only when the positional file is directly under `$SR2_HOME/agents/`; a config anywhere else never picks up a sibling `*.local.yaml`. sr2-home gitignores `*.local.yaml`, so each host keeps its own values (for example a different model `base_url`, or `agent.reminders.enabled: false`) while the tracked agent file stays shared. Tier 5 merges with the same rules as every other tier and is reread wherever the agent config is reloaded. `spctr config show` labels its keys `(host-local)`.
 
 ### `extends:` key
 
