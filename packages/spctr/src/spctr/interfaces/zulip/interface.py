@@ -456,6 +456,13 @@ class ZulipInterface:
         # (spc-1071). In-process like the Session map above: survives
         # whole-config reloads, cleared on restart.
         self._topic_owners: dict[tuple[int, str], TopicOwner] = {}
+        # One in-flight opener resolution per unrecorded topic
+        # (stream_id, topic) (spc-1084): a concurrent caller — the !stop
+        # fast path racing the queued first message — awaits the same
+        # fetch instead of issuing its own.
+        self._topic_opener_inflight: dict[
+            tuple[int, str], asyncio.Task[dict[str, Any] | None]
+        ] = {}
         # Serializes delivery-loop restarts now that turns overlap.
         self._reminders_lock = asyncio.Lock()
         # Reminders (spc-139, FR6): delivery loop + the per-turn origin.
@@ -1067,6 +1074,36 @@ class ZulipInterface:
             return None
         return opener
 
+    async def _resolve_topic_opener(
+        self, key: tuple[int, str]
+    ) -> dict[str, Any] | None:
+        """One opener fetch per unrecorded topic, shared by concurrent
+        callers (spc-1084).
+
+        The queued first message and the ``!stop`` fast path can race for
+        the same unrecorded topic: both see it absent from
+        ``_topic_owners`` and both would fetch the opener. Whoever arrives
+        first starts the bounded fetch; every other caller awaits that
+        same task. A failed lookup still returns ``None`` and records
+        nothing, so the next event retries — the fail-open contract — but
+        never a second fetch of the in-flight failure.
+        """
+        channel_id, topic = key
+        task = self._topic_opener_inflight.get(key)
+        if task is None:
+            task = asyncio.create_task(self._topic_opener(channel_id, topic))
+            self._topic_opener_inflight[key] = task
+
+            def _forget(t: asyncio.Task[dict[str, Any] | None]) -> None:
+                # Remove the entry only if this is still the task for
+                # this key (a later caller may have started a fresh
+                # resolution after this one finished).
+                if self._topic_opener_inflight.get(key) is t:
+                    del self._topic_opener_inflight[key]
+
+            task.add_done_callback(_forget)
+        return await task
+
     async def _dropped_by_owner(
         self, channel_id: int, topic: str, content: Any
     ) -> bool:
@@ -1085,16 +1122,30 @@ class ZulipInterface:
         """
         key = (channel_id, topic)
         if key not in self._topic_owners:
-            opener = await self._topic_opener(channel_id, topic)
+            opener = await self._resolve_topic_opener(key)
             if opener is not None:
-                # One fetch per topic per process: the recorded value
-                # is cached whatever it is.
-                self._topic_owners[key] = classify_topic_opener(
-                    opener,
-                    full_name=self._bot_full_name,
-                    user_id=self._bot_user_id,
-                    bot_ids=self._bot_ids,
-                )
+                # Re-check after the await: a concurrent caller (the
+                # !stop fast path racing the queued first message) may
+                # have already recorded this key while the fetch was
+                # in flight. If so, the opener classification is stale
+                # and must not overwrite what the other caller recorded
+                # (spc-1084).
+                if key not in self._topic_owners:
+                    claimed = _claimed_owner(
+                        content,
+                        full_name=self._bot_full_name,
+                        user_id=self._bot_user_id,
+                        bot_ids=self._bot_ids,
+                        bot_names=self._bot_names,
+                    )
+                    if claimed is None:
+                        claimed = classify_topic_opener(
+                            opener,
+                            full_name=self._bot_full_name,
+                            user_id=self._bot_user_id,
+                            bot_ids=self._bot_ids,
+                        )
+                    self._topic_owners[key] = claimed
         if key not in self._topic_owners:
             return False
         claimed = _claimed_owner(
