@@ -24,7 +24,7 @@ _DEFAULT_SUBSCRIPTION = EventSubscription(
 
 
 class TopicAreaResolver:
-  """Select AGENTS.md, README.md or source NOW.md from one eligible topic."""
+  """Select managed documents from one eligible topic by area identity."""
 
   name: str = "topic_area"
 
@@ -42,8 +42,7 @@ class TopicAreaResolver:
     ):
       raise ValueError("topic_area requires an absolute, non-glob topics_root.")
     filename = config.config.get("filename")
-    if filename not in ("AGENTS.md", "NOW.md", "README.md"):
-      raise ValueError("topic_area filename must be AGENTS.md, NOW.md or README.md.")
+    self._validate_filename(filename)
     max_tokens = config.config.get("max_tokens")
     if max_tokens is not None and (type(max_tokens) is not int or max_tokens <= 0):
       raise ValueError("topic_area max_tokens must be a positive integer or None.")
@@ -52,11 +51,23 @@ class TopicAreaResolver:
     self._filename = filename
     self._max_tokens = max_tokens
     self._run_context_provider = run_context_provider
+    self._missing_warned = False
     self.max_executions = config.max_executions
     self.execution_count = 0
     self.subscriptions = build_subscriptions(
       config.subscriptions, PHASE_MAP, [_DEFAULT_SUBSCRIPTION]
     )
+
+  @staticmethod
+  def _validate_filename(filename: object) -> None:
+    if not isinstance(filename, str) or not filename:
+      raise ValueError("topic_area filename must be a nonempty relative path string.")
+    segments = filename.split("/")
+    if any(segment in ("", ".", "..") for segment in segments):
+      raise ValueError(
+        "topic_area filename must be a relative path inside the topic "
+        "(no empty segments, '.' or '..')."
+      )
 
   @classmethod
   def build(cls, config: ResolverConfig, deps: Dependencies) -> TopicAreaResolver:
@@ -103,6 +114,69 @@ class TopicAreaResolver:
     except (ValueError, yaml.YAMLError):
       return {}
     return metadata if isinstance(metadata, dict) else {}
+
+  def _missing(self, area: str) -> str:
+    """Log the missing target once per session, then stay quiet."""
+    if not self._missing_warned:
+      self._missing_warned = True
+      logger.warning(
+        "TopicAreaResolver: topic %r has no %s; nothing to inject.",
+        area,
+        self._filename,
+      )
+    else:
+      logger.debug(
+        "TopicAreaResolver: topic %r has no %s; nothing to inject.",
+        area,
+        self._filename,
+      )
+    return ""
+
+  def _glob_segments(self) -> tuple[list[str], str] | None:
+    """Split the filename into a directory prefix and a glob pattern, if any."""
+    segments = self._filename.split("/")
+    if not any(character in segments[-1] for character in "*?[]"):
+      return None
+    return segments[:-1], segments[-1]
+
+  def _select_paths(self, topic: Path, root: Path) -> tuple[list[Path], bool] | None:
+    """Return files to load (plus a multi-file flag), or None when nothing matches."""
+    glob_parts = self._glob_segments()
+    if glob_parts is None:
+      selected = topic / self._filename
+      try:
+        resolved = selected.resolve()
+      except (OSError, RuntimeError):
+        return None
+      if not resolved.is_relative_to(root):
+        return [], False
+      if resolved.is_dir():
+        files = [
+          path
+          for path in resolved.rglob("*")
+          if path.is_file()
+          and not path.is_symlink()
+          and not any(part.startswith(".") for part in path.relative_to(resolved).parts)
+        ]
+        return sorted(files), True
+      if resolved.is_file():
+        return [selected], False
+      return None
+    prefix, pattern = glob_parts
+    directory = topic.joinpath(*prefix)
+    if not directory.is_dir():
+      return None
+    files = []
+    for path in sorted(directory.glob(pattern)):
+      if not path.is_file() or path.is_symlink():
+        continue
+      try:
+        resolved = path.resolve()
+      except (OSError, RuntimeError):
+        continue
+      if resolved.is_relative_to(root):
+        files.append(path)
+    return (files, True) if files else None
 
   def _resolve_text(self) -> str:
     context = self._run_context_provider() if self._run_context_provider else None
@@ -155,26 +229,30 @@ class TopicAreaResolver:
         len(matches),
       )
       return ""
-    selected = matches[0] / self._filename
-    try:
-      target = selected.resolve()
-    except (OSError, RuntimeError):
-      target = None
-    if target is None or not target.is_relative_to(root):
+    topic = matches[0]
+    selection = self._select_paths(topic, root)
+    if selection is None:
+      return self._missing(area)
+    files, multi = selection
+    if not files:
+      return self._missing(area)
+    chunks: list[str] = []
+    unread = 0
+    for path in files:
+      text = self._read(path, root)
+      if text is None:
+        unread += 1
+        continue
+      if multi:
+        relative = path.relative_to(topic)
+        text = f"### {relative}\n\n{text}"
+      chunks.append(text)
+    if unread:
       logger.warning(
-        "TopicAreaResolver: selected document %s resolves outside topics_root.",
-        selected,
+        "TopicAreaResolver: skipped %d unreadable file(s) under %s.",
+        unread,
+        topic / self._filename,
       )
-      return ""
-    if not target.is_file():
-      logger.debug(
-        "TopicAreaResolver: topic %r has no %s; nothing to inject.",
-        area,
-        self._filename,
-      )
-      return ""
-    text = self._read(selected, root)
-    if text is None:
-      logger.warning("TopicAreaResolver: cannot read document %s.", selected)
-      return ""
-    return text
+    if not chunks:
+      return self._missing(area)
+    return "\n\n".join(chunks)
