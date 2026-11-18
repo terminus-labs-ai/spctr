@@ -808,3 +808,148 @@ async def test_topic_opener_lookup_through_real_client(zulip_endpoint):
     finally:
         await client.aclose()
     assert opener == {"id": 1, "sender_id": DIEGO_ID, "content": "the opener"}
+
+
+# ---------------------------------------------------------------------------
+# spc-1084 — the !stop fast path races the queued first message for the
+# same unrecorded topic. The opener fetch must run exactly once per topic
+# (AC1), both callers must share the in-flight fetch, and the spc-1071
+# routing is unchanged: the opener classification is recorded once and a
+# later self-mention claim still overrides it.
+# ---------------------------------------------------------------------------
+
+
+class _DelayedClient(_FakeClient):
+    """_FakeClient whose opener fetch holds for ``delay`` seconds, so a
+    concurrent caller is guaranteed to arrive while the fetch is in
+    flight (equal-latency race: both callers see the topic unrecorded)."""
+
+    def __init__(self, topics: dict, *, delay: float = 0.03,
+                 **kwargs: Any) -> None:
+        super().__init__(topics, **kwargs)
+        self._delay = delay
+
+    async def get_topic_opener(self, channel_id: int, topic: str) -> dict:
+        self.opener_calls.append((channel_id, topic))
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        if self._opener_fails:
+            raise ZulipTransportError("synthetic opener failure")
+        messages = self._topics.get((channel_id, topic)) or []
+        return {"messages": messages[:1]}
+
+
+async def test_ac1_concurrent_stop_shares_single_opener_fetch():
+    """AC1, r1: a !stop dispatched alongside the first message in an
+    unrecorded topic — one opener fetch total (previously two), the
+    in-flight map is empty again once both callers settle, and the stop
+    reply goes out through the fast path."""
+    opener = _msg("@**EDI** status?")
+    follow = _msg("and then?")
+    topics = {_key(): [opener]}
+    client = _DelayedClient(topics)
+    edi, ea = _iface(EDI_NAME, EDI_ID, client)
+
+    # Same-tick dispatch: the queued message and the !stop fast path both
+    # find the topic unrecorded and both await the in-flight fetch.
+    edi._dispatch(follow, set(), edi._config)
+    edi._dispatch(_msg("!stop"), set(), edi._config)
+    await _settle(edi)
+
+    assert client.opener_calls == [_key()]              # exactly one fetch
+    assert edi._topic_opener_inflight == {}             # no leaked entry
+    assert edi._topic_owners[_key()] is TopicOwner.SELF  # opener class stands
+    assert [s["content"] for s in client.sends if
+            s["content"] == edi._config.stop_idle_message] == [
+        edi._config.stop_idle_message
+    ]
+
+
+async def test_ac2_probe_opener_class_still_replies_and_single_fetch():
+    """AC2, r1 — the G probe shape: opener mentions a human (OTHER class),
+    a self-mention message and a !stop are dispatched concurrently against
+    the same unrecorded topic. One opener fetch total (previously two);
+    the !stop runs through the fast path (no turn queue); the opener's
+    OTHER class is recorded exactly once; and a later self-mention claims
+    the topic back without a second opener fetch."""
+    opener = _msg("@**Diego** help")         # human mention -> OTHER
+    follow = _msg("@**EDI** help")            # self claim -> SELF
+    topics = {_key(): [opener]}
+    client = _DelayedClient(topics)
+    edi, ea = _iface(EDI_NAME, EDI_ID, client)
+
+    # Same-tick dispatch: both callers find the topic unrecorded and both
+    # await the in-flight fetch. The !stop fast path resolves first (it has
+    # no turn to run), records the opener's OTHER class, and is dropped
+    # silently (no reply). The queued message then claims SELF.
+    edi._dispatch(follow, set(), edi._config)
+    edi._dispatch(_msg("!stop"), set(), edi._config)
+    await _settle(edi)
+
+    assert client.opener_calls == [_key()]              # exactly one fetch
+    assert edi._topic_opener_inflight == {}             # no leaked entry
+    # The opener's OTHER class was recorded; the follow-up self-mention
+    # then claimed the topic back (spc-1071 rule, unchanged).
+    assert edi._topic_owners[_key()] is TopicOwner.SELF
+    assert ea.turns == ["@**EDI** help"]
+
+    # A further !stop in the now-SELF topic gets its stop reply.
+    before = len(client.sends)
+    edi._dispatch(_msg("!stop"), set(), edi._config)
+    await _settle(edi)
+    assert [s["content"] for s in client.sends[before:] if
+            s["content"] == edi._config.stop_idle_message] == [
+        edi._config.stop_idle_message
+    ]
+    # No second opener fetch.
+    assert client.opener_calls == [_key()]
+
+
+async def test_ac2_opener_class_recorded_once_and_claim_overrides():
+    """AC2 ordering: in the bare-!stop probe, the opener's OTHER class is
+    recorded exactly once (not overwritten by either caller), the !stop is
+    dropped silently (no reply), and a later self-mention still claims the
+    topic without a second opener fetch."""
+    opener = _msg("@**Diego** help")
+    topics = {_key(): [opener]}
+    client = _DelayedClient(topics)
+    edi, ea = _iface(EDI_NAME, EDI_ID, client)
+
+    edi._dispatch(_msg("!stop"), set(), edi._config)
+    await _settle(edi)
+
+    assert client.opener_calls == [_key()]
+    assert edi._topic_owners[_key()] is TopicOwner.OTHER
+    assert client.sends == []                            # dropped, no reply
+
+    # A later self-mention claims the topic back (spc-1071 rule intact)
+    # and fetches nothing further.
+    edi._dispatch(_msg("@**EDI** help"), set(), edi._config)
+    await _settle(edi)
+    assert client.opener_calls == [_key()]
+    assert edi._topic_owners[_key()] is TopicOwner.SELF
+    assert ea.turns == ["@**EDI** help"]
+
+
+async def test_ac1_concurrent_failure_still_single_fetch_and_retries():
+    """AC1 fail-open: a failed fetch is shared by the concurrent !stop too
+    (one attempt for the race), nothing is recorded, and the next event
+    retries the fetch — never a lockout, never a second in-flight fetch."""
+    topics = {_key(): [_msg("anyone?")]}
+    client = _DelayedClient(topics, opener_fails=True)
+    edi, ea = _iface(EDI_NAME, EDI_ID, client)
+
+    edi._dispatch(_msg("first"), set(), edi._config)
+    edi._dispatch(_msg("!stop"), set(), edi._config)
+    await _settle(edi)
+
+    assert client.opener_calls == [_key()]          # one attempt for the race
+    assert edi._topic_owners == {}                  # failed: recorded nothing
+    assert edi._topic_opener_inflight == {}
+
+    # Next event retries (the fail-open contract, spc-1071).
+    client._opener_fails = False
+    edi._dispatch(_msg("second"), set(), edi._config)
+    await _settle(edi)
+    assert client.opener_calls == [_key(), _key()]
+    assert edi._topic_owners[_key()] is TopicOwner.UNOWNED
