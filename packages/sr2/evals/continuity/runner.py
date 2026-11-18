@@ -1162,7 +1162,8 @@ class _ReplayEmbeddingIndex:
     committed vector, each fixture input is embedded exactly once, and no
     live endpoint is reachable (the deterministic run socket-blocks)."""
 
-    def __init__(self, fixture: dict, path: str | Path) -> None:
+    def __init__(self, fixture: dict, path: str | Path,
+                 query_cache: dict[str, list[float]] | None = None) -> None:
         from sr2.continuity.indexes.embedding import EmbeddingContinuityIndex
 
         self._fixture = fixture
@@ -1175,8 +1176,12 @@ class _ReplayEmbeddingIndex:
         # The reference query is embedded at search time, once, and cached
         # so runs 2-5 of the scenario do not re-embed it (row r7: every
         # committed input — records AND the query — is embedded exactly once
-        # through the embedding boundary, no recapture).
-        self._query_cache: dict[str, list[float]] = {}
+        # through the embedding boundary, no recapture). The FR40 run shares
+        # one dict across its per-repetition indexes (``query_cache``), so
+        # rebuilding the index per repetition keeps that exactly-once
+        # property for the query as well as for the appended records.
+        self._query_cache: dict[str, list[float]] = (
+            {} if query_cache is None else query_cache)
 
     async def append(self, records: list) -> None:
         # The patched ``_embed`` serves each record's committed vector (no
@@ -1294,32 +1299,54 @@ def _install_embedding_replay() -> None:
 _install_embedding_replay()
 
 
-def _fr40_build_index(candidate_id: str, workdir: Path):
-    """The candidate index for one FR40 scenario run, built ONCE per run so
-    the embedding candidate's SQLite vector cache persists across the 5
-    warm-up/scoring runs: run 1's append + first query embed each fixture
-    input exactly once, runs 2-5 hit the cache (row r7: every committed
-    input embedded exactly once, no recapture)."""
+def _fr40_build_index(candidate_id: str, workdir: Path, *,
+                      query_cache: dict[str, list[float]] | None = None):
+    """The candidate index for ONE FR40 repetition (sr2-177).
+
+    The runner rebuilds it for every repetition so each scored run starts
+    from the same appended set exactly once: appending the scenario's
+    records into an index that already holds them stacks duplicate entries
+    that crowd distinct records out of ``search(limit=len(records))``
+    (repetition 1 delivered all six records, repetitions 3-5 only two), so
+    a shared index measures its own version bookkeeping instead of the
+    candidate backend.
+
+    Isolation costs no embedding recapture (row r7: every committed input
+    embedded exactly once for the whole run): the embedding candidate's
+    SQLite vector cache lives at a *workdir*-fixed path that survives the
+    rebuild, and the reference query's vector travels in the caller-owned
+    *query_cache*."""
     from evals.continuity.candidates import CANDIDATES as _CANDS
 
     if candidate_id == "embedding":
         fixture = load_vector_fixture(_FR40)
         db_path = workdir / "replay_vectors.sqlite3"
-        return _ReplayEmbeddingIndex(fixture, db_path)
+        return _ReplayEmbeddingIndex(fixture, db_path, query_cache=query_cache)
     return _CANDS[candidate_id]()
+
+
+def _fr40_seed(index, records: list) -> None:
+    """Load one repetition's material: the scenario's records, appended to
+    the fresh *index* exactly once. Driven synchronously on the module
+    event loop (created at import, before any test can block sockets)."""
+
+    async def _drive():
+        await index.append(records)
+
+    _LOOP.run_until_complete(_drive())
 
 
 def _fr40_delivery(index, scenario: Scenario, records: list) -> list[Block]:
     """The FR40 reference turn's delivered background: A's settled turns,
-    brought back through the (prebuilt) candidate index (not the recent
-    window). Driven synchronously on the module event loop (created at
-    import, before any test can block sockets)."""
+    brought back through the candidate index this repetition seeded with
+    ``_fr40_seed`` (not the recent window). ``limit`` is the seeded set's
+    size, so the whole appended set can come back. Driven synchronously on
+    the module event loop."""
     from sr2.continuity.policy import RetrievalContext
 
     query = _fr40_query(scenario)
 
     async def _drive():
-        await index.append(records)
         ctx = RetrievalContext(
             owner_id="evals", agent_id="agent", agent_tags=(),
             projects=(scenario.id,), frame_id=None,
@@ -1358,9 +1385,19 @@ def _run_fr40_scenario(scenario: Scenario, candidate_id: str,
                for t in scenario.turns
                if "Postgres" in (t.meta or {}).get("question", "")}
     residency_tokens = 0
-    index = _fr40_build_index(candidate_id, run_dir)
     records = _fr40_records(scenario)
+    # One fresh candidate index per repetition (sr2-177), so every scored
+    # run starts from the same appended set exactly once. Warm state that
+    # costs nothing to keep travels outside the index: the embedding
+    # candidate's SQLite vector cache sits at a run_dir-fixed path and the
+    # reference query's vector lives in this shared dict, so rebuilding per
+    # repetition still embeds each committed input exactly once for the run
+    # (row r7) while no repetition inherits another's duplicate entries.
+    query_cache: dict[str, list[float]] = {}
     for run_index in range(1, RUNS_PER_SCENARIO + 1):
+        index = _fr40_build_index(candidate_id, run_dir,
+                                  query_cache=query_cache)
+        _fr40_seed(index, records)
         for turn_index, turn in enumerate(scenario.turns, start=1):
             is_reference = turn_index == reference_turn
             if is_reference:
@@ -1412,8 +1449,8 @@ def _run_fr40_scenario(scenario: Scenario, candidate_id: str,
                     if text in a_texts:
                         residency_tokens += count_tokens(text)
             observations.append(observation)
-    if hasattr(index, "close"):
-        _LOOP.run_until_complete(index.close())
+        if hasattr(index, "close"):
+            _LOOP.run_until_complete(index.close())
 
     metrics = _aggregate_metrics(observations, pricing)
     # closed_residency: A's verbatim-turn tokens delivered after the close
