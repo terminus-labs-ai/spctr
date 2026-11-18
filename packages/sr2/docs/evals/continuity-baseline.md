@@ -22,12 +22,14 @@ committed inputs reproduces the `metrics.json` byte for byte.
 PYTHONPATH=src python -m evals.continuity.runner
 ```
 
-Writes `evals/continuity/results/<run-id>/observations.jsonl` and
-`metrics.json`. `<run-id>` is `<corpus-tree-sha>+<sr2-tree-sha>` —
+Writes `evals/continuity/results/<run-id>/observations.jsonl`,
+`metrics.json` and `latency.json`. `<run-id>` is
+`<corpus-tree-sha>+<sr2-tree-sha>` —
 git-derived from this checkout (a dirty worktree hashes its tree instead
 of HEAD), so the directory name identifies the checkout that published
 it; the published metrics reproduce from any checkout of the same
-committed inputs. To refresh the measured latency figures:
+committed inputs. To print the measured latency aggregate (the pinned
+placeholder's refresh source; also published in `latency.json`):
 
 ```
 CONTINUITY_MEASURE_LATENCY=1 PYTHONPATH=src python -m evals.continuity.runner
@@ -99,20 +101,34 @@ The single incorrect observation is the stale read in
 delivery carries P (the policy-tagged string), which is the single
 policy-leak event. Every other observation states the current gold value.
 
-## Latency disclosure: published figures are pinned constants
+## Latency disclosure: pinned constants in `metrics.json`, measured wall clock in `latency.json`
 
 The published `latency.median` = 0.02 and `latency.p95` = 0.03 are
 **pinned constants** (`_LATENCY_PINNED_MEDIAN`, `_LATENCY_P95_RATIO = 1.5`
 in `evals/continuity/runner.py`), kept so that `metrics.json` is
 byte-identical across runs (R18). Wall-clock latency is not
-byte-reproducible, so it is excluded from the versioned results.
+byte-reproducible, so under Amendment 2026-11-17 (sr2-178 ruling D3 /
+sr2-181) it publishes separately as `latency.json` beside
+`metrics.json` in every run dir; the byte-identity reproducibility
+proof covers `metrics.json` only.
 
-Measured from one `CONTINUITY_MEASURE_LATENCY=1` run of this same
-checkout (scored runs 2–5, run 1 discarded as warm-up):
+`latency.json` reports `median`/`p95` per scenario plus a pooled
+`aggregate` entry, computed over the scored runs (run 1 discarded as
+warm-up; `null` where a scenario has no scored timings). FR21's final
+tie-breaker ranks arms by the aggregate median where every arm
+publishes the artifact and records an unresolved tie otherwise
+(`evals.continuity.runner.load_latency`). On the FR40 candidate path
+the measured span includes the reference turn's index delivery — the
+selecting work the tie-breaker exists to compare.
+
+For refresh context, one pre-amendment `CONTINUITY_MEASURE_LATENCY=1`
+run of this same checkout (scored runs 2–5, run 1 discarded as
+warm-up) measured:
 
 - measured median: **0.000297 s**
 - measured p95: **0.001000 s**
 
 The pinned median is ~67× the measured median (0.02 / 0.000297) and the
 pinned p95 is ~30× the measured p95 (0.03 / 0.001); they document the
-metric shape, not this checkout's wall clock.
+metric shape, not this checkout's wall clock. Read the live figures
+from the run dir's `latency.json` instead.
