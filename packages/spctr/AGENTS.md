@@ -137,9 +137,12 @@ uv run --frozen python -m pytest packages/spctr/tests/test_some_module.py -v
 
 The suite is self-isolating: `packages/spctr/tests/conftest.py` points
 `SR2_HOME` at a per-test temp dir and drops inherited
-`SR2_SESSION_LOG_DIR` and `SR2_SESSION_LOG_SHARED`, so it passes with or
-without the dispatch launch's session-log environment and with or without
-the container's shared-log setting. No `env -u` prefix is needed.
+`SR2_SESSION_LOG_DIR`, `SR2_SESSION_LOG_SHARED` and
+`SR2_ACTIVE_MODEL_FILE` — the container's live active-model pointer, which
+`/model` writes — so it passes with or without the dispatch launch's
+session-log environment, with or without the container's shared-log
+setting, and never rewrites the running agent's model. No `env -u` prefix
+is needed.
 
 ### Running tests in a build worktree
 

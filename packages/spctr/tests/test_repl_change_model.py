@@ -485,7 +485,7 @@ def test_module_docstring_lists_change_model() -> None:
 
 
 @pytest.mark.asyncio
-async def test_command_dispatched_case_insensitively(monkeypatch) -> None:
+async def test_command_dispatched_case_insensitively(tmp_path, monkeypatch) -> None:
     """The run loop lowercases the command token; the handler must match.
 
     Sends the mixed-case spelling of the model command (``/MODEL fast``) through
@@ -496,7 +496,13 @@ async def test_command_dispatched_case_insensitively(monkeypatch) -> None:
     to the handler (see ``test_switch_applies_config_and_writes_pointer``).
     ``/change-model`` itself is gone: ``7aa0586`` renamed it to ``/model``, and
     ``_COMMAND_ALIASES`` maps only ``/change``, for the completer.
+
+    The pointer file is pinned to *tmp_path*, as every other switching test
+    here does: without it this test would inherit whatever
+    ``SR2_ACTIVE_MODEL_FILE`` the caller exported and write the switch there.
     """
+    pointer = tmp_path / "active_model"
+    monkeypatch.setenv("SR2_ACTIVE_MODEL_FILE", str(pointer))
     agent = _agent_with_config(_spctr_with_models("default"))
     interface = REPLInterface()
     buf = _console_capturing(interface)
@@ -525,6 +531,8 @@ async def test_command_dispatched_case_insensitively(monkeypatch) -> None:
     agent.apply_config.assert_called_once()
     assert agent.apply_config.call_args[0][0].active_model == "fast"
     assert agent.config.active_model == "fast"
+    # ... and persisted to the pinned pointer, not to an inherited one.
+    assert pointer.read_text() == "fast\n"
 
 
 @pytest.mark.asyncio

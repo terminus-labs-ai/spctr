@@ -16,6 +16,7 @@ is a different directory and deliberately out of scope.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,6 +43,23 @@ def real_home() -> Path:
 
 def test_session_log_directory_is_not_real_sr2_home():
     assert not SessionLogManager().directory.is_relative_to(real_home())
+
+
+# ---------------------------------------------------------------------------
+# Pre-existing guard (spc-1107 class): the active-model pointer
+# ---------------------------------------------------------------------------
+
+def test_active_model_pointer_is_not_inherited():
+    """No test sees the caller's ``SR2_ACTIVE_MODEL_FILE``.
+
+    The agent-container unit exports that variable per agent and both the
+    REPL and Discord ``/model`` write the file it names. Inherited by a
+    model switch that pins no pointer of its own, it rewrites the running
+    agent's model — red where the pointer's parent directory is absent,
+    silent model drift where it exists. The autouse fixture drops it; tests
+    exercising persistence set their own under ``tmp_path``.
+    """
+    assert "SR2_ACTIVE_MODEL_FILE" not in os.environ
 
 
 # ---------------------------------------------------------------------------

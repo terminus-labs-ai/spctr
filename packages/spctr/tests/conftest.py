@@ -45,10 +45,19 @@ def _isolate_sr2_home(tmp_path_factory, monkeypatch) -> None:
     0755/0644 and must not leak in either: it would flip the owner-only
     permission test red. Drop it; the shared-mode tests in
     ``test_run_log.py`` set it explicitly via monkeypatch.
+
+    ``SR2_ACTIVE_MODEL_FILE`` names the writable active-model pointer the
+    agent-container unit exports per agent, and it is the file the REPL and
+    Discord ``/model`` commands write. Leaked in, a test that switches
+    models without pinning the pointer rewrites the running agent's model —
+    and it fails outright when the pointer's parent directory does not
+    exist. Drop it; the tests that exercise pointer persistence set it
+    themselves.
     """
     monkeypatch.setenv("SR2_HOME", str(tmp_path_factory.mktemp("sr2_home")))
     monkeypatch.delenv("SR2_SESSION_LOG_DIR", raising=False)
     monkeypatch.delenv("SR2_SESSION_LOG_SHARED", raising=False)
+    monkeypatch.delenv("SR2_ACTIVE_MODEL_FILE", raising=False)
 
 
 def _make_mock_agent(
