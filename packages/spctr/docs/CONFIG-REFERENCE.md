@@ -279,7 +279,7 @@ Ordered list of context compilation layers. Each layer:
 | `session` | Session history from current turn | none |
 | `input` | Current user message | none |
 | `plan` | Plan file resolution | `plans_root` (str), `project` (str) |
-| `topic_area` | Managed topic documents by area identity | `topics_root` (absolute str), `filename` (AGENTS.md/NOW.md/README.md), `max_tokens` (int/null) |
+| `topic_area` | Managed topic documents by area identity | `topics_root` (absolute str), `filename` (relative path, glob or directory allowed), `max_tokens` (optional int/null) |
 | `memory` | Memory store lookup | `scope` (str), `limit` (int), `prefix` (str) |
 | `knowledge` | Knowledge file resolution | `knowledge_root` (str) |
 
@@ -318,10 +318,18 @@ selects one managed topic by identity, independent of directory names or depth.
 ```
 
 `topics_root` must be an absolute directory path without glob syntax; it may
-be absent when configured. `filename` is required and accepts only
-`AGENTS.md`, `NOW.md` or `README.md`. `max_tokens` is an optional positive
-integer; omitting it or setting it to `null` disables the limit. Each selected
-file is checked using SR2's characters-per-token approximation; exceeding the
+be absent when configured. `filename` is required and may be any nonempty
+relative path inside the selected topic — no leading `/`, no empty, `.` or
+`..` segments. It may name a file (`.md` or not, e.g. `ops/INDEX.md` or
+`roster.yaml`), a directory (every file under it loads recursively), or a
+directory plus glob pattern (e.g. `bullshit/files/*.md`; matches only files).
+Multi-file loads are sorted deterministically, skip dotfiles, symlinks and
+undecodable files, and prefix each file's content with a `### <relative path>`
+header. A single-file load injects the file content verbatim. If the target
+(file, directory or pattern) matches nothing, a warning is logged once at
+session start and resolution returns empty until content appears; it never
+raises. `max_tokens` is an optional positive integer (applied to the combined
+text); omitting it or setting it to `null` disables the limit. Exceeding the
 limit raises `MarkdownTokenBudgetError`.
 
 An eligible topic has README.md YAML frontmatter `kind: topic` and

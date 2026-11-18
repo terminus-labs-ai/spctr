@@ -139,16 +139,19 @@ async def test_missing_identity_docs_skip_quietly(tmp_path, caplog, filename, mi
     assert not any(record.levelno >= logging.WARNING for record in caplog.records)
 
 
-async def test_missing_target_doc_skips_quietly(tmp_path, caplog):
-    # An eligible topic without the requested target document is a normal vault
-    # state (plain README+NOW topics have no AGENTS.md): skip at debug, not
-    # warning, so a real misconfiguration stays visible.
+async def test_missing_target_doc_warns_once_per_session(tmp_path, caplog):
+    # An eligible topic without the requested target document warns once at
+    # session start, then stays quiet at debug on later turns.
     topic = _topic(tmp_path / "topic")
     (topic / "AGENTS.md").unlink()
+    resolver = _build(tmp_path, "AGENTS.md")
     with caplog.at_level(logging.DEBUG):
-        assert await _text(_build(tmp_path, "AGENTS.md")) == ""
-    assert any(record.levelno == logging.DEBUG for record in caplog.records)
-    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+        assert await _text(resolver) == ""
+        assert any(record.levelno == logging.WARNING for record in caplog.records)
+        assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) == 1
+        for _ in range(3):
+            assert await _text(resolver) == ""
+    assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) == 1
 
 
 async def test_unreadable_target_doc_warns(tmp_path, caplog):
@@ -161,13 +164,78 @@ async def test_unreadable_target_doc_warns(tmp_path, caplog):
     assert any(record.levelno == logging.WARNING for record in caplog.records)
 
 
-async def test_directory_at_target_path_skips_quietly(tmp_path, caplog):
+async def test_directory_target_loads_all_files_with_headers(tmp_path, caplog):
     topic = _topic(tmp_path / "topic")
     (topic / "AGENTS.md").unlink()
     (topic / "AGENTS.md").mkdir()
+    (topic / "AGENTS.md" / "intro.md").write_text("Intro body\n")
+    (topic / "AGENTS.md" / "nested").mkdir()
+    (topic / "AGENTS.md" / "nested" / "deep.md").write_text("Deep body\n")
+    (topic / "AGENTS.md" / ".hidden").write_text("Excluded hidden\n")
+    (topic / "AGENTS.md" / "binary.bin").write_bytes(b"\xff\xfe\x00")
     with caplog.at_level(logging.DEBUG):
-        assert await _text(_build(tmp_path, "AGENTS.md")) == ""
-    assert not any(record.levelno >= logging.WARNING for record in caplog.records)
+        text = await _text(_build(tmp_path, "AGENTS.md"))
+    assert "### AGENTS.md/intro.md\n\nIntro body" in text
+    assert "### AGENTS.md/nested/deep.md\n\nDeep body" in text
+    assert text.index("intro.md") < text.index("deep.md")  # deterministic order
+    assert "Excluded hidden" not in text and "AGENTS.md/.hidden" not in text
+    assert "binary.bin" not in text
+    assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+async def test_directory_target_empty_warns_once(tmp_path, caplog):
+    topic = _topic(tmp_path / "topic")
+    (topic / "AGENTS.md").unlink()
+    (topic / "AGENTS.md").mkdir()
+    resolver = _build(tmp_path, "AGENTS.md")
+    with caplog.at_level(logging.DEBUG):
+        assert await _text(resolver) == ""
+        assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) == 1
+        assert await _text(resolver) == ""
+    assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) == 1
+
+
+async def test_directory_target_fills_in_later_without_new_warning(tmp_path, caplog):
+    topic = _topic(tmp_path / "topic")
+    (topic / "AGENTS.md").unlink()
+    (topic / "AGENTS.md").mkdir()
+    resolver = _build(tmp_path, "AGENTS.md")
+    with caplog.at_level(logging.DEBUG):
+        assert await _text(resolver) == ""
+    warnings_after_miss = len([r for r in caplog.records if r.levelno >= logging.WARNING])
+    (topic / "AGENTS.md" / "late.md").write_text("Late content\n")
+    with caplog.at_level(logging.DEBUG):
+        assert await _text(resolver) == "### AGENTS.md/late.md\n\nLate content\n"
+    assert len([r for r in caplog.records if r.levelno >= logging.WARNING]) == warnings_after_miss
+
+
+async def test_glob_target_loads_only_matching_files(tmp_path):
+    topic = _topic(tmp_path / "topic")
+    (topic / "AGENTS.md").unlink()
+    (topic / "AGENTS.md").mkdir()
+    (topic / "AGENTS.md" / "a.md").write_text("A\n")
+    (topic / "AGENTS.md" / "b.md").write_text("B\n")
+    (topic / "AGENTS.md" / "c.txt").write_text("Excluded txt\n")
+    (topic / "AGENTS.md" / "sub").mkdir()
+    (topic / "AGENTS.md" / "sub" / "d.md").write_text("Excluded sub\n")
+    text = await _text(_build(tmp_path, "AGENTS.md/*.md"))
+    assert "### AGENTS.md/a.md\n\nA" in text and "### AGENTS.md/b.md\n\nB" in text
+    assert "c.txt" not in text and "sub" not in text and "Selected" not in text
+
+
+async def test_nested_file_target_resolves(tmp_path):
+    topic = _topic(tmp_path / "topic")
+    (topic / "ops").mkdir()
+    (topic / "ops" / "INDEX.md").write_text("Index body\n")
+    text = await _text(_build(tmp_path, "ops/INDEX.md"))
+    assert text == "Index body\n"
+
+
+async def test_non_markdown_file_target_resolves(tmp_path):
+    _topic(tmp_path / "topic")
+    (tmp_path / "topic" / "roster.yaml").write_text("agents: 2\n")
+    text = await _text(_build(tmp_path, "roster.yaml"))
+    assert text == "agents: 2\n"
 
 
 async def test_absent_root_is_valid_configuration_and_skips(tmp_path, caplog):
@@ -320,6 +388,18 @@ async def test_omitted_or_null_budget_is_unlimited(tmp_path, options, filename):
     assert await _text(_build(tmp_path, filename, **options)) == (topic / filename).read_text()
 
 
+async def test_budget_applies_to_combined_directory_content(tmp_path):
+    topic = _topic(tmp_path / "topic")
+    (topic / "AGENTS.md").unlink()
+    (topic / "AGENTS.md").mkdir()
+    body = "x" * (3 * CHARS_PER_TOKEN)
+    (topic / "AGENTS.md" / "a.md").write_text(body)
+    (topic / "AGENTS.md" / "b.md").write_text(body)
+    resolver = _build(tmp_path, "AGENTS.md", max_tokens=3)
+    with pytest.raises(MarkdownTokenBudgetError):
+        await resolver.resolve([])
+
+
 @pytest.mark.parametrize("override", [
     {"topics_root": None}, {"topics_root": ""}, {"topics_root": "relative"},
     {"topics_root": "/tmp/topics/*"},
@@ -346,10 +426,24 @@ def test_readme_filename_configuration_is_accepted(tmp_path):
 
 
 @pytest.mark.parametrize("filename", [
-    "readme.md", "Readme.md", "AGENTS.MD", "now.md", "NOTES.md", "README.markdown",
-    " README.md", "README.md ", "directory/README.md", "../README.md", "", "md",
+    "AGENTS.md", "NOW.md", "README.md", "NOTES.md", "roster.yaml", "ops/INDEX.md",
+    "docs/*.md", "docs/**/guide.md", "a b/name with spaces.md",
 ])
-def test_arbitrary_filenames_are_not_accepted(tmp_path, filename):
+def test_any_relative_filename_is_accepted(tmp_path, filename):
+    from spctr.pipeline.topic_area_resolver import TopicAreaResolver
+
+    config = ResolverConfig(
+        type="topic_area", config={"topics_root": str(tmp_path), "filename": filename}
+    )
+    resolver = TopicAreaResolver.build(config, Dependencies(run_context_provider=None))
+    assert resolver.name == "topic_area"
+
+
+@pytest.mark.parametrize("filename", [
+    "/absolute/AGENTS.md", "../AGENTS.md", "docs/../AGENTS.md", "a/../../AGENTS.md",
+    "AGENTS.md/", "", ".", "AGENTS.md/.", "AGENTS.md/..", None,
+])
+def test_invalid_filenames_are_rejected(tmp_path, filename):
     from spctr.pipeline.topic_area_resolver import TopicAreaResolver
 
     config = ResolverConfig(
