@@ -37,13 +37,37 @@ async def _async_gen(*chunks):
     yield chunk
 
 
+def _is_usage_only_trailing_chunk(chunk) -> bool:
+  """True for the usage-only trailing chunk of the OpenAI include_usage shape."""
+  return (
+    chunk.usage is not None
+    and all(getattr(c, "delta", None) is None or c.delta.content is None for c in chunk.choices)
+    and all(getattr(c, "finish_reason", None) is None for c in chunk.choices)
+  )
+
+
 def _recording_acompletion(chunks):
-  """fake litellm.acompletion returning an async iterator, recording kwargs."""
+  """fake litellm.acompletion returning an async iterator, recording kwargs.
+
+  spc-1008: usage-conditional, like the real relay. The usage-only trailing
+  chunk is yielded only when the request asked for it with
+  ``stream_options={"include_usage": True}``; a request that did not ask for
+  usage never receives it, so no test can pass on a chunk the endpoint would
+  not have sent. Chunks that carry content, a finish_reason or a tool-call
+  delta go through regardless — on the wire those are not usage chunks.
+  """
   calls: list[dict] = []
 
   async def fake(*args, **kwargs):
     calls.append(kwargs)
-    return _async_gen(*chunks)
+    stream_options = kwargs.get("stream_options") or {}
+    include_usage = bool(stream_options.get("include_usage"))
+    emitted = [
+      chunk
+      for chunk in chunks
+      if include_usage or not _is_usage_only_trailing_chunk(chunk)
+    ]
+    return _async_gen(*emitted)
 
   fake.calls = calls
   return fake
@@ -229,3 +253,57 @@ class TestServedModelOnEndEvent:
 
     assert _end(first).meta["served_model"] == "served-one"
     assert _end(second).meta["served_model"] is None
+
+
+# ---------------------------------------------------------------------------
+# 3. The fake answers with usage only when the request asked for it (spc-1008)
+# ---------------------------------------------------------------------------
+
+
+class TestUsageChunkIsConditionalOnTheRequest:
+  """The provider-side half of the obsidian-la2z contract.
+
+  Both ends of the usage path were tested only against fakes that ignored the
+  request: spctr's ``FakeInner`` yields scripted events whatever it is handed,
+  and this file's fake returned a usage chunk whether or not
+  ``include_usage`` was requested. A chain could therefore ship with usage
+  silently missing. The fake is now usage-conditional, exactly as the relay
+  behaves: the usage-only trailing chunk appears when, and only when, the
+  request asked for it.
+  """
+
+  @staticmethod
+  def _relay_chunks():
+    """The relay shape: content chunk, finish chunk, then the usage chunk."""
+    return [
+      _chunk(content="Hello", model="qwen3.8-flash-next"),
+      _chunk(content=None, model="qwen3.8-flash-next", finish_reason="stop"),
+      _chunk(model="qwen3.8-flash-next", usage=_usage(14, 1)),
+    ]
+
+  @pytest.mark.asyncio
+  async def test_include_usage_false_request_receives_no_usage_chunk(self):
+    """AC1: with stream_options={"include_usage": False} no usage event arrives."""
+    events, kwargs = await _drive(
+      self._relay_chunks(),
+      stream_options={"include_usage": False},
+    )
+
+    assert kwargs["stream_options"] == {"include_usage": False}
+    assert [e for e in events if e.type == "usage"] == []
+    # Dropping usage drops usage only: text and the terminal event are intact.
+    assert "".join(e.text for e in events if e.type == "text") == "Hello"
+    end = _end(events)
+    assert end.meta["finish_reason"] == "stop"
+    assert end.meta["served_model"] == "qwen3.8-flash-next"
+
+  @pytest.mark.asyncio
+  async def test_default_request_still_receives_the_usage_chunk(self):
+    """include_usage False must not silence the default request's usage."""
+    events, kwargs = await _drive(self._relay_chunks())
+
+    assert kwargs["stream_options"] == {"include_usage": True}
+    usage_events = [e for e in events if e.type == "usage"]
+    assert len(usage_events) == 1
+    assert usage_events[0].usage.input_tokens == 14
+    assert usage_events[0].usage.output_tokens == 1
