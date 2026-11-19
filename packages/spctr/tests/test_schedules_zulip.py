@@ -589,3 +589,22 @@ class TestNeitherPlatform:
         tool = _tool(ScheduleStore(store_dir, agent="miranda"))
         assert await tool(**kwargs) == "Error: Schedules need the Discord interface"
         assert list(store_dir.glob("*.md")) == []
+
+
+class TestExpandScheduleTopic:
+    """One-off (spc-999 cutover): strftime tokens in a row's topic expand at fire time."""
+
+    def test_literal_topic_is_unchanged(self):
+        from spctr.interfaces.zulip.interface import _expand_schedule_topic
+        assert _expand_schedule_topic("digest") == "digest"
+
+    def test_date_tokens_expand(self):
+        from datetime import datetime
+
+        from spctr.interfaces.zulip.interface import _expand_schedule_topic
+        expected = datetime.now().astimezone().strftime("digest-%Y-%m-%d")
+        assert _expand_schedule_topic("digest-%Y-%m-%d") == expected
+
+    def test_invalid_format_string_falls_back_to_literal(self):
+        from spctr.interfaces.zulip.interface import _expand_schedule_topic
+        assert _expand_schedule_topic("digest-%q") == "digest-%q"

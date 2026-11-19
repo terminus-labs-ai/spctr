@@ -92,6 +92,7 @@ import enum
 import logging
 import time
 import urllib.parse
+from datetime import datetime
 from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -174,18 +175,34 @@ class _ZulipScheduleEngine(ScheduleEngine):
     """
 
     async def _handle_command_result(self, sched: Any, result: Any) -> None:
-        token = _schedule_post_topic.set(sched.topic)
+        token = _schedule_post_topic.set(_expand_schedule_topic(sched.topic))
         try:
             await super()._handle_command_result(sched, result)
         finally:
             _schedule_post_topic.reset(token)
 
     async def _handle_agent_result(self, sched: Any, result: Any) -> None:
-        token = _schedule_post_topic.set(sched.topic)
+        token = _schedule_post_topic.set(_expand_schedule_topic(sched.topic))
         try:
             await super()._handle_agent_result(sched, result)
         finally:
             _schedule_post_topic.reset(token)
+
+
+def _expand_schedule_topic(topic: str) -> str:
+    """Expand strftime tokens in a schedule row's topic at fire time.
+
+    A row may name a per-day topic such as ``digest-%Y-%m-%d``; the
+    tokens expand with the posting moment's local date. Topics without
+    ``%`` are returned unchanged.
+    """
+    if "%" not in topic:
+        return topic
+    try:
+        return datetime.now().astimezone().strftime(topic)
+    except (ValueError, TypeError):
+        logger.warning("Invalid strftime topic %r; posting as-is", topic)
+        return topic
 
 
 def is_stop_command(content: str) -> bool:
