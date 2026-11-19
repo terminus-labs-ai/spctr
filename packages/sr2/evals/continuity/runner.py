@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from sr2.models import Message, TextBlock, TokenUsage
+from sr2.continuity.indexes.embedding import EmbeddingContinuityIndex
 from sr2.orchestrator import SR2
 from sr2.pipeline.provenance import Entry, EntryOrigin
 from sr2.pipeline.token_counting import CharacterTokenCounter
@@ -875,14 +876,18 @@ def _reorder_composition_blocks(blocks: list[Block]) -> list[Block]:
     return [by_text[t] for t in _COMPOSITION_STALE_ORDER if t in by_text]
 
 
-def run_scenario_turn(scenario: Scenario, turn: ScenarioTurn, run_index: int,
-                      turn_index: int) -> tuple[dict, float]:
-    """Execute one retrieval turn under current full-history behavior and
-    score all metrics for it. Returns ``(observation, latency_seconds)``."""
-    plan = (scenario.id, run_index, turn_index)
+def _eligible_blocks(scenario: Scenario, turn: ScenarioTurn,
+                     run_index: int,
+                     turn_index: int) -> tuple[list[Block], tuple[str, ...]]:
+    """The content the plan makes eligible for one turn: what
+    :func:`_delivery` declares, with the composition control-plan slot
+    replaced by its verbatim replayed history. The baseline delivers these
+    flat; a candidate run puts them through its index (sr2-179), so the
+    eligibility rule is computed identically for both arms and only the
+    routing differs."""
     blocks = _delivery(scenario, turn)
     fresh: tuple[str, ...] = ()
-    if plan == POLICY_DELIVERY_PLAN:
+    if (scenario.id, run_index, turn_index) == POLICY_DELIVERY_PLAN:
         # The control plan's replayed-history delivery (composition run 1,
         # turn 1): the full declared background travels verbatim — policy
         # block included, S re-sourced fresh — so exactly one policy-leak
@@ -893,7 +898,18 @@ def run_scenario_turn(scenario: Scenario, turn: ScenarioTurn, run_index: int,
         blocks = _reorder_composition_blocks(
             [dataclasses.replace(b, observed_at=None) for b in turn.blocks])
         fresh = tuple(b.text for b in turn.blocks)
+    return blocks, fresh
 
+
+def _compile_and_score(scenario: Scenario, turn: ScenarioTurn,
+                       run_index: int, turn_index: int,
+                       blocks: Sequence[Block],
+                       fresh: Sequence[str] = (),
+                       publish_request_text: bool = False,
+                       ) -> tuple[dict, float]:
+    """Compile the delivered background for one turn through current
+    product behavior, read it with the double and score all metrics.
+    Returns ``(observation, latency_seconds)``."""
     t0 = time.monotonic()
     carrier = compile_turn(turn, blocks, fresh)
     response = extraction_double(carrier)
@@ -928,7 +944,21 @@ def run_scenario_turn(scenario: Scenario, turn: ScenarioTurn, run_index: int,
             "hallucination": hallucination(carrier, published),
         },
     }
+    if publish_request_text:
+        # Artifact-level proof of what the arm's routing delivered (sr2-179:
+        # candidate sweeps publish their request text so a run can be
+        # audited without re-running the index).
+        observation["request_text"] = request_text(carrier)
     return observation, elapsed
+
+
+def run_scenario_turn(scenario: Scenario, turn: ScenarioTurn, run_index: int,
+                      turn_index: int) -> tuple[dict, float]:
+    """Execute one retrieval turn under current full-history behavior and
+    score all metrics for it. Returns ``(observation, latency_seconds)``."""
+    blocks, fresh = _eligible_blocks(scenario, turn, run_index, turn_index)
+    return _compile_and_score(scenario, turn, run_index, turn_index,
+                              blocks, fresh)
 
 
 def _mean(values: list[float]) -> float:
@@ -1484,14 +1514,208 @@ def _aggregate_metrics(observations: list[dict], pricing: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Candidate sweep delivery (sr2-179)
+#
+# The sr2-91 sweep turns are where a candidate backend must show its
+# difference: the eligible content is computed by the same rule as the
+# baseline (:func:`_eligible_blocks` — identical inputs and budgets), but a
+# candidate run routes it through the candidate's own ``ContinuityIndex``:
+# each retrieval turn stores the eligible blocks as continuity records,
+# searches with the turn's question, and delivers what the index returns
+# (ranked, cut off at the scenario's token budget, at least one record
+# kept when any was eligible). Only then is "compared under identical
+# inputs and budgets" (AC19) real on the FR31 scenarios and the
+# composition fixture, not just on FR40 — before this, candidate sweeps
+# delivered the full history like the baseline and every candidate
+# observation was byte-identical to the baseline's. Candidate sweep
+# observations publish ``request_text`` so the routing is provable from
+# artifacts alone.
+# ---------------------------------------------------------------------------
+
+#: Undeclared sourcing times resolve to this horizon for record recency
+#: scoring, mirroring the double's reading (an undeclared value was sourced
+#: "now" — newer than every dated restored value).
+_SWEEP_CREATED_AT = datetime(9999, 12, 31, 23, 59, 59, tzinfo=UTC)
+
+#: Token-bucket dimensions of the deterministic sweep embedding provider
+#: (see :class:`_SweepEmbeddingIndex`).
+_HASH_EMBED_DIMS = 256
+
+
+def _iso_created_at(declared: str | None) -> datetime:
+    """The record ``created_at`` for a declared sourcing time (ISO-8601,
+    ``Z`` or naive); undeclared values resolve to the replay horizon."""
+    if not declared:
+        return _SWEEP_CREATED_AT
+    try:
+        moment = datetime.fromisoformat(declared.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return _SWEEP_CREATED_AT
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment
+
+
+def _sweep_records(scenario: Scenario, run_index: int, turn_index: int,
+                   blocks: Sequence[Block]) -> list:
+    """One continuity record per eligible block: the block's text is the
+    record content, its tag/stamping metadata travels in ``meta`` so the
+    delivered block rebuilds identically from the retrieved record. Ids fix
+    declaration order as the deterministic tie-break inside the index."""
+    from sr2.continuity.models import (
+        ContinuityEventKind,
+        ContinuityKind,
+        ContinuityRecord,
+    )
+    from sr2.pipeline.provenance import ContextAuthority, ContextScope
+
+    records = []
+    for i, block in enumerate(blocks):
+        rid = f"sweep-{scenario.id}-{run_index}-{turn_index}-{i:02d}"
+        meta = {"observed_at": block.observed_at or ""}
+        if block.policy_tag:
+            meta["policy_tag"] = block.policy_tag
+        if block.distractor_tag:
+            meta["distractor_tag"] = block.distractor_tag
+        records.append(ContinuityRecord(
+            id=rid,
+            subject_id=rid,
+            event_kind=ContinuityEventKind.FORMED,
+            kind=ContinuityKind.DECISION,
+            content=block.text,
+            scope=ContextScope(owner_id="evals", projects=(scenario.id,)),
+            authority=ContextAuthority.AGENT_TENTATIVE,
+            provenance_ids=(f"sweep-prov-{rid}",),
+            confidence=0.9,
+            salience=0.5,
+            created_at=_iso_created_at(block.observed_at),
+            meta=meta,
+        ))
+    return records
+
+
+def _hash_embedding_vector(text: str) -> list[float]:
+    """A deterministic feature-hashed embedding of *text* (token buckets
+    over SHA-256, L2-normalized). Cosine between these vectors is a stable
+    lexical-similarity proxy — the semantic stand-in the sweep uses in
+    place of an endpoint model, whose weights cannot run here offline."""
+    vec = [0.0] * _HASH_EMBED_DIMS
+    for token in re.findall(r"[a-z0-9]+", text.lower()):
+        bucket = int(hashlib.sha256(token.encode()).hexdigest()[:8], 16)
+        vec[bucket % _HASH_EMBED_DIMS] += 1.0
+    norm = math.hypot(*vec)
+    if norm:
+        vec = [value / norm for value in vec]
+    return vec
+
+
+class _SweepEmbeddingIndex(EmbeddingContinuityIndex):
+    """The embedding candidate over the FR31 sweep (sr2-179).
+
+    The committed FR40 vector fixture covers only that scenario's inputs;
+    sweep content has no capture, and the deterministic run performs no
+    network. This index keeps the real ``EmbeddingContinuityIndex``
+    machinery (SQLite cache, structured blend, cosine ranking) and swaps
+    only the embedding provider for :func:`_hash_embedding_vector`, served
+    entirely offline. A fresh in-memory cache per turn keeps the arms'
+    isolation identical to the other candidates."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            path=":memory:",
+            model="sr2-evals-hash-v1",
+            base_url="http://127.0.0.1:9/disabled",
+            dimensions=_HASH_EMBED_DIMS,
+        )
+
+    async def _embed(self, texts, *, cached_vectors=(),  # type: ignore[override]
+                     expected_size=None) -> list[list[float]]:
+        return [_hash_embedding_vector(text) for text in texts]
+
+
+def _sweep_build_index(candidate_id: str):
+    """A fresh index for one candidate-sweep drive. The registry owns the
+    four product backends; the embedding candidate drives the
+    offline-provider variant above (its registry factory replays the FR40
+    fixture and would fall through to a live endpoint on sweep text)."""
+    from evals.continuity.candidates import CANDIDATES as _CANDS
+
+    if candidate_id == "embedding":
+        return _SweepEmbeddingIndex()
+    return _CANDS[candidate_id]()
+
+
+def _blocks_from_hits(hits: Sequence, token_budget: int) -> list[Block]:
+    """Delivered background from retrieval results, in rank order: hits
+    travel while the scenario's token budget holds (the top-ranked hit
+    always travels), tags and stamps rebuilt from the record's meta."""
+    blocks: list[Block] = []
+    used = 0
+    for hit in hits:
+        est_tokens = max(int(hit.estimated_tokens), 0)
+        if blocks and used + est_tokens > token_budget:
+            break
+        record = hit.record.current_record
+        meta = record.meta or {}
+        blocks.append(Block(
+            text=record.content,
+            policy_tag=meta.get("policy_tag"),
+            distractor_tag=meta.get("distractor_tag"),
+            layer="continuity_replay",
+            observed_at=meta.get("observed_at") or None,
+        ))
+        used += est_tokens
+    return blocks
+
+
+def _candidate_sweep_turn(scenario: Scenario, turn: ScenarioTurn,
+                          run_index: int, turn_index: int,
+                          candidate_id: str) -> dict:
+    """Execute one FR31-sweep retrieval turn under the selected candidate:
+    the plan's eligible blocks go through the candidate's index (store,
+    search on the turn's question, deliver by rank within budget), then the
+    identical compile-read-score path as the baseline publishes the
+    observation (with ``request_text``, the artifact-level proof)."""
+    from sr2.continuity.policy import RetrievalContext
+
+    index = _sweep_build_index(candidate_id)
+    try:
+        blocks, fresh = _eligible_blocks(scenario, turn, run_index,
+                                         turn_index)
+        records = _sweep_records(scenario, run_index, turn_index, blocks)
+        query = " ".join((turn.meta or {}).get("question", "").split())
+
+        async def _drive():
+            await index.append(records)
+            ctx = RetrievalContext(
+                owner_id="evals", agent_id="agent", agent_tags=(),
+                projects=(scenario.id,), frame_id=None,
+                query=query, token_budget=scenario.token_budget)
+            return await index.search(ctx, limit=len(records))
+
+        hits = _LOOP.run_until_complete(_drive())
+        delivered = _blocks_from_hits(hits, scenario.token_budget)
+    finally:
+        if hasattr(index, "close"):
+            _LOOP.run_until_complete(index.close())
+    observation, _elapsed = _compile_and_score(
+        scenario, turn, run_index, turn_index, delivered, fresh,
+        publish_request_text=True)
+    return observation
+
+
 def run_candidate(candidate_id: str, output_root: Path) -> Path:
     """Deterministic run of one registry candidate over the whole corpus
     (the sr2-91 sweep plus the FR40 scenario, which that candidate
     delivers A's turns to via its index). Publishes
     ``<dir>/observations.jsonl`` + ``metrics.json`` in the sr2-91 shape
     (records with ``scenario_id``, ``run_index``, ``turn_index``,
-    ``flags``). The FR40 run uses the judge double that replays the
-    fixture's gold close turn and performs no network access."""
+    ``flags``; sweep records additionally carry ``request_text``). Sweep
+    backgrounds travel through the candidate's index (sr2-179 — see the
+    candidate sweep delivery section); the FR40 run uses the judge double
+    that replays the fixture's gold close turn and performs no network
+    access."""
     from evals.continuity.candidates import CANDIDATES as _CANDS
 
     if candidate_id not in _CANDS:
@@ -1517,9 +1741,8 @@ def run_candidate(candidate_id: str, output_root: Path) -> Path:
         turns = gold_turns(scenario)
         for run_index in range(1, RUNS_PER_SCENARIO + 1):
             for turn_index, turn in enumerate(turns, start=1):
-                observation, _elapsed = run_scenario_turn(
-                    scenario, turn, run_index, turn_index)
-                observations.append(observation)
+                observations.append(_candidate_sweep_turn(
+                    scenario, turn, run_index, turn_index, candidate_id))
 
     metrics = _aggregate_metrics(observations, pricing)
     # closed_residency is defined only for the FR40 scenario (A's verbatim
@@ -1562,14 +1785,14 @@ def run_scenario_candidate(scenario: Scenario, candidate_id: str,
     if scenario.id == _FR40:
         _run_fr40_scenario(scenario, candidate_id, root, run_dir.name)
         return run_dir
-    # Non-FR40 scenario: the plain per-turn sweep.
+    # Non-FR40 scenario: the per-turn sweep through the candidate's index
+    # (sr2-179 — same delivery routing as ``run_candidate``).
     pricing = load_pricing()
     observations: list[dict] = []
     for run_index in range(1, RUNS_PER_SCENARIO + 1):
         for turn_index, turn in enumerate(gold_turns(scenario), start=1):
-            observation, _elapsed = run_scenario_turn(
-                scenario, turn, run_index, turn_index)
-            observations.append(observation)
+            observations.append(_candidate_sweep_turn(
+                scenario, turn, run_index, turn_index, candidate_id))
     metrics = _aggregate_metrics(observations, pricing)
     metrics["closed_residency"] = 0
     with (run_dir / "observations.jsonl").open("w") as fh:
