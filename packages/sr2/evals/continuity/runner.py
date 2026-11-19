@@ -26,7 +26,7 @@ import re
 import shutil
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -85,10 +85,16 @@ _CONNECTIVES = frozenset({
 })
 
 #: Byte-identical replay (R18): wall-clock samples cannot be byte-
-#: reproducible, so the published latency derives from pinned, versioned
-#: inputs — a pinned per-turn median and the observed p95/median ratio of
-#: a measured run. To refresh: run with CONTINUITY_MEASURE_LATENCY=1
-#: (prints measured median/p95/ratio), then update these two constants.
+#: reproducible, so ``metrics.json`` publishes a pinned latency
+#: placeholder — a pinned per-turn median and the observed p95/median
+#: ratio of a measured run. The real wall clock publishes separately as
+#: ``latency.json`` beside ``metrics.json`` (Amendment 2026-11-17,
+#: sr2-178 ruling D3 / sr2-181) and is excluded from the R18
+#: byte-identity proof, which covers ``metrics.json`` only; FR21's final
+#: stage ranks arms by that document's median (see :func:`load_latency`).
+#: To refresh the placeholder: run the baseline and read ``latency.json``'s
+#: aggregate (or CONTINUITY_MEASURE_LATENCY=1, which prints the same
+#: numbers), then update these two constants.
 _LATENCY_PINNED_MEDIAN = 0.02
 _LATENCY_P95_RATIO = 1.5
 
@@ -390,6 +396,63 @@ def latency_stats(runs: Sequence[Sequence[float]]) -> dict:
     median = scored[n // 2]  # nearest-rank upper median
     p95 = scored[min(n - 1, max(0, math.ceil(0.95 * n) - 1))]
     return {"median": float(median), "p95": float(p95)}
+
+
+def build_latency_document(
+    runs_by_scenario: Mapping[str, Sequence[Sequence[float]]],
+) -> dict:
+    """The ``latency.json`` publication payload (Amendment 2026-11-17,
+    sr2-178 ruling D3 / sr2-181).
+
+    ``runs_by_scenario[sid]`` is one timing list per scenario run (each
+    entry a measured turn in seconds); index 0 is the discarded warm-up.
+    Every scenario entry and the pooled ``aggregate`` report
+    ``median``/``p95`` through :func:`latency_stats` — the aggregate
+    pools scored timings run-index-aligned across scenarios. An entry
+    with no scored timings publishes ``None``, never NaN, so the
+    document serializes under ``json.dumps(..., allow_nan=False)``."""
+
+    def _entry(stats: dict) -> dict:
+        return {key: None if math.isnan(value) else float(value)
+                for key, value in stats.items()}
+
+    scenarios = {sid: _entry(latency_stats(runs))
+                 for sid, runs in runs_by_scenario.items()}
+    pooled: list[list[float]] = []
+    for runs in runs_by_scenario.values():
+        while len(pooled) < len(runs):
+            pooled.append([])
+        for run_index, timings in enumerate(runs):
+            pooled[run_index].extend(timings)
+    return {"aggregate": _entry(latency_stats(pooled)),
+            "scenarios": scenarios}
+
+
+def load_latency(run_dir: Path | str) -> dict | None:
+    """Parsed ``latency.json`` from a published run dir, or ``None``.
+
+    The FR21 final-stage tie-breaker input (Amendment 2026-11-17): rank
+    arms by the document's ``aggregate.median`` where every arm
+    publishes one; record an unresolved tie where an arm lacks the
+    artifact (pre-amendment run dirs carry no measured latency)."""
+    path = Path(run_dir) / "latency.json"
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text())
+
+
+def _publish_latency(run_dir: Path, document: dict) -> None:
+    """Write ``latency.json`` beside the published ``metrics.json``.
+    Measured wall clock is machine-dependent, so this file is excluded
+    from the R18 byte-identity proof (which covers ``metrics.json``
+    only); see :func:`build_latency_document`."""
+    (run_dir / "latency.json").write_text(
+        json.dumps(document, sort_keys=True, indent=2, allow_nan=False)
+        + "\n")
+
+
+def _fmt_secs(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.6f}"
 
 
 def load_pricing() -> dict:
@@ -968,13 +1031,15 @@ def _mean(values: list[float]) -> float:
 def run_baseline(output_root: Path | None = None) -> Path:
     """Execute every corpus scenario and publish raw results.
 
-    Writes ``<root>/<run_id()>/observations.jsonl`` and ``metrics.json``
-    (default root: ``evals/continuity/results``). Each scenario runs
-    :data:`RUNS_PER_SCENARIO` times; run 1 is the discarded latency
-    warm-up. The double is deterministic and the run performs no network
-    access, so consecutive runs on identical inputs produce byte-identical
-    ``metrics.json`` (latency derives from pinned versioned inputs;
-    measured wall clock prints to stdout under CONTINUITY_MEASURE_LATENCY).
+    Writes ``<root>/<run_id()>/observations.jsonl``, ``metrics.json`` and
+    ``latency.json`` (default root: ``evals/continuity/results``). Each
+    scenario runs :data:`RUNS_PER_SCENARIO` times; run 1 is the discarded
+    latency warm-up. The double is deterministic and the run performs no
+    network access, so consecutive runs on identical inputs produce
+    byte-identical ``metrics.json`` (latency derives from pinned
+    versioned inputs there; measured wall clock publishes as
+    ``latency.json``, excluded from the byte-identity proof — Amendment
+    2026-11-17 / sr2-181 — and printed under CONTINUITY_MEASURE_LATENCY).
     Returns the run directory.
     """
     root = Path(output_root) if output_root is not None else DEFAULT_OUTPUT_ROOT
@@ -1011,15 +1076,17 @@ def run_baseline(output_root: Path | None = None) -> Path:
 
     pricing = load_pricing()
     observations: list[dict] = []
-    runs_timings: list[list[float]] = [[] for _ in range(RUNS_PER_SCENARIO)]
+    runs_by_scenario: dict[str, list[list[float]]] = {}
     for scenario in CORPUS.values():
         turns = gold_turns(scenario)
+        timings = runs_by_scenario.setdefault(
+            scenario.id, [[] for _ in range(RUNS_PER_SCENARIO)])
         for run_index in range(1, RUNS_PER_SCENARIO + 1):
             for turn_index, turn in enumerate(turns, start=1):
                 observation, elapsed = run_scenario_turn(
                     scenario, turn, run_index, turn_index)
                 observations.append(observation)
-                runs_timings[run_index - 1].append(elapsed)
+                timings[run_index - 1].append(elapsed)
 
     prompt_total = sum(o["prompt_tokens"] for o in observations)
     background_total = sum(o["background_tokens"] for o in observations)
@@ -1038,10 +1105,11 @@ def run_baseline(output_root: Path | None = None) -> Path:
                     "p95": _LATENCY_PINNED_MEDIAN * _LATENCY_P95_RATIO},
     }
 
+    latency_document = build_latency_document(runs_by_scenario)
     if os.environ.get("CONTINUITY_MEASURE_LATENCY"):
-        measured = latency_stats(runs_timings)
-        print(f"measured latency (scored runs): median={measured['median']:.6f} "
-              f"p95={measured['p95']:.6f}")
+        measured = latency_document["aggregate"]
+        print(f"measured latency (scored runs): median={_fmt_secs(measured['median'])} "
+              f"p95={_fmt_secs(measured['p95'])}")
 
     with (run_dir / "observations.jsonl").open("w") as fh:
         for observation in observations:
@@ -1049,6 +1117,7 @@ def run_baseline(output_root: Path | None = None) -> Path:
     (run_dir / "metrics.json").write_text(
         json.dumps(metrics, sort_keys=True, indent=2, allow_nan=False) + "\n"
     )
+    _publish_latency(run_dir, latency_document)
     return run_dir
 
 
@@ -1067,7 +1136,8 @@ def run_baseline(output_root: Path | None = None) -> Path:
 #      committed with the fixture through the real embedding boundary (no
 #      live endpoint call).
 # Everything else — the nine AC16 metrics, the observation record shape and
-# the metrics.json publication — is the sr2-91 shape, unchanged.
+# the metrics.json publication — is the sr2-91 shape, unchanged; the run
+# dir additionally carries latency.json (Amendment 2026-11-17 / sr2-181).
 
 #: The FR40 turn positions (1-based): A's settled records, the finishing
 #: (gold-close) turn, the B turns, and the reference turn. The scenario
@@ -1396,12 +1466,19 @@ def _fr40_delivery(index, scenario: Scenario, records: list) -> list[Block]:
 
 
 def _run_fr40_scenario(scenario: Scenario, candidate_id: str,
-                       output_root: Path, run_id: str) -> Path:
+                       output_root: Path, run_id: str,
+                       timings_out: list[list[float]] | None = None) -> Path:
     """Execute the FR40 scenario under current full-history behavior with
     the selected candidate delivering A's turns to the reference turn, the
     judge double replaying the gold close turn, and the committed vectors
     replayed through the embedding boundary. Publishes the sr2-91
-    observations.jsonl + metrics.json (extended with closed_residency)."""
+    observations.jsonl + metrics.json (extended with closed_residency)
+    plus ``latency.json`` (Amendment 2026-11-17 / sr2-181): the measured
+    span wraps context production through the double's response, so the
+    reference turn's candidate-index delivery cost — the work the FR21
+    tie-breaker exists to compare — is included. When ``timings_out`` is
+    given, this scenario's per-run timings are appended to it so a caller
+    (``run_candidate``) can fold them into a whole-corpus document."""
     _install_embedding_replay()
     run_dir = output_root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1415,6 +1492,7 @@ def _run_fr40_scenario(scenario: Scenario, candidate_id: str,
                for t in scenario.turns
                if "Postgres" in (t.meta or {}).get("question", "")}
     residency_tokens = 0
+    timings: list[list[float]] = [[] for _ in range(RUNS_PER_SCENARIO)]
     records = _fr40_records(scenario)
     # One fresh candidate index per repetition (sr2-177), so every scored
     # run starts from the same appended set exactly once. Warm state that
@@ -1429,6 +1507,7 @@ def _run_fr40_scenario(scenario: Scenario, candidate_id: str,
                                   query_cache=query_cache)
         _fr40_seed(index, records)
         for turn_index, turn in enumerate(scenario.turns, start=1):
+            t0 = time.monotonic()
             is_reference = turn_index == reference_turn
             if is_reference:
                 # A's settled turns arrive only through the candidate index.
@@ -1440,6 +1519,7 @@ def _run_fr40_scenario(scenario: Scenario, candidate_id: str,
                 delivered = list(turn.blocks)
             carrier = compile_turn(turn, delivered)
             response = extraction_double(carrier)
+            timings[run_index - 1].append(time.monotonic() - t0)
             prompt_tokens, background_tokens = token_buckets(carrier)
             published = (f"{_STALE_MARK} {response}"
                          if stale_current(turn, response) else response)
@@ -1492,6 +1572,12 @@ def _run_fr40_scenario(scenario: Scenario, candidate_id: str,
             fh.write(json.dumps(observation, sort_keys=True) + "\n")
     (run_dir / "metrics.json").write_text(
         json.dumps(metrics, sort_keys=True, indent=2, allow_nan=False) + "\n")
+    if timings_out is not None:
+        # Fold this scenario's per-run timings into the caller's document
+        # (run_candidate merges FR40 into its whole-corpus latency.json;
+        # the merge happens after this dir's own publication below).
+        timings_out.extend(timings)
+    _publish_latency(run_dir, build_latency_document({scenario.id: timings}))
     return run_dir
 
 
@@ -1711,11 +1797,12 @@ def run_candidate(candidate_id: str, output_root: Path) -> Path:
     delivers A's turns to via its index). Publishes
     ``<dir>/observations.jsonl`` + ``metrics.json`` in the sr2-91 shape
     (records with ``scenario_id``, ``run_index``, ``turn_index``,
-    ``flags``; sweep records additionally carry ``request_text``). Sweep
-    backgrounds travel through the candidate's index (sr2-179 — see the
-    candidate sweep delivery section); the FR40 run uses the judge double
-    that replays the fixture's gold close turn and performs no network
-    access."""
+    ``flags``; sweep records additionally carry ``request_text``) plus a
+    whole-corpus ``latency.json`` measured under the FR21 tie-breaker
+    methodology (Amendment 2026-11-17 / sr2-181). Sweep backgrounds travel
+    through the candidate's index (sr2-179 — see the candidate sweep
+    delivery section); the FR40 run uses the judge double that replays the
+    fixture's gold close turn and performs no network access."""
     from evals.continuity.candidates import CANDIDATES as _CANDS
 
     if candidate_id not in _CANDS:
@@ -1726,23 +1813,36 @@ def run_candidate(candidate_id: str, output_root: Path) -> Path:
     run_dir.mkdir(parents=True, exist_ok=True)
     pricing = load_pricing()
     observations: list[dict] = []
+    runs_by_scenario: dict[str, list[list[float]]] = {}
     for scenario in CORPUS.values():
         if scenario.id == _FR40:
             # The FR40 scenario runs through the candidate-delivery path
             # (A's turns delivered to the reference via the index; judge
             # double; committed vectors) — publish its observations
-            # alongside the plain sweep.
+            # alongside the plain sweep. Its measured timings (candidate
+            # index delivery included) fold into this run's document.
+            fr40_timings: list[list[float]] = []
             fr40_dir = _run_fr40_scenario(scenario, candidate_id, root,
-                                          run_dir.name)
+                                          run_dir.name,
+                                          timings_out=fr40_timings)
             with (fr40_dir / "observations.jsonl").open() as fh:
                 observations.extend(json.loads(line)
                                     for line in fh if line.strip())
+            runs_by_scenario[scenario.id] = fr40_timings
             continue
         turns = gold_turns(scenario)
+        timings = runs_by_scenario.setdefault(
+            scenario.id, [[] for _ in range(RUNS_PER_SCENARIO)])
         for run_index in range(1, RUNS_PER_SCENARIO + 1):
             for turn_index, turn in enumerate(turns, start=1):
+                # The measured span wraps the whole index-routed turn
+                # (append, search, delivery, compile, double, scoring) —
+                # the selecting work the FR21 tie-breaker compares (sr2-181);
+                # run 1's warm-up is discarded by build_latency_document.
+                t0 = time.monotonic()
                 observations.append(_candidate_sweep_turn(
                     scenario, turn, run_index, turn_index, candidate_id))
+                timings[run_index - 1].append(time.monotonic() - t0)
 
     metrics = _aggregate_metrics(observations, pricing)
     # closed_residency is defined only for the FR40 scenario (A's verbatim
@@ -1756,6 +1856,10 @@ def run_candidate(candidate_id: str, output_root: Path) -> Path:
             fh.write(json.dumps(observation, sort_keys=True) + "\n")
     (run_dir / "metrics.json").write_text(
         json.dumps(metrics, sort_keys=True, indent=2, allow_nan=False) + "\n")
+    # Whole-corpus document overwrites the FR40 dir's scenario-only
+    # latency.json written above (fr40_dir == run_dir): one artifact per
+    # published run, covering the sweep plus FR40 (Amendment 2026-11-17).
+    _publish_latency(run_dir, build_latency_document(runs_by_scenario))
     return run_dir
 
 
@@ -1789,10 +1893,17 @@ def run_scenario_candidate(scenario: Scenario, candidate_id: str,
     # (sr2-179 — same delivery routing as ``run_candidate``).
     pricing = load_pricing()
     observations: list[dict] = []
+    runs_by_scenario: dict[str, list[list[float]]] = {
+        scenario.id: [[] for _ in range(RUNS_PER_SCENARIO)]}
+    timings = runs_by_scenario[scenario.id]
     for run_index in range(1, RUNS_PER_SCENARIO + 1):
         for turn_index, turn in enumerate(gold_turns(scenario), start=1):
+            # Measured span of the index-routed turn (sr2-181), same
+            # methodology as ``run_candidate``'s sweep loop.
+            t0 = time.monotonic()
             observations.append(_candidate_sweep_turn(
                 scenario, turn, run_index, turn_index, candidate_id))
+            timings[run_index - 1].append(time.monotonic() - t0)
     metrics = _aggregate_metrics(observations, pricing)
     metrics["closed_residency"] = 0
     with (run_dir / "observations.jsonl").open("w") as fh:
@@ -1800,6 +1911,7 @@ def run_scenario_candidate(scenario: Scenario, candidate_id: str,
             fh.write(json.dumps(observation, sort_keys=True) + "\n")
     (run_dir / "metrics.json").write_text(
         json.dumps(metrics, sort_keys=True, indent=2, allow_nan=False) + "\n")
+    _publish_latency(run_dir, build_latency_document(runs_by_scenario))
     return run_dir
 
 
