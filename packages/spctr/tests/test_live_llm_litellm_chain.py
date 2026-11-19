@@ -27,13 +27,13 @@ from sr2.models import Message, TextBlock
 from sr2.protocols.llm import CompletionRequest
 
 from spctr.config import ModelConfig
-from spctr.live_llm import LiveLLM, LoggedLLM, build_llm
+from spctr.live_llm import LiveLLM, LoggedLLM
 
 REQUEST = CompletionRequest(
     messages=[Message(role="user", content=[TextBlock(text="hi")])]
 )
 
-# What the fake wire will report. Every assertion below names one of these
+# What the fake wire reports. Every assertion below names one of these
 # literals; none is read back from the code under test.
 SERVED_MODEL = "qwen3.8-flash-next"
 POOL_NAME = "pool-name"
@@ -46,8 +46,8 @@ FINISH_REASON = "stop"
 def _chunk(content=None, *, model=None, finish_reason=None, usage=None):
     """One streaming chunk in the OpenAI chat-completions shape.
 
-    Mirrors the sr2 member's builder (the two member suites each ship a root
-    ``tests`` package, so cross-importing that module from here is fragile).
+    Mirrors the sr2 member's builder — the two member suites each ship a root
+    ``tests`` package, so cross-importing that module from here is fragile.
     The usage-only trailing chunk of that protocol carries no choices.
     """
     delta = MagicMock()
@@ -133,35 +133,51 @@ class RecordingLog:
         return [data for event, data in self.entries if event == name]
 
 
-async def _end_of_one_streamed_call(**params) -> tuple[dict, dict]:
-    """Stream one request down the real chain; return (model.end entry, request kwargs).
+async def _drain(llm) -> list:
+    return [event async for event in llm.stream(REQUEST)]
 
-    ``ModelConfig`` → ``build_llm`` → ``LiteLLMCallable`` → patched
-    ``litellm.acompletion``: no layer of the chain is faked, and the
-    construction path is the one production uses.
+
+class _SharedWire:
+    """One conditional wire to run requests down, for the end-state tests.
+
+    Driving the include_usage True and False halves of the task sentence
+    against the *same* scripted relay stream leaves no room for the two
+    results to differ in anything but the request.
     """
-    cfg = ModelConfig(
-        model=POOL_NAME,
-        base_url="http://test:18000",
-        api_key=API_KEY,
-        params=params,
-    )
-    fake = _conditional_acompletion(_relay_stream())
-    log = RecordingLog()
-    with patch("litellm.acompletion", new=fake):
-        llm = LoggedLLM(LiveLLM(cfg), lambda: log, lambda: "p")
-        got = [event async for event in llm.stream(REQUEST)]
 
-    assert len(fake.calls) == 1, "one request must go out"
-    assert len(log.named("model.end")) == 1, "exactly one terminal entry"
-    assert [e.type for e in got][-1] == "end", "the caller still gets the end event"
-    return log.named("model.end")[0], fake.calls[0]
+    def __init__(self) -> None:
+        self.fake = _conditional_acompletion(_relay_stream())
+
+    async def end_of(self, **params) -> tuple[dict, dict]:
+        """Stream one request; ``params`` become ``ModelConfig.params``.
+
+        Returns the ``model.end`` entry and the kwargs the wire received.
+        ``ModelConfig`` → ``build_llm`` → ``LiteLLMCallable`` → patched
+        ``litellm.acompletion``: no layer of the chain is faked, and this is
+        the construction path production uses.
+        """
+        cfg = ModelConfig(
+            model=POOL_NAME,
+            base_url="http://test:18000",
+            api_key=API_KEY,
+            params=params,
+        )
+        log = RecordingLog()
+        with patch("litellm.acompletion", new=self.fake):
+            llm = LoggedLLM(LiveLLM(cfg), lambda: log, lambda: "p")
+            events = await _drain(llm)
+
+        assert len(log.named("model.end")) == 1, "exactly one terminal entry"
+        assert [e.type for e in events][-1] == "end", "the caller still gets the end event"
+        return log.named("model.end")[0], self.fake.calls[-1]
 
 
 async def test_chain_records_usage_and_served_model_from_the_real_callable():
     """AC2: LoggedLLM.model.end carries the fake's token counts and served model."""
-    end, _ = await _end_of_one_streamed_call()
+    wire = _SharedWire()
+    end, kwargs = await wire.end_of()
 
+    assert len(wire.fake.calls) == 1, "one request must go out"
     assert end["usage"] is not None, (
         "the chain dropped the usage event — LoggedLLM recorded None even "
         "though the request asked for usage"
@@ -175,15 +191,23 @@ async def test_chain_records_usage_and_served_model_from_the_real_callable():
 async def test_chain_records_null_usage_when_include_usage_is_false():
     """AC2's second half: include_usage=False → model.end records usage: None.
 
-    The same chain, the same scripted relay stream. Only the request differs,
-    so a pass here proves the null is the request's doing and not an absence
-    of data on the wire.
+    The same chain over the same scripted relay stream; only the request
+    differs. So a pass here proves the null is the request's doing and not an
+    absence of usage on the wire.
     """
-    end, kwargs = await _end_of_one_streamed_call(stream_options={"include_usage": False})
+    wire = _SharedWire()
+    requested, _ = await wire.end_of()
+    assert requested["usage"] is not None, (
+        "the shared wire must be capable of delivering usage, or the False "
+        "half below proves nothing"
+    )
 
+    end, kwargs = await wire.end_of(stream_options={"include_usage": False})
+
+    assert len(wire.fake.calls) == 2, "two requests went out over one wire"
     assert kwargs["stream_options"] == {"include_usage": False}
     assert end["usage"] is None
-    # served_model rides on the content chunks, so it survives the missing
+    # served_model rides on the content chunks, so it outlives the withheld
     # usage chunk: usage: None here means "not requested", never "stream died".
     assert end["served_model"] == SERVED_MODEL
     assert end["finish_reason"] == FINISH_REASON
@@ -193,10 +217,10 @@ async def test_default_chain_request_asks_the_wire_for_usage():
     """Why the first test can pass: the default request carries include_usage.
 
     Pinned separately so a regression that removes the option from the request
-    names itself, instead of only showing up as a bare ``usage is not None``
+    names itself, instead of surfacing only as a bare ``usage is not None``
     failure one layer up.
     """
-    _, kwargs = await _end_of_one_streamed_call()
+    _, kwargs = await _SharedWire().end_of()
 
     assert kwargs["stream"] is True
     assert kwargs["stream_options"] == {"include_usage": True}
