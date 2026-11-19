@@ -205,6 +205,10 @@ class LoggedLLM:
             "model.end",
             {
                 "finish_reason": response.stop_reason,
+                # obsidian-la2z: the backend's real model id, same key the
+                # streaming path logs; None when the provider did not
+                # report one.
+                "served_model": response.served_model,
                 "usage": response.usage.model_dump(),
                 "duration_ms": _elapsed_ms(started),
             },

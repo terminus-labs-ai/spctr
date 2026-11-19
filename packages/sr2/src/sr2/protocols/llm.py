@@ -18,6 +18,10 @@ class CompletionResponse(BaseModel):
   content: list[ContentBlock]
   stop_reason: str | None = None  # "end_turn", "tool_use", "max_tokens"
   usage: TokenUsage
+  # obsidian-la2z: the model id the backend actually served; the requested
+  # pool name can resolve to a different one. None when the provider did
+  # not report one — "unknown" stays distinguishable from "requested".
+  served_model: str | None = None
 
 
 class StreamEvent(BaseModel):

@@ -225,6 +225,12 @@ class LiteLLMCallable:
 
     choice = resp.choices[0]
     tool_calls = choice.message.tool_calls
+    # obsidian-la2z: the pool name in the request can resolve to a different
+    # model id on the backend; resp.model carries what was actually served.
+    raw_served_model = getattr(resp, "model", None)
+    served_model = (
+      raw_served_model if isinstance(raw_served_model, str) and raw_served_model else None
+    )
 
     if tool_calls:
       content: list = []
@@ -280,6 +286,7 @@ class LiteLLMCallable:
         input_tokens=resp.usage.prompt_tokens,
         output_tokens=resp.usage.completion_tokens,
       ),
+      served_model=served_model,
     )
 
   async def stream(self, request: CompletionRequest) -> AsyncIterator[StreamEvent]:

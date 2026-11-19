@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 import pytest
 from sr2.models import Message, TextBlock, TokenUsage
-from sr2.protocols.llm import CompletionRequest, StreamEvent
+from sr2.protocols.llm import CompletionRequest, CompletionResponse, StreamEvent
 
 from spctr.config import ModelConfig
 from spctr.live_llm import LiveLLM, LoggedLLM
@@ -114,6 +114,45 @@ class TestServedModelInTheSessionLog:
         assert end["finish_reason"] is None
         assert end["served_model"] is None
         assert end["usage"] is None
+
+
+def _complete_response(served_model: str | None) -> CompletionResponse:
+    return CompletionResponse(
+        id="resp-1",
+        content=[TextBlock(text="ok")],
+        stop_reason="stop",
+        usage=USAGE,
+        served_model=served_model,
+    )
+
+
+class TestCompleteServedModelInTheSessionLog:
+    """spc-1007: the non-streaming path logs served_model in model.end too."""
+
+    async def _recorded_end(self, served_model: str | None) -> dict:
+        response = _complete_response(served_model)
+
+        class FakeCompleteInner(FakeInner):
+            async def complete(self, request):
+                return response
+
+        log = RecordingLog()
+        llm = LoggedLLM(_live_llm(FakeCompleteInner([])), lambda: log, lambda: "p")
+        await llm.complete(REQUEST)
+        (end,) = log.named("model.end")
+        return end
+
+    async def test_complete_logs_served_model_from_inner_response(self):
+        end = await self._recorded_end("qwen-real")
+        assert end["served_model"] == "qwen-real"
+        assert end["finish_reason"] == "stop"
+        assert end["usage"] == USAGE.model_dump()
+        assert end["duration_ms"] >= 0
+
+    async def test_complete_without_served_model_logs_null(self):
+        end = await self._recorded_end(None)
+        assert end["served_model"] is None
+        assert end["finish_reason"] == "stop"
 
 
 class TestLiveLLMPassThrough:
