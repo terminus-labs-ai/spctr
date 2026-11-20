@@ -116,13 +116,9 @@ class ScheduleEngine:
         now = self._now()
         stuck = await self._schedule_store.recover_claimed_async(now, self._platform)
         for sched in stuck:
-            try:
-                spec = parse_cron(sched.cron)
-                next_run = spec.next_after(now, self._timezone)
-            except Exception:
-                next_run = now + timedelta(hours=1)
             await self._schedule_store.advance_after_run_async(
-                sched.id, next_run, now, "error", "recovered from crash"
+                sched.id, self._next_after(sched.cron, now), now,
+                "error", "recovered from crash"
             )
             logger.info(
                 "schedule recovered: agent=%s id=%s", self._name, sched.id
@@ -161,13 +157,9 @@ class ScheduleEngine:
                     "schedule catch-up error: agent=%s id=%s",
                     self._name, sched.id,
                 )
-                try:
-                    spec = parse_cron(sched.cron)
-                    next_run = spec.next_after(now, self._timezone)
-                except Exception:
-                    next_run = now + timedelta(hours=1)
                 await self._schedule_store.advance_after_run_async(
-                    sched.id, next_run, now, "failed", "catch-up error"
+                    sched.id, self._next_after(sched.cron, now), now,
+                    "failed", "catch-up error"
                 )
 
     async def _skip_missed(self, sched: Schedule, now: datetime) -> None:
@@ -280,22 +272,14 @@ class ScheduleEngine:
                     self._name, sched.id,
                 )
                 # Still advance so it doesn't fire in a loop
-                try:
-                    spec = parse_cron(sched.cron)
-                    next_run = spec.next_after(now, self._timezone)
-                except Exception:
-                    next_run = now + timedelta(hours=1)
                 await self._schedule_store.advance_after_run_async(
-                    sched.id, next_run, now, "failed", str(exc)[:200]
+                    sched.id, self._next_after(sched.cron, now), now,
+                    "failed", str(exc)[:200]
                 )
 
     async def _execute(self, sched: Schedule, fire_time: datetime) -> None:
         """Run one schedule's payload and advance."""
-        try:
-            spec = parse_cron(sched.cron)
-            next_run = spec.next_after(fire_time, self._timezone)
-        except Exception:
-            next_run = fire_time + timedelta(hours=1)
+        next_run = self._next_after(sched.cron, fire_time)
 
         late = fire_time - sched.next_run_at > LATE_THRESHOLD
         payload = json.loads(sched.payload)
@@ -403,11 +387,7 @@ class ScheduleEngine:
         ``next_run_at`` set to the next cron occurrence after now.
         """
         now = self._now()
-        try:
-            spec = parse_cron(sched.cron)
-            next_run = spec.next_after(now, self._timezone)
-        except Exception:
-            next_run = now + timedelta(hours=1)
+        next_run = self._next_after(sched.cron, now)
 
         payload = json.loads(sched.payload)
 
