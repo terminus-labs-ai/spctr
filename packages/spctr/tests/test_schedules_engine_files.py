@@ -38,11 +38,21 @@ class Harness:
         self.instructions: list[str] = []
         self.tmp = tmp_path
         self.on_agent_run = None
-        self.engine = ScheduleEngine(
+        self._platform = platform
+        self.engine = self._new_engine()
+
+    def _new_engine(self) -> ScheduleEngine:
+        return ScheduleEngine(
             self.store, send=self._send, poll_seconds=POLL, tz=UTC,
-            agent_name="test", platform=platform, clock=self.clock,
+            agent_name="test", platform=self._platform, clock=self.clock,
             agent_runner=self._runner,
         )
+
+    def restart(self) -> None:
+        """Swap in a fresh store and engine over the same directory, the way
+        a process restart leaves them: nothing held in-process survives."""
+        self.store = ScheduleStore(self.dir, agent="miranda")
+        self.engine = self._new_engine()
 
     async def _send(self, channel_id: str, content: str) -> None:
         self.sent.append((channel_id, content))
@@ -345,6 +355,55 @@ class TestAC45Paused:
         await h.poll_at(NOW + timedelta(seconds=60))
         assert h.store.get("p").next_run_at == datetime(2026, 10, 21, 9, 30, tzinfo=UTC)
         assert h.fired("p") == 0
+
+    async def test_r4_resume_while_engine_stopped_follows_fr39(
+        self, tmp_path, caplog
+    ):
+        """FR44/FR39 boundary (spc-1093): a flip the engine never observed
+        is ordinary FR39 catch-up, not a silent resume-advance.
+
+        Pausing leaves no trace in the file beyond ``enabled: false``, so a
+        file that reads enabled with a past ``next_run_at`` is
+        indistinguishable from FR39's hand-edit escape hatch. The silent
+        advance covers flips the running engine saw (``test_r2``); this row
+        follows FR30 and fires once, marked late.
+        """
+        h = Harness(tmp_path)
+        path = h.command_file("p", PAST, "enabled: false")
+        await h.poll_at(NOW)  # the engine observes the pause, then stops
+        _replace_line(path, "enabled: false", "enabled: true")
+        h.restart()
+
+        with caplog.at_level(logging.INFO):
+            await h.engine.start()
+            await asyncio.sleep(0)
+            await h.engine.stop()
+        assert h.fired("p") == 1
+        assert any(r.getMessage() == "schedule fired late: agent=test id=p"
+                   for r in caplog.records)
+        row = h.store.get("p")
+        assert row.status == "active"
+        assert row.next_run_at == TOMORROW_7 and row.last_status == "ok"
+
+        await h.poll_at(NOW + timedelta(seconds=30))
+        assert h.fired("p") == 1  # one catch-up fire, never a second
+
+    async def test_r5_on_miss_skip_resume_while_stopped_never_fires(self, tmp_path):
+        """``on_miss: skip`` is how a schedule keeps a stop-plus-pause from
+        queueing a run at all (FR44 as amended by spc-1093)."""
+        h = Harness(tmp_path)
+        path = h.command_file("p", PAST, "enabled: false", "on_miss: skip")
+        await h.poll_at(NOW)
+        _replace_line(path, "enabled: false", "enabled: true")
+        h.restart()
+
+        await h.engine.start()
+        await asyncio.sleep(0)
+        await h.engine.stop()
+        assert h.fired("p") == 0 and h.sent == []
+        row = h.store.get("p")
+        assert row.status == "active"
+        assert row.next_run_at == TOMORROW_7 and row.last_status == "skipped"
 
 
 # ---------------------------------------------------------------------------

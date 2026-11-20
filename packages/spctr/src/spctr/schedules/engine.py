@@ -18,7 +18,10 @@ content hash; a file first seen without ``next_run_at`` is scheduled for
 its next occurrence (never retro-fires); a file first seen with a past
 ``next_run_at`` follows the FR30 ``on_miss`` policy; a cron edit
 reschedules; ``enabled: false`` files are never due or advanced, and a
-flip back to enabled advances silently to the next occurrence.
+flip back to enabled advances silently to the next occurrence. The pause
+leaves no trace in the file, so only a flip this process observed advances
+silently: a file reading enabled with a past ``next_run_at`` after a
+restart is an ordinary FR39 first-seen row and follows FR30 (spc-1093).
 """
 from __future__ import annotations
 
@@ -214,7 +217,9 @@ class ScheduleEngine:
         """Per-file bookkeeping for one scanned row; True when it is due.
 
         FR44: a paused file is never due, caught up or advanced; seeing it
-        flip back to enabled advances it silently.  FR39: a file with no
+        flip back to enabled advances it silently in this process (a flip
+        across a restart leaves no trace to read and lands in the FR39
+        branch below, spc-1093).  FR39: a file with no
         ``next_run_at`` is scheduled, never retro-fired; a cron edit
         reschedules; a file first seen with a past ``next_run_at`` follows
         its FR30 ``on_miss``.
