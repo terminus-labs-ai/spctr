@@ -226,8 +226,10 @@ def _render_document(
     canonical order; the body is emitted byte-for-byte, never re-rendered
     through a markdown library.  *eol* is the line separator for the
     structure this renderer owns (fences and frontmatter lines): ``"\\n"``
-    for tool-created files, the file's own ``"\\r\\n"`` on a rewrite of a
-    CRLF file, so the rewrite is byte-stable across polls.
+    by default, and ``"\\r\\n"`` whenever the document is CRLF — the
+    file's own style on a rewrite of a CRLF file, or the instruction
+    body's style on a create whose body is CRLF — so one file never
+    mixes line endings and a rewrite stays byte-stable across polls.
     """
     parts = ["---"]
     for key, value in user:
@@ -551,7 +553,11 @@ class ScheduleStore:
                 ordered.append((key, row.requester_id))
             elif key == "requester_mention" and row.requester_mention:
                 ordered.append((key, row.requester_mention))
-        return _render_document(ordered, _runtime_list(row), body)
+        # A created file carries one line style: an agent instruction
+        # authored with CRLF renders CRLF frontmatter too, not the mixed
+        # LF-fence/CRLF-body shape; every other create stays LF (AC38).
+        eol = "\r\n" if "\r\n" in body else "\n"
+        return _render_document(ordered, _runtime_list(row), body, eol)
 
     def _load_one(self, filename: str) -> Schedule | None:
         text = self._read_file(filename)
