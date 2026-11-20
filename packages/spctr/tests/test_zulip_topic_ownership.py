@@ -666,6 +666,88 @@ async def test_untagged_followup_via_dispatch_dropped_for_non_owner():
     assert ea.turns == ["@**EDI** first", "untagged tail"]
 
 
+async def test_unowned_topic_later_self_mention_claims_via_dispatch():
+    """Unowned topic through ``_dispatch``: a message mentioning this bot
+    records SELF, so the mention_only bot's later UNTAGGED follow-ups pass
+    (the self-claim exemption). If the claim stopped recording in an
+    unowned topic, the follow-up turn would be silently dropped and nothing
+    else here would fail early."""
+    opener = _msg("anyone here?")
+    claim = _msg("@**EDI** take it")
+    followup = _msg("and then?")
+    topics = {_key(): [opener]}
+    edi, ea, mir, ma = _pair(topics, mir_mention_only=True)
+
+    edi._dispatch(opener, set(), edi._config)
+    mir._dispatch(opener, set(), mir._config)
+    await _settle(edi, mir)
+    # The untagged opener is unowned for both; mention_only gates both.
+    assert edi._topic_owners[_key()] is TopicOwner.UNOWNED
+    assert mir._topic_owners[_key()] is TopicOwner.UNOWNED
+    assert ea.turns == [] and ma.turns == []
+
+    edi._dispatch(claim, set(), edi._config)
+    mir._dispatch(claim, set(), mir._config)
+    await _settle(edi, mir)
+    # The later bot mention moves the owner: EDI claims self, Miranda
+    # hands it away.
+    assert edi._topic_owners[_key()] is TopicOwner.SELF
+    assert mir._topic_owners[_key()] is TopicOwner.OTHER
+    assert ea.turns == ["@**EDI** take it"]
+    assert ma.turns == [] and mir._client.sends == []
+
+    # The pin: an untagged follow-up still reaches EDI's model — the
+    # recorded SELF exempts it from mention_only even though no Session
+    # had existed when the claim landed.
+    edi._dispatch(followup, set(), edi._config)
+    mir._dispatch(followup, set(), mir._config)
+    await _settle(edi, mir)
+    assert ea.turns == ["@**EDI** take it", "and then?"]
+    assert ma.turns == [] and mir._client.sends == []
+
+
+async def test_human_opener_topic_reclaim_via_dispatch():
+    """Topic whose opener mentioned a human (recorded OTHER) through
+    ``_dispatch``: a later message mentioning this bot re-claims the
+    topic — SELF again, its own turns admitted, the other bot back to
+    dropping."""
+    opener = _msg("@**Diego** heads up")
+    reclaim = _msg("@**EDI** actually you")
+    followup = _msg("follow-up")
+    topics = {_key(): [opener]}
+    edi, ea, mir, ma = _pair(topics, mir_mention_only=True)
+
+    edi._dispatch(opener, set(), edi._config)
+    mir._dispatch(opener, set(), mir._config)
+    await _settle(edi, mir)
+    # A human mention in the opener records OTHER for every bot.
+    assert edi._topic_owners[_key()] is TopicOwner.OTHER
+    assert mir._topic_owners[_key()] is TopicOwner.OTHER
+    assert ea.turns == [] and ma.turns == []
+    assert edi._client.sends == [] and mir._client.sends == []
+
+    edi._dispatch(reclaim, set(), edi._config)
+    mir._dispatch(reclaim, set(), mir._config)
+    await _settle(edi, mir)
+    # The bot mention re-claims for EDI and re-records OTHER for Miranda.
+    assert edi._topic_owners[_key()] is TopicOwner.SELF
+    assert mir._topic_owners[_key()] is TopicOwner.OTHER
+    assert ea.turns == ["@**EDI** actually you"]
+    assert ma.turns == [] and mir._client.sends == []
+
+    # Re-claimed ownership persists: the untagged follow-up runs for EDI
+    # and stays dropped for Miranda.
+    edi._dispatch(followup, set(), edi._config)
+    mir._dispatch(followup, set(), mir._config)
+    await _settle(edi, mir)
+    assert ea.turns == ["@**EDI** actually you", "follow-up"]
+    assert ma.turns == [] and mir._client.sends == []
+    # One opener fetch per bot, cached as OTHER then re-recorded by the
+    # later mention.
+    assert edi._client.opener_calls == [_key()]
+    assert mir._client.opener_calls == [_key()]
+
+
 @pytest.mark.parametrize("content,expected", [
     pytest.param("@**Diego** hi", True, id="other-name"),
     pytest.param("@**Miranda|102** hi", True, id="other-name-id"),
