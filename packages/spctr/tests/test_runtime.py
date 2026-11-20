@@ -514,6 +514,73 @@ class TestAgentBackwardCompat:
         finally:
             await interface._stop_schedules()
 
+    @pytest.mark.asyncio
+    async def test_discord_schedule_engine_uses_configured_agent_timeout(self, tmp_path):
+        """spc-1099: schedules.agent_timeout_seconds must reach the Discord
+        engine's agent dispatch call, not the engine's 600 s default."""
+        import json as _json
+        from datetime import datetime, timedelta, timezone
+
+        from spctr.agent import Agent
+        from spctr.config import SchedulesConfig
+        from spctr.interfaces.discord.config import DiscordConfig
+        from spctr.interfaces.discord.interface import DiscordInterface
+        from spctr.schedules import Schedule
+        from spctr.schedules.agent import AgentResult
+
+        cfg = _make_config(schedules=SchedulesConfig(
+            enabled=True,
+            timezone="America/Phoenix",
+            store_path=str(tmp_path / "schedules"),
+            poll_seconds=999.0,
+            agent_timeout_seconds=300.0,
+        ))
+        with patch("spctr.session.SR2") as MockSR2:
+            MockSR2.return_value = MagicMock()
+            agent = Agent(config=cfg)
+
+        interface = DiscordInterface(config=DiscordConfig(token="test"))
+        interface._adapter = MagicMock()
+        interface._adapter.try_send_message = AsyncMock(return_value=(MagicMock(), None))
+        interface._start_schedules(agent)
+        try:
+            engine = interface._schedules_engine
+            assert engine is not None
+            # The configured value, not the engine's 600 s default.
+            assert engine._agent_timeout == 300.0
+
+            # Prove the value reaches the dispatch call: stop the background
+            # loop, fire a due agent payload through the engine's poll with
+            # a fake runner, and check the timeout it was given.
+            await interface._stop_schedules()
+            captured: dict[str, Any] = {}
+
+            async def fake_runner(agent_name: str, instruction: str, **kw) -> AgentResult:
+                captured.update(kw)
+                return AgentResult(
+                    status="done", message="ok", exit_code=0,
+                    duration_s=1.0, log_path="/tmp/test.log",
+                )
+
+            engine._agent_runner = fake_runner
+            now = datetime.now(timezone.utc)
+            engine._schedule_store.create(Schedule(
+                id="s-timeout", agent="test", platform="discord",
+                requester_id="42", requester_mention="<@42>",
+                dest_channel_id="100", dest_channel_name="general",
+                label="t", cron="0 7 * * *",
+                payload_type="agent",
+                payload=_json.dumps({"agent": "edi", "instruction": "go"}),
+                on_miss="run_late",
+                next_run_at=now - timedelta(seconds=1),
+                last_run_at=None, created_at=now,
+                status="active", last_status=None, last_error=None,
+            ))
+            await engine._poll_once()
+            assert captured.get("timeout") == 300.0
+        finally:
+            await interface._stop_schedules()
+
 
 # ---------------------------------------------------------------------------
 # H. Runtime.aclose()

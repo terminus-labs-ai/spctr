@@ -447,6 +447,78 @@ class TestAC38LineEndings:
         # Re-reading the rewritten file still yields the same instruction.
         assert json.loads(store.get("mixed-note").payload)["instruction"] == body
 
+    def test_created_agent_file_with_crlf_instruction_is_all_crlf(self, tmp_path):
+        """spc-1100: a created file carries one line style, not case-row r4's.
+
+        A tool-created schedule whose agent instruction contains CRLF used
+        to land as LF frontmatter over a CRLF body — the mixed shape. The
+        create path now takes the fence/frontmatter style from the body,
+        and a runtime rewrite keeps the all-CRLF file byte-stable.
+        """
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        body = "Do the thing\r\nsecond line\r\n"
+        row = _make_schedule(
+            payload_type="agent",
+            payload=json.dumps({"instruction": body}),
+        )
+        sid = store.create(row)
+        path = tmp_path / "schedules" / f"{sid}.md"
+        data = path.read_bytes()
+        assert _body_of(data) == body.encode("utf-8")
+        assert b"\n" not in data.replace(b"\r\n", b"")
+        # Round trip: the instruction reads back verbatim.
+        assert json.loads(store.get(sid).payload)["instruction"] == body
+        # A runtime rewrite stays all-CRLF and keeps the body exact.
+        assert store.claim(sid) is True
+        store.advance_after_run(sid, NOW + timedelta(days=1), NOW, "ok", None)
+        after = path.read_bytes()
+        assert _body_of(after) == body.encode("utf-8")
+        assert b"\n" not in after.replace(b"\r\n", b"")
+        assert json.loads(store.get(sid).payload)["instruction"] == body
+
+    def test_created_agent_file_with_lf_instruction_stays_lf(self, tmp_path):
+        """spc-1100: an LF instruction still creates an LF-only file."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        body = "Do the thing\nsecond line\n"
+        row = _make_schedule(
+            payload_type="agent",
+            payload=json.dumps({"instruction": body}),
+        )
+        sid = store.create(row)
+        data = (tmp_path / "schedules" / f"{sid}.md").read_bytes()
+        assert b"\r" not in data
+        assert _body_of(data) == body.encode("utf-8")
+        assert json.loads(store.get(sid).payload)["instruction"] == body
+
+    @pytest.mark.parametrize("head_eol", ["\n", "\r\n"])
+    def test_lone_fence_line_in_body_is_not_a_fence(self, tmp_path, head_eol):
+        """spc-1100: a body line equal to ``---`` stays body, forever.
+
+        The closing fence is the first line-start ``---`` after the head,
+        so later ``---`` lines cannot end the frontmatter: G acceptance of
+        spc-1082 claimed such a body line truncates at the first runtime
+        rewrite; on both the accepted range (788f51b) and main it does
+        not, and these pins hold the byte-for-byte promise of AC38 for
+        every head line ending crossed with a lone-fence body.
+        """
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        body = f"note{head_eol}---{head_eol}tail{head_eol}"
+        path = _hand_authored_crlf_file(
+            tmp_path / "schedules" / "fence-note.md", body, head_eol=head_eol
+        )
+        rows, invalid = store.scan()
+        assert invalid == []
+        assert json.loads(rows[0].payload)["instruction"] == body
+        assert store.claim("fence-note") is True
+        store.advance_after_run("fence-note", NOW + timedelta(days=1), NOW, "ok", None)
+        after = path.read_bytes()
+        # Not _body_of(): that helper asserts exactly two fence lines, and
+        # a lone --- body line is a third fence-looking line by design.
+        # The fixture layout is exact (helper-written prefix + body), so
+        # tail equality is the byte-for-byte check here.
+        assert after.endswith(body.encode("utf-8"))
+        assert json.loads(store.get("fence-note").payload)["instruction"] == body
+
 
 # ---------------------------------------------------------------------------
 # FR37 key semantics (spc-1077): agent is the payload target, channel is
