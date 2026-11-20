@@ -1028,6 +1028,28 @@ def _mean(values: list[float]) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def _aggregate_metrics(observations: list[dict], pricing: dict) -> dict:
+    """The nine Metric Contract aggregates over an observation stream — the
+    single formula shared by the baseline, the candidate sweep and the FR40
+    run (each call site derives ``metrics.json`` from exactly this)."""
+    prompt_total = sum(o["prompt_tokens"] for o in observations)
+    background_total = sum(o["background_tokens"] for o in observations)
+    return {
+        "correctness": _mean([float(o["flags"]["correct"]) for o in observations]),
+        "recall": _mean([float(o["flags"]["recall"]) for o in observations]),
+        "stale_current": int(sum(o["flags"]["stale_current"] for o in observations)),
+        "policy_leak": int(sum(o["flags"]["policy_leak"] for o in observations)),
+        "irrelevant_context": _mean(
+            [float(o["flags"]["irrelevant_context"]) for o in observations]),
+        "hallucination": int(sum(o["flags"]["hallucination"] for o in observations)),
+        "prompt_background_tokens": {"prompt": int(prompt_total),
+                                     "background": int(background_total)},
+        "cost": cost(prompt_total, background_total, pricing),
+        "latency": {"median": _LATENCY_PINNED_MEDIAN,
+                    "p95": _LATENCY_PINNED_MEDIAN * _LATENCY_P95_RATIO},
+    }
+
+
 def run_baseline(output_root: Path | None = None) -> Path:
     """Execute every corpus scenario and publish raw results.
 
@@ -1088,22 +1110,7 @@ def run_baseline(output_root: Path | None = None) -> Path:
                 observations.append(observation)
                 timings[run_index - 1].append(elapsed)
 
-    prompt_total = sum(o["prompt_tokens"] for o in observations)
-    background_total = sum(o["background_tokens"] for o in observations)
-    metrics = {
-        "correctness": _mean([float(o["flags"]["correct"]) for o in observations]),
-        "recall": _mean([float(o["flags"]["recall"]) for o in observations]),
-        "stale_current": int(sum(o["flags"]["stale_current"] for o in observations)),
-        "policy_leak": int(sum(o["flags"]["policy_leak"] for o in observations)),
-        "irrelevant_context": _mean(
-            [float(o["flags"]["irrelevant_context"]) for o in observations]),
-        "hallucination": int(sum(o["flags"]["hallucination"] for o in observations)),
-        "prompt_background_tokens": {"prompt": int(prompt_total),
-                                     "background": int(background_total)},
-        "cost": cost(prompt_total, background_total, pricing),
-        "latency": {"median": _LATENCY_PINNED_MEDIAN,
-                    "p95": _LATENCY_PINNED_MEDIAN * _LATENCY_P95_RATIO},
-    }
+    metrics = _aggregate_metrics(observations, pricing)
 
     latency_document = build_latency_document(runs_by_scenario)
     if os.environ.get("CONTINUITY_MEASURE_LATENCY"):
@@ -1136,8 +1143,11 @@ def run_baseline(output_root: Path | None = None) -> Path:
 #      committed with the fixture through the real embedding boundary (no
 #      live endpoint call).
 # Everything else — the nine AC16 metrics, the observation record shape and
-# the metrics.json publication — is the sr2-91 shape, unchanged; the run
-# dir additionally carries latency.json (Amendment 2026-11-17 / sr2-181).
+# the metrics.json publication — is the sr2-91 shape, unchanged except that
+# every FR40 observation carries a per-turn ``flags.closed_residency``
+# (counted from the actual delivery) whose sum is the published
+# aggregate; the run dir additionally carries latency.json (Amendment
+# 2026-11-17 / sr2-181).
 
 #: The FR40 turn positions (1-based): A's settled records, the finishing
 #: (gold-close) turn, the B turns, and the reference turn. The scenario
@@ -1491,7 +1501,6 @@ def _run_fr40_scenario(scenario: Scenario, candidate_id: str,
     a_texts = {(t.meta or {}).get("question", "")
                for t in scenario.turns
                if "Postgres" in (t.meta or {}).get("question", "")}
-    residency_tokens = 0
     timings: list[list[float]] = [[] for _ in range(RUNS_PER_SCENARIO)]
     records = _fr40_records(scenario)
     # One fresh candidate index per repetition (sr2-177), so every scored
@@ -1554,18 +1563,25 @@ def _run_fr40_scenario(scenario: Scenario, candidate_id: str,
             if turn_index > close_turn:
                 # closed_residency: A's verbatim-turn tokens delivered after
                 # the close turn (target 0 — the recent window carries none
-                # of A's verbatim turns after the close).
-                for text in _background_texts(carrier):
-                    if text in a_texts:
-                        residency_tokens += count_tokens(text)
+                # of A's verbatim turns after the close). Counted from this
+                # turn's actual delivery and published per observation, so
+                # the aggregate is derivable from the records themselves.
+                residency = int(sum(count_tokens(text)
+                                    for text in _background_texts(carrier)
+                                    if text in a_texts))
+            else:
+                residency = 0
+            observation["flags"]["closed_residency"] = residency
             observations.append(observation)
         if hasattr(index, "close"):
             _LOOP.run_until_complete(index.close())
 
     metrics = _aggregate_metrics(observations, pricing)
-    # closed_residency: A's verbatim-turn tokens delivered after the close
-    # turn, summed over scored runs; the FR40 target is 0.
-    metrics["closed_residency"] = int(residency_tokens)
+    # closed_residency: the per-turn flags above, summed over the run's
+    # observations (A's verbatim-turn tokens delivered after the close);
+    # the FR40 target is 0.
+    metrics["closed_residency"] = int(sum(
+        o["flags"]["closed_residency"] for o in observations))
 
     with (run_dir / "observations.jsonl").open("w") as fh:
         for observation in observations:
@@ -1579,25 +1595,6 @@ def _run_fr40_scenario(scenario: Scenario, candidate_id: str,
         timings_out.extend(timings)
     _publish_latency(run_dir, build_latency_document({scenario.id: timings}))
     return run_dir
-
-
-def _aggregate_metrics(observations: list[dict], pricing: dict) -> dict:
-    prompt_total = sum(o["prompt_tokens"] for o in observations)
-    background_total = sum(o["background_tokens"] for o in observations)
-    return {
-        "correctness": _mean([float(o["flags"]["correct"]) for o in observations]),
-        "recall": _mean([float(o["flags"]["recall"]) for o in observations]),
-        "stale_current": int(sum(o["flags"]["stale_current"] for o in observations)),
-        "policy_leak": int(sum(o["flags"]["policy_leak"] for o in observations)),
-        "irrelevant_context": _mean(
-            [float(o["flags"]["irrelevant_context"]) for o in observations]),
-        "hallucination": int(sum(o["flags"]["hallucination"] for o in observations)),
-        "prompt_background_tokens": {"prompt": int(prompt_total),
-                                     "background": int(background_total)},
-        "cost": cost(prompt_total, background_total, pricing),
-        "latency": {"median": _LATENCY_PINNED_MEDIAN,
-                    "p95": _LATENCY_PINNED_MEDIAN * _LATENCY_P95_RATIO},
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -1864,12 +1861,15 @@ def run_candidate(candidate_id: str, output_root: Path) -> Path:
 
 
 def _fr40_closed_residency(observations: list[dict]) -> int:
-    """The FR40 scenario's ``closed_residency`` (A's verbatim-turn tokens
-    delivered after the close turn), re-derivable from the reference turn's
-    delivered background. The FR40 run's reference observation carries it
-    in ``flags``; here it is 0 because the recent window delivers none of
-    A's verbatim turns after the close (working-set exit)."""
-    return 0
+    """The ``closed_residency`` of an observation stream (A's verbatim-turn
+    tokens delivered after the close turn), derived from the per-turn
+    ``flags.closed_residency`` the FR40 run publishes on its own
+    observations — never a literal. Scenarios without a close turn carry no
+    FR40 observations and contribute nothing, so a whole-corpus stream
+    yields exactly the FR40 value."""
+    return int(sum(int((o.get("flags") or {}).get("closed_residency", 0))
+                   for o in observations
+                   if o.get("scenario_id") == _FR40))
 
 
 def run_scenario_candidate(scenario: Scenario, candidate_id: str,
@@ -1905,7 +1905,9 @@ def run_scenario_candidate(scenario: Scenario, candidate_id: str,
                 scenario, turn, run_index, turn_index, candidate_id))
             timings[run_index - 1].append(time.monotonic() - t0)
     metrics = _aggregate_metrics(observations, pricing)
-    metrics["closed_residency"] = 0
+    # A non-FR40 scenario stream holds no close turn, so the derivation
+    # contributes nothing.
+    metrics["closed_residency"] = _fr40_closed_residency(observations)
     with (run_dir / "observations.jsonl").open("w") as fh:
         for observation in observations:
             fh.write(json.dumps(observation, sort_keys=True) + "\n")
