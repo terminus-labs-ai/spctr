@@ -413,6 +413,7 @@ class DiscordInterface:
       tz=schedules.tz,
       agent_name=schedules.agent_name,
       command_timeout=schedules.command_timeout,
+      agent_timeout=schedules.agent_timeout,
       platform="discord",
     )
     # Wire the engine into the tool so run_now works.
