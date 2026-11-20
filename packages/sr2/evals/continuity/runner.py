@@ -1416,12 +1416,16 @@ def _fr40_build_index(candidate_id: str, workdir: Path, *,
     SQLite vector cache lives at a *workdir*-fixed path that survives the
     rebuild, and the reference query's vector travels in the caller-owned
     *query_cache*."""
-    from evals.continuity.candidates import CANDIDATES as _CANDS
+    from evals.continuity.candidates import (
+        CANDIDATES as _CANDS,
+    )
+    from evals.continuity.candidates import _make_embedding
 
     if candidate_id == "embedding":
-        fixture = load_vector_fixture(_FR40)
-        db_path = workdir / "replay_vectors.sqlite3"
-        return _ReplayEmbeddingIndex(fixture, db_path, query_cache=query_cache)
+        # One construction path (sr2-175): the factory takes the runner's
+        # workdir, so the cache lives at <workdir>/replay_vectors.sqlite3
+        # and survives the per-repetition rebuild exactly as before.
+        return _make_embedding(workdir, query_cache=query_cache)
     return _CANDS[candidate_id]()
 
 
