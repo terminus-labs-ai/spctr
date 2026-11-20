@@ -388,8 +388,8 @@ class TestAC30NamedChannel:
 # ---------------------------------------------------------------------------
 
 def _make_engine(store: ScheduleStore, sent: list, tmp_path: Path) -> ScheduleEngine:
-    async def fake_send(channel_id: str, content: str) -> None:
-        sent.append((channel_id, content))
+    async def fake_send(row: Schedule, content: str) -> None:
+        sent.append((row.dest_channel_id, content))
 
     return ScheduleEngine(
         store, send=fake_send,

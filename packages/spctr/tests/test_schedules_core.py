@@ -344,8 +344,8 @@ class TestAC21FireOnce:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         # Create a schedule due NOW
         sched = _make_schedule(
@@ -375,6 +375,53 @@ class TestAC21FireOnce:
 
 
 # ---------------------------------------------------------------------------
+# spc-1095: the send seam carries the row itself
+# ---------------------------------------------------------------------------
+
+
+class TestSendSeamCarriesRow:
+    async def test_send_receives_the_firing_row_with_its_topic(self, tmp_path):
+        """spc-1095: the interface sees the whole row (channel AND topic)
+        from the seam — no ContextVar, no overrides of the engine's
+        private post handlers. A failure post for a row with a topic
+        reaches the callable with that row intact."""
+        store = ScheduleStore(tmp_path / "schedules", agent="miranda")
+        rows: list[Schedule] = []
+        sent: list[tuple[str, str]] = []
+
+        async def fake_send(row: Schedule, content: str) -> None:
+            rows.append(row)
+            sent.append((row.dest_channel_id, content))
+
+        script = tmp_path / "fail.sh"
+        script.write_text("#!/bin/sh\necho broke >&2\nexit 1")
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+
+        sched = _make_schedule(
+            next_run_at=NOW - timedelta(seconds=1),
+            payload=json.dumps({"command": str(script), "cwd": str(tmp_path)}),
+            topic="ops",
+        )
+        store.create(sched)
+
+        engine = ScheduleEngine(
+            store, send=fake_send,
+            poll_seconds=999, tz=UTC, agent_name="test",
+            clock=lambda: NOW,
+        )
+        await engine._poll_once()
+
+        assert len(sent) == 1
+        assert sent[0][0] == "100"
+        # The callable got the row object, not just its channel id: the
+        # topic rides the seam, so a future post path cannot silently
+        # drop it.
+        assert rows[0].topic == "ops"
+        assert rows[0].dest_channel_id == "100"
+        assert "⚠️" in sent[0][1]
+
+
+# ---------------------------------------------------------------------------
 # AC22: Non-zero exit posts ⚠️, logs, schedule stays active
 # ---------------------------------------------------------------------------
 
@@ -384,8 +431,8 @@ class TestAC22Failure:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         # Script that fails
         script = tmp_path / "fail.sh"
@@ -421,8 +468,8 @@ class TestAC22Failure:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         # Script that sleeps forever
         script = tmp_path / "sleep.sh"
@@ -460,8 +507,8 @@ class TestAC23Success:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         sched = _make_schedule(
             next_run_at=NOW - timedelta(seconds=1),
@@ -525,8 +572,8 @@ class TestAC25RunNow:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         sched = _make_schedule(
             next_run_at=NOW + timedelta(days=1),  # future — not due
@@ -565,8 +612,8 @@ class TestAC26Cancel:
 
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         engine = ScheduleEngine(
             store, send=fake_send,
@@ -606,8 +653,8 @@ class TestAC27EngineContinues:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         # First schedule fails
         script_fail = tmp_path / "fail.sh"
@@ -657,8 +704,8 @@ class TestAC28PlatformScoped:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         # Zulip row due NOW
         store.create(_make_schedule(

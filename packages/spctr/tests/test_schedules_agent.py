@@ -234,8 +234,8 @@ class TestAC33AgentFiresAndPosts:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         async def fake_runner(agent_name: str, instruction: str, **kw) -> AgentResult:
             return AgentResult(
@@ -275,8 +275,8 @@ class TestAC33AgentFiresAndPosts:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         long_message = "line\n" * 500  # 2500 chars
         assert len(long_message) > 2000
@@ -318,8 +318,8 @@ class TestAC33AgentFiresAndPosts:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         async def fake_runner(agent_name: str, instruction: str, **kw) -> AgentResult:
             return AgentResult(
@@ -354,8 +354,8 @@ class TestAC33AgentFiresAndPosts:
         sent: list[tuple[str, str]] = []
         captured_args: dict[str, Any] = {}
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         async def fake_runner(agent_name: str, instruction: str, **kw) -> AgentResult:
             captured_args["agent_name"] = agent_name
@@ -398,8 +398,8 @@ class TestAC34AgentFailurePostsWarning:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         async def fake_runner(agent_name: str, instruction: str, **kw) -> AgentResult:
             return AgentResult(
@@ -441,8 +441,8 @@ class TestAC34AgentFailurePostsWarning:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         async def fake_runner(agent_name: str, instruction: str, **kw) -> AgentResult:
             return AgentResult(
@@ -476,8 +476,8 @@ class TestAC34AgentFailurePostsWarning:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         async def fake_runner(agent_name: str, instruction: str, **kw) -> AgentResult:
             return AgentResult(
@@ -517,8 +517,8 @@ class TestAC35RunNowAgent:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         async def fake_runner(agent_name: str, instruction: str, **kw) -> AgentResult:
             return AgentResult(
@@ -559,8 +559,8 @@ class TestAC35RunNowAgent:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         async def fake_runner(agent_name: str, instruction: str, **kw) -> AgentResult:
             return AgentResult(
@@ -600,8 +600,8 @@ class TestAC35RunNowAgent:
         store = ScheduleStore(tmp_path / "schedules", agent="miranda")
         sent: list[tuple[str, str]] = []
 
-        async def fake_send(channel_id: str, content: str) -> None:
-            sent.append((channel_id, content))
+        async def fake_send(row: Schedule, content: str) -> None:
+            sent.append((row.dest_channel_id, content))
 
         async def fake_runner(agent_name: str, instruction: str, **kw) -> AgentResult:
             return AgentResult(

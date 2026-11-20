@@ -44,7 +44,7 @@ from spctr.reminders import (
   ReminderOrigin,
 )
 from spctr.reminders import tool as reminders_tool
-from spctr.schedules import ScheduleEngine
+from spctr.schedules import Schedule, ScheduleEngine
 from spctr.tools.schedule_tool import ScheduleOrigin, ScheduleTurnScope, schedule_turn_scope
 from spctr.interfaces.discord.handler import (
   CommandContext,
@@ -398,9 +398,10 @@ class DiscordInterface:
     ):
       return
 
-    async def send(channel_id: str, content: str) -> None:
+    async def send(row: Schedule, content: str) -> None:
+      # The row's topic is Zulip-only; Discord posts are channel-scoped.
       _message, error = await self._adapter.try_send_message(
-        int(channel_id), content
+        int(row.dest_channel_id), content
       )
       if error is not None:
         raise error

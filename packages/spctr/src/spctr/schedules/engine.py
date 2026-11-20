@@ -48,8 +48,11 @@ class ScheduleEngine:
 
     Args:
         store: The agent's persistent schedule store.
-        send: ``async (channel_id, content) -> None``. Posts a message
-            to the destination channel. Must raise on failure.
+        send: ``async (row, content) -> None``. *row* is the firing
+            :class:`Schedule`; the callable posts to
+            ``row.dest_channel_id`` and reads ``row.topic`` for
+            platform-specific destination detail (a Zulip stream topic;
+            empty for Discord rows). Must raise on failure.
         poll_seconds: Seconds between polls.
         tz: IANA zone for cron interpretation.
         agent_name: Agent name for log lines.
@@ -61,7 +64,7 @@ class ScheduleEngine:
     def __init__(
         self,
         store: ScheduleStore,
-        send: Callable[[str, str], Awaitable[None]],
+        send: Callable[[Schedule, str], Awaitable[None]],
         *,
         poll_seconds: float,
         tz: ZoneInfo,
@@ -350,7 +353,7 @@ class ScheduleEngine:
         label_part = f" ({sched.label})" if sched.label else ""
         message = f"⚠️ Schedule {sched.id}{label_part} failed: {result.error_line}"
         try:
-            await self._send(sched.dest_channel_id, message)
+            await self._send(sched, message)
         except Exception:
             logger.exception(
                 "schedule failure post error: agent=%s id=%s",
@@ -384,7 +387,7 @@ class ScheduleEngine:
             chunks = split_message(result.message)
             for chunk in chunks:
                 try:
-                    await self._send(sched.dest_channel_id, chunk)
+                    await self._send(sched, chunk)
                 except Exception:
                     logger.exception(
                         "schedule agent post error: agent=%s id=%s",
@@ -394,7 +397,7 @@ class ScheduleEngine:
         else:
             message = f"⚠️ Schedule {sched.id}{label_part} failed: {result.error_line}"
             try:
-                await self._send(sched.dest_channel_id, message)
+                await self._send(sched, message)
             except Exception:
                 logger.exception(
                     "schedule failure post error: agent=%s id=%s",

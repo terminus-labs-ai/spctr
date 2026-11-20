@@ -93,7 +93,6 @@ import logging
 import time
 import urllib.parse
 from datetime import datetime
-from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Callable
 
 from spctr.core import RunContext, RunMode
@@ -133,7 +132,7 @@ from spctr.reminders import (
     ReminderOrigin,
 )
 from spctr.reminders import tool as reminders_tool
-from spctr.schedules import ScheduleEngine
+from spctr.schedules import Schedule, ScheduleEngine
 from spctr.tools.schedule_tool import (
     ScheduleOrigin,
     ScheduleTurnScope,
@@ -157,37 +156,6 @@ _PROBE_FAILURE_TEXT = (
     "I could not check the earlier messages in this topic, so I will not "
     "answer without its history. Please try again later."
 )
-
-# FR47: the topic of the schedule whose result is posting in this task.
-# The engine's send seam carries only the destination channel; a Zulip
-# post also needs the row's topic.
-_schedule_post_topic: ContextVar[str] = ContextVar(
-    "spctr_zulip_schedule_post_topic", default=""
-)
-
-
-class _ZulipScheduleEngine(ScheduleEngine):
-    """The schedule engine whose posts carry each row's Zulip topic (FR47).
-
-    Posting stays the engine's (FR26/FR27 forms unchanged); this only
-    exposes the posting row's ``topic`` to the interface's send callable
-    for the duration of that row's posts.
-    """
-
-    async def _handle_command_result(self, sched: Any, result: Any) -> None:
-        token = _schedule_post_topic.set(_expand_schedule_topic(sched.topic))
-        try:
-            await super()._handle_command_result(sched, result)
-        finally:
-            _schedule_post_topic.reset(token)
-
-    async def _handle_agent_result(self, sched: Any, result: Any) -> None:
-        token = _schedule_post_topic.set(_expand_schedule_topic(sched.topic))
-        try:
-            await super()._handle_agent_result(sched, result)
-        finally:
-            _schedule_post_topic.reset(token)
-
 
 def _expand_schedule_topic(topic: str) -> str:
     """Expand strftime tokens in a schedule row's topic at fire time.
@@ -742,16 +710,17 @@ class ZulipInterface:
         ):
             return
 
-        async def send(channel_id: str, content: str) -> None:
-            # Raised, not swallowed: the engine logs a failed post.
+        async def send(row: Schedule, content: str) -> None:
+            # Raised, not swallowed: the engine logs a failed post. A row
+            # without ``topic`` falls back to schedules.zulip_topic.
             await self._client.send_message(
                 type="stream",
-                to=int(channel_id),
-                topic=_schedule_post_topic.get() or self._schedules_topic(),
+                to=int(row.dest_channel_id),
+                topic=_expand_schedule_topic(row.topic) or self._schedules_topic(),
                 content=content,
             )
 
-        engine = _ZulipScheduleEngine(
+        engine = ScheduleEngine(
             schedules.store,
             send=send,
             poll_seconds=schedules.poll_seconds,

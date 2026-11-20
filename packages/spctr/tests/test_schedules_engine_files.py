@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from spctr.schedules import AgentResult, ScheduleEngine, ScheduleStore
+from spctr.schedules import AgentResult, Schedule, ScheduleEngine, ScheduleStore
 
 UTC = ZoneInfo("UTC")
 NOW = datetime(2026, 10, 20, 12, 0, 0, tzinfo=UTC)
@@ -54,8 +54,8 @@ class Harness:
         self.store = ScheduleStore(self.dir, agent="miranda")
         self.engine = self._new_engine()
 
-    async def _send(self, channel_id: str, content: str) -> None:
-        self.sent.append((channel_id, content))
+    async def _send(self, row: Schedule, content: str) -> None:
+        self.sent.append((row.dest_channel_id, content))
 
     async def _runner(self, target, instruction, *, timeout, agent, clock):
         self.instructions.append(instruction)

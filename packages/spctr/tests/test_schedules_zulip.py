@@ -29,7 +29,7 @@ import yaml
 import spctr.schedules.engine as engine_mod
 from spctr.config import SchedulesConfig
 from spctr.reminders import tool as reminders_tool
-from spctr.schedules import AgentResult, ScheduleEngine, ScheduleStore
+from spctr.schedules import AgentResult, Schedule, ScheduleEngine, ScheduleStore
 from spctr.tools.schedule_tool import (
     ScheduleOrigin,
     ScheduleTool,
@@ -243,7 +243,10 @@ class TestZulipCreateSeam:
             await interface.start(agent)
             try:
                 engine = interface._schedules_engine
-                assert isinstance(engine, ScheduleEngine)
+                # spc-1095: the plain engine — the row's topic rides the
+                # widened send seam, not a subclass overriding private
+                # post handlers.
+                assert type(engine) is ScheduleEngine
                 assert engine._platform == "zulip"
                 assert engine._schedule_store is agent.schedules.store
                 tool = agent.schedules.tool
@@ -497,8 +500,8 @@ class _Sends:
     def __init__(self) -> None:
         self.posts: list[tuple[str, str]] = []
 
-    async def send(self, channel_id: str, content: str) -> None:
-        self.posts.append((channel_id, content))
+    async def send(self, row: Schedule, content: str) -> None:
+        self.posts.append((row.dest_channel_id, content))
 
 
 def _engine(store: ScheduleStore, sends: _Sends, platform: str) -> ScheduleEngine:
