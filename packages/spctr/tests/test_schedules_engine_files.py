@@ -406,6 +406,35 @@ class TestAC45Paused:
         assert row.next_run_at == TOMORROW_7 and row.last_status == "skipped"
 
 
+    async def test_r6_on_miss_skip_paused_past_due_never_advanced(self, tmp_path):
+        """FR44 for ``on_miss: skip`` (spc-1094): a paused file that a poll
+        sees first with a past ``next_run_at`` must stay byte-identical.
+
+        The store's claim and reschedule refuse paused rows, but the
+        first-sight ``on_miss: skip`` advance goes through
+        ``advance_after_run``, which does not check status; only the
+        engine's active gate keeps it off paused files.  Covered both at
+        start() and on a later poll, like ``test_r1``.
+        """
+        h = Harness(tmp_path)
+        path = h.command_file("p", PAST, "enabled: false", "on_miss: skip")
+        before = path.read_bytes()
+
+        await h.engine.start()
+        await asyncio.sleep(0)
+        await h.engine.stop()
+        await h.poll_at(NOW + timedelta(seconds=30))
+        await h.poll_at(TOMORROW_7)
+
+        assert h.fired("p") == 0
+        assert path.read_bytes() == before  # never advanced
+        row = h.store.get("p")
+        assert row.status == "paused"
+        assert row.next_run_at == datetime(2026, 10, 20, 11, 0, tzinfo=UTC)
+        assert row.last_run_at is None and row.last_status is None
+        assert h.store.due(TOMORROW_7) == []
+
+
 # ---------------------------------------------------------------------------
 # FR39 second paragraph: first seen with a past next_run_at -> FR30 policy
 # ---------------------------------------------------------------------------
