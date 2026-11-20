@@ -737,6 +737,42 @@ schedule. `zulip_topic` is the post topic a schedule created from Zulip records
 when the request names none, and the topic a Zulip schedule file without a
 `topic` key posts to (FR47).
 
+### Tool texts (`agent.schedules.texts`)
+
+Every string the `schedule` tool shows a user or sends a model is a YAML
+parameter (spc-1097, YAML-parameter mandate): the tool description, the
+input-schema descriptions, the result formats and the error texts. The
+defaults are the strings pinned by the agent-reminders spec verbatim;
+structure is not text — the `action`/`type` enums, required fields and
+cron rendering stay fixed. Defaults for every field are shown in
+`config.example.yaml` and in `ScheduleTextsConfig` in `src/spctr/config.py`.
+
+Schema-description fields (no placeholders): `tool_description`,
+`cron_description`, `agent_description`, `channel_description`,
+`topic_description`, `label_description`. Plain result/error strings (no
+placeholders): `empty_list_message`, `never_run_label`,
+`need_interface_error` (FR34; keeps its increment-2 wording per FR47),
+`cross_platform_error`, `resolver_unusable_error`, `no_resolver_error`,
+`cron_required_error`, `type_required_error`, `command_required_error`,
+`instruction_required_error`, `id_required_cancel_error`,
+`id_required_run_now_error`, `engine_unavailable_error`.
+
+Template fields and their placeholders:
+
+| Field | Template values |
+|---|---|
+| `created_format` | `{id}`, `{next}` (local weekday/time/zone), `{destination}`, `{payload_type}`, `{summary}` (first 40 characters) |
+| `list_row_format` | `{id}`, `{next}` (local date/time/zone), `{cron}`, `{destination}`, `{payload_type}`, `{summary}`, `{last_status}` (falls back to `never_run_label`) |
+| `destination_format` | `{channel}` |
+| `destination_topic_format` | `{channel}`, `{topic}` (Zulip rows with a topic) |
+| `cancelled_message`, `executed_message` | `{id}` |
+| `unknown_action_error` | `{action}` |
+| `invalid_cron_error` | `{reason}` (parser message) |
+| `unknown_payload_type_error` | `{type}` |
+| `command_too_long_error`, `instruction_too_long_error` | `{max}` (FR25 size limits) |
+| `channel_not_found_error`, `channel_ambiguous_error` | `{channel}` |
+| `schedule_not_found_error`, `already_cancelled_error`, `cancel_failed_error`, `cancelled_schedule_error` | `{id}` |
+
 ### Tool actions
 
 | Action | Description |

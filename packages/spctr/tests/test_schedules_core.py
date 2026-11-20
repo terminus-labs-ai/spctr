@@ -21,13 +21,17 @@ import pytest
 from spctr.schedules import ScheduleStore, Schedule, ScheduleEngine, parse_cron
 from spctr.schedules.cron import CronParseError, CronSpec
 from spctr.schedules.command import CommandResult, run_command
+from spctr.config import ScheduleTextsConfig
 from spctr.tools.schedule_tool import (
-    NO_INTERFACE_ERROR,
     ScheduleOrigin,
     ScheduleTool,
     ScheduleTurnScope,
     schedule_turn_scope,
 )
+
+# FR34 text pinned via the config model default (spc-1097); the tool
+# returns it verbatim when no interface delivers schedules.
+NO_INTERFACE_ERROR = ScheduleTextsConfig().need_interface_error
 
 UTC = ZoneInfo("UTC")
 PHX = ZoneInfo("America/Phoenix")

@@ -5,6 +5,13 @@ implemented ``create``, ``cancel`` and ``run_now``; spc-186 completes
 ``list`` (FR31) and the ``channel`` destination (FR9–FR11); the agent
 payload lands in spc-187.
 
+Every string this tool returns or advertises is a YAML parameter
+(spc-1097, YAML-parameter mandate): the constructor takes a
+``ScheduleTextsConfig`` (``agent.schedules.texts``) carrying the tool
+description, the input-schema descriptions, the result formats and the
+error texts. Its defaults are the spec-pinned strings verbatim, so an
+untouched config reproduces the increment-2/3 forms byte-for-byte.
+
 Origin plumbing follows the reminder tool's pattern: the owning interface
 records the turn's origin on a ContextVar before the turn runs, and the
 tool reads it at call time.
@@ -16,35 +23,36 @@ import logging
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from spctr.schedules.cron import CronParseError, parse_cron
 from spctr.schedules.store import Schedule, ScheduleStore
 
+if TYPE_CHECKING:
+    from spctr.config import ScheduleTextsConfig
+
 logger = logging.getLogger(__name__)
 
-# FR34/FR47: no schedule delivery (an interface with neither Discord nor
-# Zulip); FR47 keeps the increment-2 text verbatim.
-NO_INTERFACE_ERROR = "Error: Schedules need the Discord interface"
+
+def _default_texts() -> ScheduleTextsConfig:
+    """The spec-pinned text defaults, built on call.
+
+    ``spctr.config`` imports the Discord interface package, which imports
+    this module, so the config-model import stays inside a function: at
+    construction time whichever import order started the process, both
+    modules are loadable. (spc-1097.)
+    """
+    from spctr.config import ScheduleTextsConfig
+
+    return ScheduleTextsConfig()
 
 # FR25: max payload sizes.
 COMMAND_MAX = 4000
 AGENT_INSTRUCTION_MAX = 4000
 
-# FR11: a channel naming the other platform is refused outright. Mirrors
-# the reminder tool's constant with the tool's own noun.
-CROSS_PLATFORM_ERROR = "Error: Cross-platform schedules are not supported"
-
 # FR10/FR11: the platform a channel name may prefix ("discord#x", "zulip#x").
 _PLATFORM_PREFIXES = ("discord", "zulip")
-
-# FR10: the guard message when a resolver yields an unusable match.
-MALFORMED_RESOLVER_ERROR = "Error: channel lookup returned an unusable result"
-
-# FR10/FR11: the tool's answer to a named-channel create when no owning
-# interface registered a resolver.
-NO_RESOLVER_ERROR = "Error: named channels are not available in this build"
 
 
 @dataclass(frozen=True)
@@ -77,45 +85,14 @@ schedule_turn_scope: ContextVar[ScheduleTurnScope | None] = ContextVar(
 
 
 class ScheduleTool:
-    """The ``schedule`` tool callable, registered on the agent's registry."""
+    """The ``schedule`` tool callable, registered on the agent's registry.
+
+    ``description`` and ``input_schema`` are per-instance, built from the
+    ``texts`` model (spc-1097); register the instance attributes, not
+    class attributes.
+    """
 
     name = "schedule"
-    description = (
-        "Create, cancel, or manually run a recurring scheduled job "
-        "(command or agent payload) that fires on a cron schedule."
-    )
-    input_schema = {
-        "type": "object",
-        "properties": {
-            "action": {"enum": ["create", "list", "cancel", "run_now"]},
-            "cron": {
-                "type": "string",
-                "description": "5-field cron, e.g. '0 7 * * *' or '0 9 * * 1'",
-            },
-            "type": {"enum": ["command", "agent"]},
-            "command": {"type": "string"},
-            "cwd": {"type": "string"},
-            "instruction": {"type": "string"},
-            "agent": {
-                "type": "string",
-                "description": "Target agent for an agent payload; omit for the creating agent",
-            },
-            "channel": {
-                "type": "string",
-                "description": "Same-platform channel name; omit for this channel",
-            },
-            "topic": {
-                "type": "string",
-                "description": "Zulip post topic; omit for the default",
-            },
-            "label": {
-                "type": "string",
-                "description": "Short name shown in posts and list",
-            },
-            "id": {"type": "string"},
-        },
-        "required": ["action"],
-    }
 
     def __init__(
         self,
@@ -125,6 +102,7 @@ class ScheduleTool:
         origin_getter: Any,
         clock: Any = None,
         engine: Any = None,
+        texts: ScheduleTextsConfig | None = None,
     ) -> None:
         self._schedule_store = store
         self._timezone = ZoneInfo(timezone)
@@ -132,6 +110,42 @@ class ScheduleTool:
         self._get_origin = origin_getter
         self._now_fn = clock or (lambda: datetime.now(tz=ZoneInfo("UTC")))
         self._engine = engine
+        self._texts = texts if texts is not None else _default_texts()
+        # FR31 list rows fill ``last_status`` from the row, falling back
+        # to the configurable never-run label.
+        self.description = self._texts.tool_description
+        self.input_schema = {
+            "type": "object",
+            "properties": {
+                "action": {"enum": ["create", "list", "cancel", "run_now"]},
+                "cron": {
+                    "type": "string",
+                    "description": self._texts.cron_description,
+                },
+                "type": {"enum": ["command", "agent"]},
+                "command": {"type": "string"},
+                "cwd": {"type": "string"},
+                "instruction": {"type": "string"},
+                "agent": {
+                    "type": "string",
+                    "description": self._texts.agent_description,
+                },
+                "channel": {
+                    "type": "string",
+                    "description": self._texts.channel_description,
+                },
+                "topic": {
+                    "type": "string",
+                    "description": self._texts.topic_description,
+                },
+                "label": {
+                    "type": "string",
+                    "description": self._texts.label_description,
+                },
+                "id": {"type": "string"},
+            },
+            "required": ["action"],
+        }
         # FR10: the owning interface registers its channel resolver here
         # (spc-186). The Runtime constructs this tool before any interface
         # exists, so the seam is post-construction, mirroring how the
@@ -177,7 +191,7 @@ class ScheduleTool:
         scoped = schedule_turn_scope.get()
         origin = scoped.origin if scoped is not None else self._get_origin()
         if origin is None:
-            return NO_INTERFACE_ERROR
+            return self._texts.need_interface_error
 
         if action == "create":
             return await self._create(
@@ -190,7 +204,7 @@ class ScheduleTool:
             return await self._run_now(id, origin)
         if action == "list":
             return await self._list(origin)
-        return f"Error: unknown action '{action}'"
+        return self._texts.unknown_action_error.format(action=action)
 
     async def _create(
         self,
@@ -207,29 +221,31 @@ class ScheduleTool:
     ) -> str:
         # FR25 validation
         if not cron or not cron.strip():
-            return "Error: 'cron' is required and must not be empty"
+            return self._texts.cron_required_error
         try:
             spec = parse_cron(cron)
         except CronParseError as exc:
-            return f"Error: invalid cron expression: {exc}"
+            return self._texts.invalid_cron_error.format(reason=exc)
 
         if not payload_type:
-            return "Error: 'type' is required (command or agent)"
+            return self._texts.type_required_error
         if payload_type not in ("command", "agent"):
-            return f"Error: unknown payload type '{payload_type}'"
+            return self._texts.unknown_payload_type_error.format(type=payload_type)
 
         # Validate payload content
         if payload_type == "command":
             if not command or not command.strip():
-                return "Error: 'command' is required for a command payload"
+                return self._texts.command_required_error
             if len(command) > COMMAND_MAX:
-                return f"Error: 'command' exceeds {COMMAND_MAX} characters"
+                return self._texts.command_too_long_error.format(max=COMMAND_MAX)
             payload_json = json.dumps({"command": command, "cwd": cwd})
         else:
             if not instruction or not instruction.strip():
-                return "Error: 'instruction' is required for an agent payload"
+                return self._texts.instruction_required_error
             if len(instruction) > AGENT_INSTRUCTION_MAX:
-                return f"Error: 'instruction' exceeds {AGENT_INSTRUCTION_MAX} characters"
+                return self._texts.instruction_too_long_error.format(
+                    max=AGENT_INSTRUCTION_MAX
+                )
             target_agent = agent or origin.agent
             payload_json = json.dumps({"agent": target_agent, "instruction": instruction})
 
@@ -281,10 +297,12 @@ class ScheduleTool:
         next_local = next_run.astimezone(self._timezone)
         next_str = next_local.strftime("%a %H:%M %Z")
         payload_summary = (command or instruction or "")[:40]
-        return (
-            f"Schedule {new_id} set: {next_str} in "
-            f"{_destination(dest_channel_name, dest_topic)} "
-            f"({payload_type}: {payload_summary})"
+        return self._texts.created_format.format(
+            id=new_id,
+            next=next_str,
+            destination=self._destination(dest_channel_name, dest_topic),
+            payload_type=payload_type,
+            summary=payload_summary,
         )
 
     async def _resolve_channel(
@@ -299,10 +317,10 @@ class ScheduleTool:
         if sep and prefix.lower() in _PLATFORM_PREFIXES:
             # FR11: naming the other platform is refused before lookup.
             if prefix.lower() != origin.platform:
-                return CROSS_PLATFORM_ERROR
+                return self._texts.cross_platform_error
             name = rest.strip()
         if self._schedule_channel_resolver is None:
-            return NO_RESOLVER_ERROR
+            return self._texts.no_resolver_error
         # FR10: a Discord resolver scopes its match to the origin guild;
         # it is the only resolver that takes a scope, and the reminder
         # turn scope is what carries the guild (spc-141).
@@ -320,49 +338,49 @@ class ScheduleTool:
             for m in matches
         ):
             logger.error(
-                "%s: resolver returned %r", MALFORMED_RESOLVER_ERROR, matches[0]
+                "%s: resolver returned %r", self._texts.resolver_unusable_error, matches[0]
             )
-            return MALFORMED_RESOLVER_ERROR
+            return self._texts.resolver_unusable_error
         if not matches:
-            return f"Error: channel '{channel}' not found on this platform"
+            return self._texts.channel_not_found_error.format(channel=channel)
         if len(matches) > 1:
-            return f"Error: channel '{channel}' is ambiguous on this platform"
+            return self._texts.channel_ambiguous_error.format(channel=channel)
         return matches[0]
 
     async def _cancel(self, id: str | None, origin: ScheduleOrigin) -> str:
         """FR32: cancel removes the schedule."""
         if not id:
-            return "Error: 'id' is required for cancel"
+            return self._texts.id_required_cancel_error
         row = await self._schedule_store.get_async(id)
         if row is None or row.agent != origin.agent:
-            return f"Error: schedule '{id}' not found"
+            return self._texts.schedule_not_found_error.format(id=id)
         if row.status == "cancelled":
-            return f"Error: schedule {id} is already cancelled"
+            return self._texts.already_cancelled_error.format(id=id)
         if not await self._schedule_store.cancel_async(id):
-            return f"Error: schedule {id} could not be cancelled"
+            return self._texts.cancel_failed_error.format(id=id)
         logger.info("schedule cancel: agent=%s id=%s", self._name, id)
-        return f"Cancelled schedule {id}"
+        return self._texts.cancelled_message.format(id=id)
 
     async def _run_now(self, id: str | None, origin: ScheduleOrigin) -> str:
         """FR33: run_now executes immediately through the normal path."""
         if not id:
-            return "Error: 'id' is required for run_now"
+            return self._texts.id_required_run_now_error
         row = await self._schedule_store.get_async(id)
         if row is None or row.agent != origin.agent:
-            return f"Error: schedule '{id}' not found"
+            return self._texts.schedule_not_found_error.format(id=id)
         if row.status == "cancelled":
-            return f"Error: schedule {id} is cancelled"
+            return self._texts.cancelled_schedule_error.format(id=id)
         if self._engine is None:
-            return "Error: schedule engine not available"
+            return self._texts.engine_unavailable_error
         await self._engine.execute_now(row)
         logger.info("schedule run_now: agent=%s id=%s", self._name, id)
-        return f"Schedule {id} executed. Next run remains as scheduled."
+        return self._texts.executed_message.format(id=id)
 
     async def _list(self, origin: ScheduleOrigin) -> str:
         """FR31: this agent's active schedules sorted by next run."""
         rows = await self._schedule_store.list_for_agent_async(origin.agent)
         if not rows:
-            return "No schedules."
+            return self._texts.empty_list_message
         lines = []
         for s in rows:
             next_local = s.next_run_at.astimezone(self._timezone)
@@ -370,12 +388,18 @@ class ScheduleTool:
             payload = json.loads(s.payload)
             summary = (payload.get("command") or payload.get("instruction") or "")[:40]
             lines.append(
-                # The channel *name* resolves through the interface seam
-                # (spc-996); until a file has been through it, show the
-                # stored destination string (the resolved ID).
-                f"{s.id} {next_str} cron={s.cron} "
-                f"{_destination(self._channel_name(s), s.topic)} "
-                f"{s.payload_type}: {summary} [{s.last_status or 'never run'}]"
+                self._texts.list_row_format.format(
+                    id=s.id,
+                    next=next_str,
+                    cron=s.cron,
+                    # The channel *name* resolves through the interface
+                    # seam (spc-996); until a file has been through it,
+                    # show the stored destination string (the resolved ID).
+                    destination=self._destination(self._channel_name(s), s.topic),
+                    payload_type=s.payload_type,
+                    summary=summary,
+                    last_status=s.last_status or self._texts.never_run_label,
+                )
             )
         return "\n".join(lines)
 
@@ -390,9 +414,11 @@ class ScheduleTool:
                 return str(name)
         return row.dest_channel_id
 
-
-def _destination(channel_name: str, topic: str) -> str:
-    """``#channel``, or Zulip's ``#stream > topic`` when a topic is set."""
-    if topic:
-        return f"#{channel_name} > {topic}"
-    return f"#{channel_name}"
+    def _destination(self, channel_name: str, topic: str) -> str:
+        """``destination_format``, or ``destination_topic_format`` when a
+        topic is set (Zulip's ``#stream > topic``)."""
+        if topic:
+            return self._texts.destination_topic_format.format(
+                channel=channel_name, topic=topic
+            )
+        return self._texts.destination_format.format(channel=channel_name)

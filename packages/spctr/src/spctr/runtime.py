@@ -341,11 +341,12 @@ class Runtime:
             timezone=block.timezone,
             agent_name=agent_name,
             origin_getter=lambda: None,  # interface sets scope via ContextVar
+            texts=block.texts,
         )
         self.registry.register(
             name=ScheduleTool.name,
-            description=ScheduleTool.description,
-            input_schema=ScheduleTool.input_schema,
+            description=tool.description,
+            input_schema=tool.input_schema,
             fn=tool.__call__,
         )
         self.schedules = SimpleNamespace(

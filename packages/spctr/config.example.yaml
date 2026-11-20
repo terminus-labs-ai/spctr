@@ -14,6 +14,57 @@ agent:
     interrupted_marker: "[This turn was interrupted by a restart before it finished.]"
     restore_failed_notice: "Earlier context for this conversation could not be restored."
 
+  # Recurring scheduled jobs: one switch enables BOTH the schedule tool
+  # and the schedule engine. timezone (IANA) is required when enabled;
+  # cron is interpreted in it. See docs/CONFIG-REFERENCE.md § Schedules.
+  # schedules:
+  #   enabled: true
+  #   timezone: America/Phoenix
+  #   poll_seconds: 30.0
+  #   command_timeout_seconds: 600.0
+  #   agent_timeout_seconds: 600.0
+  #   zulip_topic: schedules
+  #   # store_path: ~/.sr2/state/{agent}/schedules/
+  #   # Every string the schedule tool shows or advertises (spc-1097);
+  #   # defaults are the spec strings, shown here unchanged.
+  #   texts:
+  #     tool_description: Create, cancel, or manually run a recurring scheduled job (command or agent payload) that fires on a cron schedule.
+  #     cron_description: "5-field cron, e.g. '0 7 * * *' or '0 9 * * 1'"
+  #     agent_description: Target agent for an agent payload; omit for the creating agent
+  #     channel_description: Same-platform channel name; omit for this channel
+  #     topic_description: "Zulip post topic; omit for the default"
+  #     label_description: Short name shown in posts and list
+  #     created_format: "Schedule {id} set: {next} in {destination} ({payload_type}: {summary})"
+  #     list_row_format: "{id} {next} cron={cron} {destination} {payload_type}: {summary} [{last_status}]"
+  #     destination_format: "#{channel}"
+  #     destination_topic_format: "#{channel} > {topic}"
+  #     empty_list_message: "No schedules."
+  #     never_run_label: never run
+  #     cancelled_message: "Cancelled schedule {id}"
+  #     executed_message: "Schedule {id} executed. Next run remains as scheduled."
+  #     need_interface_error: "Error: Schedules need the Discord interface"
+  #     cross_platform_error: "Error: Cross-platform schedules are not supported"
+  #     resolver_unusable_error: "Error: channel lookup returned an unusable result"
+  #     no_resolver_error: "Error: named channels are not available in this build"
+  #     unknown_action_error: "Error: unknown action '{action}'"
+  #     cron_required_error: "Error: 'cron' is required and must not be empty"
+  #     invalid_cron_error: "Error: invalid cron expression: {reason}"
+  #     type_required_error: "Error: 'type' is required (command or agent)"
+  #     unknown_payload_type_error: "Error: unknown payload type '{type}'"
+  #     command_required_error: "Error: 'command' is required for a command payload"
+  #     command_too_long_error: "Error: 'command' exceeds {max} characters"
+  #     instruction_required_error: "Error: 'instruction' is required for an agent payload"
+  #     instruction_too_long_error: "Error: 'instruction' exceeds {max} characters"
+  #     channel_not_found_error: "Error: channel '{channel}' not found on this platform"
+  #     channel_ambiguous_error: "Error: channel '{channel}' is ambiguous on this platform"
+  #     id_required_cancel_error: "Error: 'id' is required for cancel"
+  #     id_required_run_now_error: "Error: 'id' is required for run_now"
+  #     schedule_not_found_error: "Error: schedule '{id}' not found"
+  #     already_cancelled_error: "Error: schedule {id} is already cancelled"
+  #     cancel_failed_error: "Error: schedule {id} could not be cancelled"
+  #     cancelled_schedule_error: "Error: schedule {id} is cancelled"
+  #     engine_unavailable_error: "Error: schedule engine not available"
+
   # Built-in tools to register. Each tool is a Python class loaded by class_path.
   # Remove tools you don't want, or add custom ones.
   tools:

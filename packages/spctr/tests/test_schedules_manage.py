@@ -21,14 +21,18 @@ import pytest
 from spctr.reminders import tool as reminders_tool
 from spctr.reminders.tool import ChannelMatch
 from spctr.schedules import Schedule, ScheduleEngine, ScheduleStore
+from spctr.config import ScheduleTextsConfig
 from spctr.tools.schedule_tool import (
-    CROSS_PLATFORM_ERROR,
-    MALFORMED_RESOLVER_ERROR,
     ScheduleOrigin,
     ScheduleTool,
     ScheduleTurnScope,
     schedule_turn_scope,
 )
+
+# FR11/FR10 texts pinned via config-model defaults (spc-1097).
+_TEXTS = ScheduleTextsConfig()
+CROSS_PLATFORM_ERROR = _TEXTS.cross_platform_error
+MALFORMED_RESOLVER_ERROR = _TEXTS.resolver_unusable_error
 
 UTC = ZoneInfo("UTC")
 PHX = ZoneInfo("America/Phoenix")

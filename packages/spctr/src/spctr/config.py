@@ -142,6 +142,98 @@ class RemindersConfig(BaseModel):
         return str(resolve_sr2_home() / "state" / agent_name / "reminders.sqlite")
 
 
+class ScheduleTextsConfig(BaseModel):
+    """Every string the ``schedule`` tool shows to a user or sends to a
+    model (spc-1097), per the YAML-parameter mandate: tool description,
+    input-schema descriptions, result formats and error texts. Defaults
+    are the spec-pinned strings from agent-reminders.md verbatim (FR34
+    keeps its increment-2 text); overriding one changes what the model
+    sees or the user reads without a code change.
+
+    Format-template placeholders (all other fields take none)::
+
+        created_format              {id} {next} {destination} {payload_type} {summary}
+        list_row_format             {id} {next} {cron} {destination} {payload_type} {summary} {last_status}
+        destination_format          {channel}
+        destination_topic_format    {channel} {topic}
+        unknown_action_error        {action}
+        invalid_cron_error          {reason}
+        unknown_payload_type_error  {type}
+        command_too_long_error      {max}
+        instruction_too_long_error  {max}
+        channel_not_found_error     {channel}
+        channel_ambiguous_error     {channel}
+        schedule_not_found_error    {id}
+        already_cancelled_error     {id}
+        cancel_failed_error         {id}
+        cancelled_schedule_error    {id}
+        cancelled_message           {id}
+        executed_message            {id}
+    """
+
+    # --- Tool schema (model-facing) --------------------------------------
+    tool_description: str = (
+        "Create, cancel, or manually run a recurring scheduled job "
+        "(command or agent payload) that fires on a cron schedule."
+    )
+    cron_description: str = "5-field cron, e.g. '0 7 * * *' or '0 9 * * 1'"
+    agent_description: str = (
+        "Target agent for an agent payload; omit for the creating agent"
+    )
+    channel_description: str = "Same-platform channel name; omit for this channel"
+    topic_description: str = "Zulip post topic; omit for the default"
+    label_description: str = "Short name shown in posts and list"
+
+    # --- Result formats (user-facing through the interface) --------------
+    created_format: str = (
+        "Schedule {id} set: {next} in {destination} ({payload_type}: {summary})"
+    )
+    list_row_format: str = (
+        "{id} {next} cron={cron} {destination} {payload_type}: {summary} "
+        "[{last_status}]"
+    )
+    destination_format: str = "#{channel}"
+    destination_topic_format: str = "#{channel} > {topic}"
+    empty_list_message: str = "No schedules."
+    never_run_label: str = "never run"
+    cancelled_message: str = "Cancelled schedule {id}"
+    executed_message: str = "Schedule {id} executed. Next run remains as scheduled."
+
+    # --- Errors and refusals ----------------------------------------------
+    need_interface_error: str = "Error: Schedules need the Discord interface"
+    cross_platform_error: str = "Error: Cross-platform schedules are not supported"
+    resolver_unusable_error: str = (
+        "Error: channel lookup returned an unusable result"
+    )
+    no_resolver_error: str = "Error: named channels are not available in this build"
+    unknown_action_error: str = "Error: unknown action '{action}'"
+    cron_required_error: str = "Error: 'cron' is required and must not be empty"
+    invalid_cron_error: str = "Error: invalid cron expression: {reason}"
+    type_required_error: str = "Error: 'type' is required (command or agent)"
+    unknown_payload_type_error: str = "Error: unknown payload type '{type}'"
+    command_required_error: str = (
+        "Error: 'command' is required for a command payload"
+    )
+    command_too_long_error: str = "Error: 'command' exceeds {max} characters"
+    instruction_required_error: str = (
+        "Error: 'instruction' is required for an agent payload"
+    )
+    instruction_too_long_error: str = "Error: 'instruction' exceeds {max} characters"
+    channel_not_found_error: str = (
+        "Error: channel '{channel}' not found on this platform"
+    )
+    channel_ambiguous_error: str = (
+        "Error: channel '{channel}' is ambiguous on this platform"
+    )
+    id_required_cancel_error: str = "Error: 'id' is required for cancel"
+    id_required_run_now_error: str = "Error: 'id' is required for run_now"
+    schedule_not_found_error: str = "Error: schedule '{id}' not found"
+    already_cancelled_error: str = "Error: schedule {id} is already cancelled"
+    cancel_failed_error: str = "Error: schedule {id} could not be cancelled"
+    cancelled_schedule_error: str = "Error: schedule {id} is cancelled"
+    engine_unavailable_error: str = "Error: schedule engine not available"
+
+
 class SchedulesConfig(BaseModel):
     """Per-agent schedule settings (spc-185, FR23).
 
@@ -160,6 +252,9 @@ class SchedulesConfig(BaseModel):
         agent_timeout_seconds: Default timeout for agent payloads (spc-187).
         zulip_topic: Default post topic for schedules created from Zulip,
             and for a Zulip schedule file without a ``topic`` key (FR47).
+        texts: Every model-/user-facing string of the ``schedule`` tool
+            (spc-1097, YAML-parameter mandate); defaults are the
+            spec-pinned strings. See :class:`ScheduleTextsConfig`.
     """
 
     enabled: bool = False
@@ -169,6 +264,7 @@ class SchedulesConfig(BaseModel):
     command_timeout_seconds: float = Field(default=600.0, gt=0)
     agent_timeout_seconds: float = Field(default=600.0, gt=0)
     zulip_topic: str = "schedules"
+    texts: ScheduleTextsConfig = Field(default_factory=ScheduleTextsConfig)
 
     def resolved_store_path(self, agent_name: str) -> str:
         """Store path with ``{agent}`` substituted, then expanded."""
