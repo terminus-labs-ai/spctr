@@ -39,6 +39,7 @@ from sr2.pipeline.provenance import Entry, EntryOrigin
 from sr2.pipeline.token_counting import CharacterTokenCounter
 from sr2.tokenization.counting import count_tokens
 
+from evals.continuity.delivery import DeliveryClassifier
 from evals.continuity.models import Block, Scenario, ScenarioTurn
 from evals.continuity.scenarios import CORPUS, gold_turns
 
@@ -638,6 +639,11 @@ def _baseline_config():
     )
 
 
+# The carrier's delivery partition (see DeliveryClassifier): one shared
+# instance — the classifier is stateless.
+_DELIVERY_CLASSIFIER = DeliveryClassifier()
+
+
 class _ProductDouble:
     """Deterministic stand-in model for the product pipeline: records each
     compiled request as a tagged :class:`CompiledRequest` (provenance
@@ -688,31 +694,23 @@ class _ProductDouble:
         # background message whose entries are the restored values in
         # delivery order — entry order = sourcing order, newest last — and
         # the current turn's input on its own message, "input" layer. The
-        # delivery window declares each value's sourcing time (meta) when
-        # the delivered line carries no ``[observed …]`` stamp of its own;
-        # values absent from the window travel unclassified (arrival order
-        # decides — R4 semantics). Declaring recency and locating the input
-        # are the runner's delivery knowledge, so the carrier — not the
-        # pipeline envelope's message shape — owns the partition. The full
-        # delivered text is preserved: background + input + system.
-        window = self.observed_window
-        background: list[Entry] = []
-        input_entries: list[Entry] = []
-        for msg in request.messages:
-            for block in msg.content:
-                text = getattr(block, "text", "") or ""
-                if not text.strip():
-                    continue
-                if text == self.input_text:
-                    entry = self._entry(text, "input")
-                    if self.window_time:
-                        entry.meta["observed_at"] = self.window_time
-                    input_entries.append(entry)
-                    continue
-                entry = self._entry(text, "session")
-                if not entry.meta.get("observed_at") and text in window:
-                    entry.meta["observed_at"] = window[text]
-                background.append(entry)
+        # partition itself — locating the input by equality with the
+        # declared input text, the ``observed_at`` window stamping and the
+        # message grouping — lives in :class:`DeliveryClassifier`; this
+        # method only assembles the compiled request. The full delivered
+        # text is preserved: background + input + system.
+        texts = [
+            (getattr(block, "text", "") or "")
+            for msg in request.messages
+            for block in msg.content
+        ]
+        background, input_entries = _DELIVERY_CLASSIFIER.classify(
+            texts,
+            input_text=self.input_text,
+            window_time=self.window_time,
+            window=self.observed_window,
+            make_entry=self._entry,
+        )
         messages = []
         if background:
             messages.append(Message.model_construct(
