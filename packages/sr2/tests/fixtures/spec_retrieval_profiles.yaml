@@ -1,0 +1,30 @@
+# Verbatim copy of the spec's "Policy configuration" example block
+# (topics/sr2/sr2/specs/autonomous-context-continuity.md), indented one
+# level under the pipeline root key so the document is a whole, loadable
+# PipelineConfig. The block itself is textually unchanged.
+pipeline:
+  continuity:
+    enabled: true
+    owner_id: diego
+    recent_token_budget: 12000
+    retrieval_token_budget: 16000
+    index:
+      type: selected-by-evaluation
+
+    retrieval_profiles:
+      coding:
+        default: deny_cross_agent_personal
+        rules:
+          - id: coding-preferences
+            effect: allow
+            kinds: [preference, constraint]
+            topics: [programming-language, coding-style, tooling]
+            target_agent_tags: [coding]
+          - id: unrelated-personal
+            effect: deny
+            sensitivity: [location, relationship, leisure-preference]
+            target_agent_tags: [coding]
+          - id: current-project
+            effect: boost
+            project_relation: current
+            weight: 1.5

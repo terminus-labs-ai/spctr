@@ -263,6 +263,11 @@ class ContinuityConfig(BaseModel):
   index: ContinuityIndexConfig | None = None
   """Optional retrieval backend and its YAML configuration."""
 
+  retrieval_profiles: dict[str, "RetrievalProfileConfig"] = {}
+  """Named retrieval policy profiles (spec example: ``coding``). Nested on
+  ``continuity`` per the spec's policy configuration, not at pipeline top
+  level; forward-referenced because the profile models are defined below."""
+
   @model_validator(mode="after")
   def _validate_recent_budget_positive(self) -> "ContinuityConfig":
     if self.recent_token_budget <= 0:
@@ -339,6 +344,11 @@ class RetrievalProfileConfig(BaseModel):
     return self
 
 
+# ``ContinuityConfig.retrieval_profiles`` forward-references the profile
+# models defined above it; resolve that annotation now that they exist.
+ContinuityConfig.model_rebuild()
+
+
 class PipelineConfig(BaseModel):
   layers: list[LayerConfig]
   transformers: list[TransformerConfig] = []
@@ -353,4 +363,14 @@ class PipelineConfig(BaseModel):
   final_answer: FinalAnswerConfig = FinalAnswerConfig()
   repeat_guard: RepeatGuardConfig = RepeatGuardConfig()
   continuity: ContinuityConfig | None = None
-  retrieval_profiles: dict[str, RetrievalProfileConfig] = {}
+
+  @model_validator(mode="before")
+  @classmethod
+  def _reject_legacy_retrieval_profiles(cls, values):
+    """Legacy top-level ``retrieval_profiles`` is a load error, not silently
+    ignored: the mapping lives under ``continuity`` (spec policy config)."""
+    if isinstance(values, dict) and "retrieval_profiles" in values:
+      raise _ValidatableConfigError(
+        "retrieval_profiles moved to continuity.retrieval_profiles"
+      )
+    return values
