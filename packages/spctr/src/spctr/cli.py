@@ -493,7 +493,18 @@ def main(argv: list[str] | None = None) -> None:
     # lazy import avoids a cli <-> dispatch import cycle).
     if len(args) >= 1 and args[0] == "dispatch":
         from spctr.dispatch import run_dispatch
-        sys.exit(run_dispatch(args[1:]))
+        code = run_dispatch(args[1:])
+        # run_dispatch has written and closed the envelope by the time it
+        # returns — the caller's contract is satisfied. A leftover non-daemon
+        # thread (e.g. from a timed-out tool call or half-closed MCP transport)
+        # must not block interpreter shutdown afterwards: sys.exit() would join
+        # it and hang the process forever with a valid envelope already on disk
+        # (spc-1112). Same pattern as the fatal-error path below: flush the
+        # streams, flush logging, exit without the thread joins.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        logging.shutdown()
+        os._exit(code)
 
     try:
         asyncio.run(run_async(argv))
