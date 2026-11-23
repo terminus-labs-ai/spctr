@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo
 
 from spctr.schedules.cron import CronParseError, parse_cron
-from spctr.schedules.store import Schedule, ScheduleStore
+from spctr.schedules.store import AGENT_INSTRUCTION_MAX, Schedule, ScheduleStore
 
 if TYPE_CHECKING:
     from spctr.config import ScheduleTextsConfig
@@ -47,9 +47,10 @@ def _default_texts() -> ScheduleTextsConfig:
 
     return ScheduleTextsConfig()
 
-# FR25: max payload sizes.
+# FR25: max command-payload size.  The agent-instruction cap (FR27) lives in
+# the store as ``AGENT_INSTRUCTION_MAX`` (imported above), so this create-time
+# check and the store's load-time validity rule cannot drift apart.
 COMMAND_MAX = 4000
-AGENT_INSTRUCTION_MAX = 4000
 
 # FR10/FR11: the platform a channel name may prefix ("discord#x", "zulip#x").
 _PLATFORM_PREFIXES = ("discord", "zulip")
