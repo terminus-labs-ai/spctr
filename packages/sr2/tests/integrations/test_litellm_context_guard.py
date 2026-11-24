@@ -35,12 +35,20 @@ def _big_text(n: int) -> str:
   return "x" * n
 
 
-def _request(turns: int, size: int = 4000) -> CompletionRequest:
+def _request(turns: int, size: int = 4000, first_size: int | None = None) -> CompletionRequest:
+  """Alternating user/assistant turns of ``size`` chars; ``first_size``, when
+  given, sizes only the first user turn (the protected prompt)."""
   messages = []
   for i in range(turns):
     role = "user" if i % 2 == 0 else "assistant"
-    messages.append(Message(role=role, content=[TextBlock(text=_big_text(size) + f" turn{i}")]))
+    n = first_size if (i == 0 and first_size is not None) else size
+    messages.append(Message(role=role, content=[TextBlock(text=_big_text(n) + f" turn{i}")]))
   return CompletionRequest(messages=messages)
+
+
+def _has_prompt(sent: list[dict], prompt: str) -> bool:
+  """True when a user-role wire message carries the first user prompt."""
+  return any(m.get("role") == "user" and prompt in json.dumps(m.get("content")) for m in sent)
 
 
 def _wire_tokens(messages: list[dict], tools=None) -> int:
@@ -69,11 +77,15 @@ class TestProactiveShed:
     resp = _mock_litellm_response()
     fake, calls = _capture_fake([resp])
     callable_ = LiteLLMCallable(model="openai/test", context_limit=2000)
+    # The protected first user prompt is small, so prompt + current turn fits.
+    request = _request(turns=8, size=4000, first_size=20)
+    prompt = request.messages[0].content[0].text
     with patch("litellm.acompletion", new=fake):
-      await callable_.complete(_request(turns=8, size=4000))
+      await callable_.complete(request)
     sent = calls[0]["messages"]
     assert len(sent) < 8
     assert _wire_tokens(sent, calls[0].get("tools")) <= 2000
+    assert _has_prompt(sent, prompt)
 
   async def test_request_under_limit_is_untouched(self):
     resp = _mock_litellm_response()
@@ -98,11 +110,15 @@ class TestProactiveShed:
     resp = _mock_litellm_response()
     fake, calls = _capture_fake([resp])
     callable_ = LiteLLMCallable(model="openai/test", context_limit=6000, max_tokens=4000)
+    # The protected first user prompt is small, so prompt + current turn fits.
+    request = _request(turns=8, size=4000, first_size=20)
+    prompt = request.messages[0].content[0].text
     with patch("litellm.acompletion", new=fake):
-      await callable_.complete(_request(turns=8, size=4000))
+      await callable_.complete(request)
     sent = calls[0]["messages"]
     assert len(sent) < 8
     assert _wire_tokens(sent, calls[0].get("tools")) + 4000 <= 6000
+    assert _has_prompt(sent, prompt)
 
   async def test_shed_applies_to_streams_too(self):
     chunk = _make_stream_chunk(content="ok")
