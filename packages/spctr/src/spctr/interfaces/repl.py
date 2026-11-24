@@ -31,6 +31,7 @@ import logging
 import os
 import re
 import signal
+import textwrap
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Iterable
@@ -44,6 +45,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.segment import Segment
 from rich.text import Text
 
 from sr2.models import TextBlock
@@ -130,9 +132,117 @@ def render_markdown(text: str, console: Console | None = None) -> Text | Markdow
     native terminal, which also keeps copy/paste clean of ANSI artifacts.
     """
     try:
-        return Markdown(text)
+        return _UnwrappedMarkdown(text)
     except Exception:
         return Text(text)
+
+
+_INLINE_STYLES = {
+    "strong_open": "bold",
+    "em_open": "italic",
+    "s_open": "strike",
+    "link_open": "underline",
+}
+
+
+class _UnwrappedMarkdown(Markdown):
+    """Markdown whose prose blocks print as one physical line each.
+
+    Paragraphs, list items, blockquotes and headings are emitted unwrapped,
+    unpadded and uncropped, so the terminal does the wrapping and a copied
+    line is the source line.  Links print as plain text (the URL, or
+    ``label (url)`` when the label differs) with no OSC 8 escape.  Code
+    fences, tables and other blocks keep Rich's own rendering.
+    """
+
+    def __rich_console__(self, console, options):  # type: ignore[override]
+        tokens = self.parsed
+        source = self.markup.split("\n")
+        lists: list[list] = []  # [ordered, next_number, item_start_pending]
+        quote_depth = 0
+        first = True
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            kind = tok.type
+            if kind in ("bullet_list_open", "ordered_list_open"):
+                start = int(tok.attrs.get("start", 1) or 1)
+                lists.append([kind == "ordered_list_open", start, False])
+            elif kind in ("bullet_list_close", "ordered_list_close"):
+                lists.pop()
+            elif kind == "list_item_open":
+                lists[-1][2] = True
+            elif kind == "blockquote_open":
+                quote_depth += 1
+            elif kind == "blockquote_close":
+                quote_depth -= 1
+            elif kind in ("paragraph_open", "heading_open"):
+                prefix = "▌ " * quote_depth
+                if lists:
+                    prefix += "  " * (len(lists) - 1)
+                    current = lists[-1]
+                    if current[2]:
+                        prefix += f"{current[1]}. " if current[0] else "• "
+                        current[1] += 1
+                        current[2] = False
+                    else:
+                        prefix += "  "
+                line = Text(prefix, end="")
+                base = "bold" if kind == "heading_open" else ""
+                line.append_text(self._inline(tokens[i + 1], base))
+                if not first and not lists:
+                    yield Segment.line()
+                first = False
+                yield from line.render(console)
+                yield Segment.line()
+                i += 3
+                continue
+            elif tok.map is not None and kind in (
+                "fence",
+                "code_block",
+                "table_open",
+                "hr",
+                "html_block",
+            ):
+                start, end = tok.map
+                block = textwrap.dedent("\n".join(source[start:end]))
+                if not first:
+                    yield Segment.line()
+                first = False
+                yield Markdown(block, code_theme=self.code_theme, hyperlinks=False)
+                if kind == "table_open":
+                    while tokens[i].type != "table_close":
+                        i += 1
+            i += 1
+
+    @staticmethod
+    def _inline(token, base: str) -> Text:
+        """Flatten one inline token to a single-line Text with plain links."""
+        text = Text(style=base)
+        styles: list[str] = []
+        links: list[tuple[str, int]] = []
+        for child in token.children or []:
+            kind = child.type
+            style = " ".join(styles)
+            if kind in ("text", "html_inline"):
+                text.append(child.content, style=style)
+            elif kind in ("softbreak", "hardbreak"):
+                text.append(" ", style=style)
+            elif kind == "code_inline":
+                text.append(child.content, style=f"{style} bold".strip())
+            elif kind == "image":
+                text.append(str(child.attrs.get("src", "")), style=style)
+            elif kind in _INLINE_STYLES:
+                styles.append(_INLINE_STYLES[kind])
+                if kind == "link_open":
+                    links.append((str(child.attrs.get("href", "")), len(text.plain)))
+            elif kind.endswith("_close") and styles:
+                styles.pop()
+                if kind == "link_close" and links:
+                    href, start = links.pop()
+                    if href and text.plain[start:] != href:
+                        text.append(f" ({href})", style=" ".join(styles))
+        return text
 
 
 def _rows(text: str, width: int) -> int:
@@ -594,7 +704,7 @@ class REPLInterface:
 
     def __init__(self, console: Console | None = None) -> None:
         self._running = False
-        self.console: Console = console or Console()
+        self.console: Console = console or Console(soft_wrap=True)
         self._session: PromptSession | None = None
         self._stop_event: asyncio.Event | None = None
         # Snapshot fetched by the last /resume listing, so /resume <idx>
@@ -825,7 +935,9 @@ class REPLInterface:
             live.update(_frame())
             if body.strip():
                 no_color = bool(int(os.environ.get("NO_COLOR", "0")))
-                self.console.print(render_markdown(body), highlight=not no_color)
+                self.console.print(
+                    render_markdown(body), highlight=not no_color, soft_wrap=True
+                )
                 committed_any = True
 
         # transient=True: the scratch frame erases itself on exit.  Combined
