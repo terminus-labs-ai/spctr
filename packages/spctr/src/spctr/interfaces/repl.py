@@ -150,8 +150,8 @@ class _UnwrappedMarkdown(Markdown):
 
     Paragraphs, list items, blockquotes and headings are emitted unwrapped,
     unpadded and uncropped, so the terminal does the wrapping and a copied
-    line is the source line.  Links print as plain text (the URL, or
-    ``label (url)`` when the label differs) with no OSC 8 escape.  Code
+    line is the source line.  Every link prints as its bare URL (any label
+    is dropped) with no OSC 8 escape.  Code
     fences, tables and other blocks keep Rich's own rendering.
     """
 
@@ -241,7 +241,8 @@ class _UnwrappedMarkdown(Markdown):
                 if kind == "link_close" and links:
                     href, start = links.pop()
                     if href and text.plain[start:] != href:
-                        text.append(f" ({href})", style=" ".join(styles))
+                        text.right_crop(len(text.plain) - start)
+                        text.append(href, style=" ".join(styles))
         return text
 
 

@@ -64,6 +64,13 @@ def test_ac2_copydraft_line_is_verbatim_without_osc8() -> None:
     assert _lines(raw) == ["Copy: copydraft://my-slug"]
 
 
+def test_ac2_labelled_link_prints_bare_url_only() -> None:
+    raw = _render("See [docs](https://example.com/x) now")
+    assert "\x1b]8;" not in raw
+    assert _lines(raw) == ["See https://example.com/x now"]
+    assert "docs" not in ANSI.sub("", raw)
+
+
 def test_ac3_code_fence_keeps_its_lines() -> None:
     raw = _render("```\nalpha = 1\nbeta = 2\ngamma = 3\n```")
     lines = [ln.strip() for ln in _lines(raw) if ln.strip()]
