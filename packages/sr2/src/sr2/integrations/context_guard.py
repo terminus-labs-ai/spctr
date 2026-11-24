@@ -75,10 +75,19 @@ def shed_oldest_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
 
   * A leading ``system`` message is never dropped.
   * The last message (the current turn) is never dropped.
+  * The run's user prompt, the earliest ``user`` message that is not a pure
+    tool-result message, is never dropped; when it heads the conversation the
+    oldest droppable turn is the one after it. A pure tool-result message is a
+    ``user`` message whose content is a list of ``tool_result`` blocks only;
+    it stays droppable.
   * An assistant message carrying ``tool_calls`` is dropped together with the
     ``tool`` messages that answer it; a ``tool`` message that would be
     orphaned at the head is dropped too. Upstream rejects either half of a
     tool-call/result pair, so shedding only ever removes whole pairs.
+
+  Returns None when the only droppable group would swallow the current turn,
+  so the caller fails with the over-limit error instead of sending a request
+  without the user prompt.
   """
   if not messages:
     return None
@@ -86,8 +95,18 @@ def shed_oldest_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
   if len(messages) - start <= 1:
     return None
 
-  end = start + 1
-  head = messages[start]
+  prompt = next(
+    (
+      i for i in range(start, len(messages))
+      if messages[i].get("role") == "user"
+      and not _is_tool_result_only(messages[i].get("content"))
+    ),
+    None,
+  )
+  head_index = start + 1 if prompt == start else start
+
+  end = head_index + 1
+  head = messages[head_index]
   if head.get("role") == "assistant" and head.get("tool_calls"):
     while end < len(messages) and messages[end].get("role") == "tool":
       end += 1
@@ -95,10 +114,19 @@ def shed_oldest_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
     # The group swallows the current turn; nothing droppable remains.
     return None
 
-  kept = messages[:start] + messages[end:]
-  while len(kept) - start > 1 and kept[start].get("role") == "tool":
-    kept = kept[:start] + kept[start + 1:]
+  kept = messages[:head_index] + messages[end:]
+  while len(kept) - head_index > 1 and kept[head_index].get("role") == "tool":
+    kept = kept[:head_index] + kept[head_index + 1:]
   return kept
+
+
+def _is_tool_result_only(content: Any) -> bool:
+  """True when *content* is a non-empty list made up only of tool_result blocks."""
+  return (
+    isinstance(content, list)
+    and bool(content)
+    and all(isinstance(b, Mapping) and b.get("type") == "tool_result" for b in content)
+  )
 
 
 def is_context_overflow_error(exc: BaseException | str) -> bool:

@@ -35,12 +35,20 @@ def _big_text(n: int) -> str:
   return "x" * n
 
 
-def _request(turns: int, size: int = 4000) -> CompletionRequest:
+def _request(turns: int, size: int = 4000, first_size: int | None = None) -> CompletionRequest:
+  """Alternating user/assistant turns of ``size`` chars; ``first_size``, when
+  given, sizes only the first user turn (the protected prompt)."""
   messages = []
   for i in range(turns):
     role = "user" if i % 2 == 0 else "assistant"
-    messages.append(Message(role=role, content=[TextBlock(text=_big_text(size) + f" turn{i}")]))
+    n = first_size if (i == 0 and first_size is not None) else size
+    messages.append(Message(role=role, content=[TextBlock(text=_big_text(n) + f" turn{i}")]))
   return CompletionRequest(messages=messages)
+
+
+def _has_prompt(sent: list[dict], prompt: str) -> bool:
+  """True when a user-role wire message carries the first user prompt."""
+  return any(m.get("role") == "user" and prompt in json.dumps(m.get("content")) for m in sent)
 
 
 def _wire_tokens(messages: list[dict], tools=None) -> int:
@@ -69,11 +77,15 @@ class TestProactiveShed:
     resp = _mock_litellm_response()
     fake, calls = _capture_fake([resp])
     callable_ = LiteLLMCallable(model="openai/test", context_limit=2000)
+    # The protected first user prompt is small, so prompt + current turn fits.
+    request = _request(turns=8, size=4000, first_size=20)
+    prompt = request.messages[0].content[0].text
     with patch("litellm.acompletion", new=fake):
-      await callable_.complete(_request(turns=8, size=4000))
+      await callable_.complete(request)
     sent = calls[0]["messages"]
     assert len(sent) < 8
     assert _wire_tokens(sent, calls[0].get("tools")) <= 2000
+    assert _has_prompt(sent, prompt)
 
   async def test_request_under_limit_is_untouched(self):
     resp = _mock_litellm_response()
@@ -98,11 +110,15 @@ class TestProactiveShed:
     resp = _mock_litellm_response()
     fake, calls = _capture_fake([resp])
     callable_ = LiteLLMCallable(model="openai/test", context_limit=6000, max_tokens=4000)
+    # The protected first user prompt is small, so prompt + current turn fits.
+    request = _request(turns=8, size=4000, first_size=20)
+    prompt = request.messages[0].content[0].text
     with patch("litellm.acompletion", new=fake):
-      await callable_.complete(_request(turns=8, size=4000))
+      await callable_.complete(request)
     sent = calls[0]["messages"]
     assert len(sent) < 8
     assert _wire_tokens(sent, calls[0].get("tools")) + 4000 <= 6000
+    assert _has_prompt(sent, prompt)
 
   async def test_shed_applies_to_streams_too(self):
     chunk = _make_stream_chunk(content="ok")
@@ -158,3 +174,45 @@ class TestReactiveShed:
         ))
     # one initial attempt, no pointless retries on an undroppable request
     assert len(calls) == 1
+
+
+class TestProtectedPromptOnOverflow:
+  """spc-1046: an over-limit single-shot request whose only droppable turn
+  would take the user prompt fails with the overflow error; it never sends a
+  request stripped of the user query."""
+
+  async def test_overflow_propagates_and_prompt_is_never_dropped(self):
+    from sr2.integrations.litellm import MAX_CONTEXT_OVERFLOW_RETRIES
+    from sr2.models import ToolResultBlock, ToolUseBlock
+
+    overflow = RuntimeError("no node has context large enough for model 'x'")
+    # The endpoint rejects every attempt as too long; the guard may retry at
+    # most MAX_CONTEXT_OVERFLOW_RETRIES times, so the script covers exactly
+    # the allowed attempts and a call past it fails the test loudly.
+    allowed = MAX_CONTEXT_OVERFLOW_RETRIES + 1
+    calls: list[dict] = []
+
+    async def fake(**kwargs):
+      calls.append(kwargs)
+      if len(calls) > allowed:
+        raise AssertionError("acompletion called past the scripted overflow replies")
+      raise overflow
+
+    prompt_text = "the run's user prompt"
+    request = CompletionRequest(
+      system=[TextBlock(text="sys")],
+      messages=[
+        Message(role="user", content=[TextBlock(text=prompt_text)]),
+        Message(role="assistant", content=[ToolUseBlock(id="tu_1", name="t", input={})]),
+        Message(role="user", content=[ToolResultBlock(tool_use_id="tu_1", content="ok")]),
+      ],
+    )
+    callable_ = LiteLLMCallable(model="openai/test")
+    with patch("litellm.acompletion", new=fake):
+      with pytest.raises(RuntimeError, match="no node has context") as excinfo:
+        await callable_.complete(request)
+
+    assert "No user query" not in str(excinfo.value)
+    assert calls, "the request must reach the endpoint at least once"
+    for sent in calls:
+      assert {"role": "user", "content": prompt_text} in sent["messages"]
