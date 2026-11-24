@@ -177,6 +177,22 @@ def is_stop_command(content: str) -> bool:
     return content.strip() == "!stop"
 
 
+def is_model_command(content: str) -> bool:
+    """True when *content* is the ``!model`` command (case-insensitive).
+
+    Matches a bare ``!model`` (a listing) or ``!model <profile>``; a word
+    merely starting with the prefix (``!modeling``) is not a command.
+    """
+    stripped = content.strip().lower()
+    return stripped == "!model" or stripped.startswith("!model ")
+
+
+def parse_model_command(content: str) -> str:
+    """The profile name a ``!model`` command names ("" for a bare listing)."""
+    stripped = content.strip()
+    return stripped[len("!model"):].strip().lower()
+
+
 def _format_handoff_duration(duration_s: float) -> str:
     minutes, seconds = divmod(max(0, int(round(duration_s))), 60)
     return f"{minutes}m {seconds}s"
@@ -448,6 +464,11 @@ class ZulipInterface:
         self._topic_opener_inflight: dict[
             tuple[int, str], asyncio.Task[dict[str, Any] | None]
         ] = {}
+        # In-process ``!model`` selection (spctr-2): the profile name a
+        # !model command last applied, re-asserted after every whole-config
+        # reload so the on-disk active_model never clobbers it. None until
+        # a switch happens; cleared on restart.
+        self._active_model_override: str | None = None
         # Serializes delivery-loop restarts now that turns overlap.
         self._reminders_lock = asyncio.Lock()
         # Reminders (spc-139, FR6): delivery loop + the per-turn origin.
@@ -934,6 +955,43 @@ class ZulipInterface:
         await self._send_reply(channel_id, topic, text)
         return text
 
+    async def _handle_model_command(
+        self, channel_id: int, topic: str, content: str
+    ) -> None:
+        """The ``!model`` command (spctr-2): switch the active model profile.
+
+        The REPL ``/model`` pattern applied at agent level: the named
+        profile is looked up in ``config.models`` and applied through
+        ``Agent.apply_config`` with ``active_model`` retargeted — the
+        Runtime re-seats the LLM for the next turn of every Session this
+        agent runs. The selection is also kept as an in-process override
+        (``_active_model_override``) and re-applied after every
+        whole-config reload, so the next batch's ``apply_config`` of the
+        on-disk config (which carries the file's own ``active_model``)
+        never clobbers the switch. Restart clears the override; no
+        pointer file is written from this interface.
+        """
+        name = parse_model_command(content)
+        models = getattr(self._agent.config, "models", None) or {}
+        if not models:
+            await self._send_reply(channel_id, topic, "No models are configured.")
+            return
+        names = ", ".join(models)  # declaration order, as configured
+        if not name:
+            await self._send_reply(channel_id, topic, f"Available models: {names}")
+            return
+        if name not in models:
+            await self._send_reply(
+                channel_id, topic, f"Unknown model '{name}'. Available: {names}"
+            )
+            return
+        current = self._agent.config
+        self._agent.apply_config(
+            current.model_copy(update={"active_model": name})
+        )
+        self._active_model_override = name
+        await self._send_reply(channel_id, topic, f"Switched to model '{name}'.")
+
     async def _owned_stop(
         self, channel_id: int, topic: str, content: Any
     ) -> str | None:
@@ -996,7 +1054,16 @@ class ZulipInterface:
         )
         self._config = pinned
         if self._agent is not None:
-            self._agent.apply_config(self._view.source.current)
+            loaded = self._view.source.current
+            # A !model selection (spctr-2) rides above the on-disk
+            # active_model: the freshly loaded config is retargeted before
+            # it is applied, so a switch survives every reload until
+            # restart (or a later !model) changes it.
+            if self._active_model_override is not None:
+                loaded = loaded.model_copy(
+                    update={"active_model": self._active_model_override}
+                )
+            self._agent.apply_config(loaded)
         return pinned
 
     def _is_allowed_message(
@@ -1180,6 +1247,15 @@ class ZulipInterface:
             return
         if is_stop_command(str(message.get("content", ""))):
             await self._stop_topic(channel_id, topic)
+            return
+        # The !model switch (spctr-2) intercepts before any Session work:
+        # no probe, no area resolution, no turn — it only retargets the
+        # agent's active model and replies. It rides the topic chain
+        # (_dispatch), so a switch typed while a turn runs applies after
+        # that turn finishes.
+        content = str(message.get("content", ""))
+        if is_model_command(content):
+            await self._handle_model_command(channel_id, topic, content)
             return
         # The area comes from this message's own read: the channel_areas
         # override, else the channel name (display_recipient) derived as
