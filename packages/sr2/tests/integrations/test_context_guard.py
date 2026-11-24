@@ -81,13 +81,19 @@ class TestRequestedOutputTokens:
 
 class TestShedOldest:
   def test_keeps_system_and_drops_oldest_non_system(self):
+    # spc-1046: the run's user prompt is protected, so the oldest droppable
+    # non-system turn is the first one after it.
     messages = [
       _msg("system", "sys"),
-      _msg("user", "first"),
+      _msg("user", "prompt"),
       _msg("assistant", "reply"),
+      _msg("user", "follow-up"),
+      _msg("assistant", "reply 2"),
       _msg("user", "now"),
     ]
-    assert shed_oldest_messages(messages) == [messages[0], messages[2], messages[3]]
+    assert shed_oldest_messages(messages) == [
+      messages[0], messages[1], messages[3], messages[4], messages[5],
+    ]
 
   def test_drops_tool_call_group_together(self):
     messages = [
@@ -117,11 +123,106 @@ class TestShedOldest:
     assert shed_oldest_messages(messages) is None
 
   def test_no_system_message(self):
-    messages = [_msg("user", "first"), _msg("user", "now")]
-    assert shed_oldest_messages(messages) == [messages[1]]
+    # spc-1046: without a system message the protected prompt is first; the
+    # oldest turn after it is dropped.
+    messages = [_msg("user", "prompt"), _msg("user", "first"), _msg("user", "now")]
+    assert shed_oldest_messages(messages) == [messages[0], messages[2]]
 
   def test_empty_returns_none(self):
     assert shed_oldest_messages([]) is None
+
+
+# ---------------------------------------------------------------------------
+# spc-1046 — the run's user prompt is never shed
+# ---------------------------------------------------------------------------
+
+
+def _tool_result_only_user(tool_id: str = "tu_0") -> dict:
+  """Anthropic-style user message carrying only tool_result blocks."""
+  return {
+    "role": "user",
+    "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": "ok"}],
+  }
+
+
+def _shed_until_none(messages: list[dict], limit: int = 20) -> list[list[dict]]:
+  """Shed repeatedly; return every non-None intermediate list.
+
+  Fails the test if shedding has not ended in None within *limit* steps.
+  """
+  steps: list[list[dict]] = []
+  current = messages
+  for _ in range(limit):
+    shed = shed_oldest_messages(current)
+    if shed is None:
+      return steps
+    steps.append(shed)
+    current = shed
+  raise AssertionError(f"shedding did not end in None within {limit} steps")
+
+
+class TestProtectedUserPrompt:
+  def test_sole_user_message_is_never_shed(self):
+    # R1
+    assert shed_oldest_messages([_msg("user", "prompt")]) is None
+
+  def test_system_and_sole_user_returns_none(self):
+    # R2
+    assert shed_oldest_messages([_msg("system", "sys"), _msg("user", "prompt")]) is None
+
+  def test_only_sheddable_group_holds_the_prompt_returns_none(self):
+    # R3
+    messages = [_msg("system", "sys"), _msg("user", "prompt"), _msg("assistant", "reply")]
+    assert shed_oldest_messages(messages) is None
+
+  def test_older_tool_group_shed_before_the_prompt(self):
+    # R4
+    messages = [
+      _msg("system", "sys"),
+      _msg("user", "prompt"),
+      _assistant_tool_call("tu_1"),
+      _tool_result("tu_1"),
+      _assistant_tool_call("tu_2"),
+      _tool_result("tu_2"),
+      _msg("user", "now"),
+    ]
+    assert shed_oldest_messages(messages) == [
+      messages[0], messages[1], messages[4], messages[5], messages[6],
+    ]
+
+  def test_repeated_shedding_never_touches_the_prompt(self):
+    # R5
+    prompt = _msg("user", "prompt")
+    messages = [
+      _msg("system", "sys"),
+      prompt,
+      _assistant_tool_call("tu_1"),
+      _tool_result("tu_1"),
+      _assistant_tool_call("tu_2"),
+      _tool_result("tu_2"),
+      _msg("user", "now"),
+    ]
+    steps = _shed_until_none(messages)
+    assert steps, "the older tool groups must be sheddable"
+    for step in steps:
+      assert prompt in step
+
+  def test_tool_result_only_user_message_is_sheddable_prompt_kept(self):
+    # R6
+    tool_only = _tool_result_only_user("tu_0")
+    prompt = _msg("user", "prompt")
+    messages = [
+      _msg("system", "sys"),
+      tool_only,
+      prompt,
+      _msg("assistant", "reply"),
+      _msg("user", "now"),
+    ]
+    steps = _shed_until_none(messages)
+    assert steps, "the tool-result-only user message must be sheddable"
+    assert tool_only not in steps[-1]
+    for step in steps:
+      assert prompt in step
 
 
 # ---------------------------------------------------------------------------

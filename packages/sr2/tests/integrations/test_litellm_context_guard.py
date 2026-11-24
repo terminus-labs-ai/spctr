@@ -158,3 +158,45 @@ class TestReactiveShed:
         ))
     # one initial attempt, no pointless retries on an undroppable request
     assert len(calls) == 1
+
+
+class TestProtectedPromptOnOverflow:
+  """spc-1046: an over-limit single-shot request whose only droppable turn
+  would take the user prompt fails with the overflow error; it never sends a
+  request stripped of the user query."""
+
+  async def test_overflow_propagates_and_prompt_is_never_dropped(self):
+    from sr2.integrations.litellm import MAX_CONTEXT_OVERFLOW_RETRIES
+    from sr2.models import ToolResultBlock, ToolUseBlock
+
+    overflow = RuntimeError("no node has context large enough for model 'x'")
+    # The endpoint rejects every attempt as too long; the guard may retry at
+    # most MAX_CONTEXT_OVERFLOW_RETRIES times, so the script covers exactly
+    # the allowed attempts and a call past it fails the test loudly.
+    allowed = MAX_CONTEXT_OVERFLOW_RETRIES + 1
+    calls: list[dict] = []
+
+    async def fake(**kwargs):
+      calls.append(kwargs)
+      if len(calls) > allowed:
+        raise AssertionError("acompletion called past the scripted overflow replies")
+      raise overflow
+
+    prompt_text = "the run's user prompt"
+    request = CompletionRequest(
+      system=[TextBlock(text="sys")],
+      messages=[
+        Message(role="user", content=[TextBlock(text=prompt_text)]),
+        Message(role="assistant", content=[ToolUseBlock(id="tu_1", name="t", input={})]),
+        Message(role="user", content=[ToolResultBlock(tool_use_id="tu_1", content="ok")]),
+      ],
+    )
+    callable_ = LiteLLMCallable(model="openai/test")
+    with patch("litellm.acompletion", new=fake):
+      with pytest.raises(RuntimeError, match="no node has context") as excinfo:
+        await callable_.complete(request)
+
+    assert "No user query" not in str(excinfo.value)
+    assert calls, "the request must reach the endpoint at least once"
+    for sent in calls:
+      assert {"role": "user", "content": prompt_text} in sent["messages"]
