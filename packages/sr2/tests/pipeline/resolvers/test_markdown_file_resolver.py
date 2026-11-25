@@ -1075,3 +1075,97 @@ class TestMarkdownFileResolverDocstring:
         assert "${VAR}" not in doc, (
             "docstring still claims ${VAR} interpolation of `path`, which is false"
         )
+
+
+# ---------------------------------------------------------------------------
+# expand_imports — Claude Code style whole-line `@path` imports
+# ---------------------------------------------------------------------------
+
+
+def make_import_config(path, **extra) -> ResolverConfig:
+    cfg: dict = {"path": str(path), "expand_imports": True}
+    cfg.update(extra)
+    return ResolverConfig(type="markdown_file", config=cfg)
+
+
+async def resolve_text(resolver: MarkdownFileResolver) -> str:
+    return combined_text(await resolver.resolve([make_turn_start_event()]))
+
+
+class TestMarkdownFileResolverImports:
+    @pytest.mark.asyncio
+    async def test_off_by_default_keeps_line_verbatim(self, tmp_path):
+        (tmp_path / "host.md").write_text("HOST FACTS")
+        root = tmp_path / "root.md"
+        root.write_text("top\n@host.md\n")
+        resolver = MarkdownFileResolver(make_config(str(root)))
+        assert await resolve_text(resolver) == "top\n@host.md\n"
+
+    @pytest.mark.asyncio
+    async def test_relative_import_resolves_against_importing_file(self, tmp_path):
+        (tmp_path / "host.md").write_text("HOST FACTS\n")
+        root = tmp_path / "root.md"
+        root.write_text("top\n@host.md\nbottom\n")
+        resolver = MarkdownFileResolver(make_import_config(root))
+        assert await resolve_text(resolver) == "top\nHOST FACTS\nbottom\n"
+
+    @pytest.mark.asyncio
+    async def test_tilde_import_expands_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "HOST.md").write_text("I AM TEMPEST")
+        monkeypatch.setenv("HOME", str(home))
+        root = tmp_path / "root.md"
+        root.write_text("@~/HOST.md\n")
+        resolver = MarkdownFileResolver(make_import_config(root))
+        assert "I AM TEMPEST" in await resolve_text(resolver)
+        assert "@~/HOST.md" not in await resolve_text(resolver)
+
+    @pytest.mark.asyncio
+    async def test_missing_import_is_dropped_not_fatal(self, tmp_path):
+        root = tmp_path / "root.md"
+        root.write_text("top\n@~/does-not-exist-xyz.md\nbottom\n")
+        resolver = MarkdownFileResolver(make_import_config(root))
+        assert await resolve_text(resolver) == "top\nbottom\n"
+
+    @pytest.mark.asyncio
+    async def test_inline_and_fenced_at_mentions_are_untouched(self, tmp_path):
+        (tmp_path / "host.md").write_text("HOST FACTS")
+        root = tmp_path / "root.md"
+        body = "mail me @host.md please\n```\n@host.md\n```\n`@host.md`\n"
+        root.write_text(body)
+        resolver = MarkdownFileResolver(make_import_config(root))
+        assert await resolve_text(resolver) == body
+
+    @pytest.mark.asyncio
+    async def test_nested_imports_and_cycles(self, tmp_path):
+        (tmp_path / "a.md").write_text("A\n@b.md\n")
+        (tmp_path / "b.md").write_text("B\n@a.md\n")
+        root = tmp_path / "root.md"
+        root.write_text("@a.md\n")
+        resolver = MarkdownFileResolver(make_import_config(root))
+        assert await resolve_text(resolver) == "A\nB\n"
+
+    @pytest.mark.asyncio
+    async def test_depth_limit_is_configurable(self, tmp_path):
+        (tmp_path / "a.md").write_text("A\n@b.md\n")
+        (tmp_path / "b.md").write_text("B\n")
+        root = tmp_path / "root.md"
+        root.write_text("@a.md\n")
+        resolver = MarkdownFileResolver(make_import_config(root, import_max_depth=1))
+        assert await resolve_text(resolver) == "A\n"
+
+    def test_budget_counts_imported_text(self, tmp_path):
+        (tmp_path / "big.md").write_text("x" * 400)
+        root = tmp_path / "root.md"
+        root.write_text("@big.md\n")
+        with pytest.raises(MarkdownTokenBudgetError):
+            MarkdownFileResolver(make_import_config(root, max_tokens=10))
+
+    @pytest.mark.asyncio
+    async def test_templated_mode_expands_imports(self, tmp_path):
+        (tmp_path / "host.md").write_text("HOST FACTS")
+        (tmp_path / "alpha.md").write_text("@host.md\n")
+        cfg = make_import_config(tmp_path / "{area}.md")
+        resolver = MarkdownFileResolver(cfg, run_context_provider=lambda: {"area": "alpha"})
+        assert await resolve_text(resolver) == "HOST FACTS\n"

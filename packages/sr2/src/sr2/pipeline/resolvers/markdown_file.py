@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import glob as _glob
 import logging
+import os
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -23,6 +25,10 @@ logger = logging.getLogger(__name__)
 _DEFAULT_SUBSCRIPTION = EventSubscription(event_name="turn_start", phase=EventPhase.STARTING)
 
 _AREA_PLACEHOLDER = "{area}"
+
+_IMPORT_LINE = re.compile(r"^@(\S+)$")
+_FENCE_PREFIXES = ("```", "~~~")
+_DEFAULT_IMPORT_MAX_DEPTH = 5
 
 
 class MarkdownTokenBudgetError(Exception):
@@ -54,6 +60,17 @@ class MarkdownFileResolver:
         For a static path this is enforced at ``__init__`` (fails fast). For
         a templated path the files are unknown until resolve time, so it is
         enforced on every ``resolve()`` call instead.
+    expand_imports : bool
+        Optional, default ``False``. When true, a line consisting only of
+        ``@<path>`` is replaced by that file's contents, as Claude Code does
+        for ``CLAUDE.md``. ``~`` expands to the home directory and a relative
+        path resolves against the importing file's directory. Inline
+        ``@mentions`` and lines inside fenced code blocks are left as they
+        are. Imports nest; a missing, unreadable, cyclic or too-deep import
+        drops its line and logs, never raises. ``max_tokens`` counts the
+        expanded text.
+    import_max_depth : int
+        Optional, default 5. Maximum nesting of ``expand_imports``.
     declaring_dir : str | None
         Directory of the declaring config file. Used to resolve relative glob
         patterns that were not expanded by the config loader. Ignored when
@@ -106,6 +123,10 @@ class MarkdownFileResolver:
         self._run_context_provider = run_context_provider
         self._templated: bool = _AREA_PLACEHOLDER in raw_path
         self._file_cache: dict[Path, tuple[float, str]] = {}
+        self._expand_imports: bool = bool(config.config.get("expand_imports", False))
+        self._import_max_depth: int = int(
+            config.config.get("import_max_depth", _DEFAULT_IMPORT_MAX_DEPTH)
+        )
 
         # on_missing is a valid, meaningful flag for any path (templated or
         # static). None is the default and behaves as "error": a pattern that
@@ -145,7 +166,8 @@ class MarkdownFileResolver:
 
         # Read all file contents now (at init) so token counting can happen.
         self._contents: list[tuple[Path, str]] = [
-            (p, p.read_text(encoding="utf-8")) for p in self._files
+            (p, self._with_imports(p, p.read_text(encoding="utf-8")))
+            for p in self._files
         ]
 
         # Enforce token budget if set.
@@ -230,7 +252,7 @@ class MarkdownFileResolver:
         if not files:
             return self._handle_missing(resolved_path)
 
-        contents = [(p, self._read_cached(p)) for p in files]
+        contents = [(p, self._with_imports(p, self._read_cached(p))) for p in files]
         if self._max_tokens is not None:
             self._check_budget(contents, self._max_tokens)
         return "\n".join(content for _, content in contents)
@@ -244,6 +266,54 @@ class MarkdownFileResolver:
         text = path.read_text(encoding="utf-8")
         self._file_cache[path] = (mtime, text)
         return text
+
+    # ------------------------------------------------------------------
+    # Internal helpers — @path imports
+    # ------------------------------------------------------------------
+
+    def _with_imports(self, path: Path, text: str) -> str:
+        if not self._expand_imports:
+            return text
+        return self._expand(text, path.parent, depth=0, seen=frozenset({path}))
+
+    def _expand(self, text: str, base_dir: Path, depth: int, seen: frozenset[Path]) -> str:
+        out: list[str] = []
+        in_fence = False
+        for line in text.splitlines(keepends=True):
+            stripped = line.strip()
+            if stripped.startswith(_FENCE_PREFIXES):
+                in_fence = not in_fence
+            match = None if in_fence else _IMPORT_LINE.match(stripped)
+            if match is None:
+                out.append(line)
+                continue
+            imported = self._load_import(match.group(1), base_dir, depth + 1, seen)
+            if imported is None:
+                continue
+            if line.endswith("\n") and not imported.endswith("\n"):
+                imported += "\n"
+            out.append(imported)
+        return "".join(out)
+
+    def _load_import(
+        self, raw: str, base_dir: Path, depth: int, seen: frozenset[Path]
+    ) -> str | None:
+        target = Path(os.path.expanduser(raw))
+        if not target.is_absolute():
+            target = base_dir / target
+        target = target.resolve()
+        if depth > self._import_max_depth:
+            logger.warning("MarkdownFileResolver: import %r exceeds max depth; dropped", raw)
+            return None
+        if target in seen:
+            logger.warning("MarkdownFileResolver: import cycle at %s; dropped", target)
+            return None
+        try:
+            text = self._read_cached(target)
+        except OSError:
+            logger.debug("MarkdownFileResolver: import %r not readable; dropped", raw)
+            return None
+        return self._expand(text, target.parent, depth, seen | {target})
 
     # ------------------------------------------------------------------
     # Internal helpers — shared
