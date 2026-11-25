@@ -80,15 +80,18 @@ class SessionResolver:
     async def resolve(self, events: list[Event]) -> ResolvedContent:
         self.execution_count += 1
 
-        # Determine if this firing is purely for tool-loop event capture.
-        # Tool-loop fires return only the messages they add, so the layer
-        # holds the running turn without re-emitting the history snapshot
-        # already placed there on the initial fire.
+        # Only the turn-start fire (user_input) emits the history snapshot.
+        # Every later fire in the turn (tool loop, end of turn) returns only
+        # the messages it adds: the layer already holds the snapshot, and
+        # re-emitting it would double the layer's content.
         event_names = {e.name for e in events}
         is_tool_loop_only = bool(events) and event_names.issubset(_TOOL_LOOP_ORDER)
+        emits_delta_only = bool(events) and event_names.issubset(
+            {"assistant_response", *_TOOL_LOOP_ORDER}
+        )
 
         # Snapshot prior history for output (copy so mutations don't corrupt state).
-        output: list[Message] = [] if is_tool_loop_only else list(self._history)
+        output: list[Message] = [] if emits_delta_only else list(self._history)
         history_len_before = len(self._history)
         if is_tool_loop_only:
             # The assistant message precedes its tool results on the wire,
@@ -130,7 +133,7 @@ class SessionResolver:
                         Message(role="user", content=list(result_blocks))
                     )
 
-        if is_tool_loop_only:
+        if emits_delta_only:
             output = list(self._history[history_len_before:])
 
         return ResolvedContent(
