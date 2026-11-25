@@ -295,3 +295,29 @@ class TestTiktokenTokenCounter:
         short = counter.count([TextBlock(text="Hi")])
         long = counter.count([TextBlock(text="Hi, how are you doing today? I hope you're well.")])
         assert long > short
+
+
+# ---------------------------------------------------------------------------
+# spc-1119 AC6: CharacterTokenCounter counts Message items (FR 8)
+# ---------------------------------------------------------------------------
+
+
+class TestCharacterCounterMessages:
+    def test_ac6_r1_message_with_text_block(self):
+        """AC6-r1: a user Message holding 400 chars of text counts 100."""
+        from sr2.models import Message
+
+        msg = Message(role="user", content=[TextBlock(text="x" * 400)])
+        assert CharacterTokenCounter().count([msg]) == 100
+
+    def test_ac6_r2_mixed_blocks_and_message(self):
+        """AC6-r2: mixed list counts each block by today's per-block rules."""
+        from sr2.models import Message
+
+        use = ToolUseBlock(id="t1", name="read_file", input={"path": "a.py"})
+        res = ToolResultBlock(tool_use_id="t1", content="y" * 120)
+        msg = Message(role="assistant", content=[use, res])
+        # 400 text + (9 name + 16 json) + 120 result = 545 chars -> 136
+        expected_chars = 400 + len("read_file") + len('{"path": "a.py"}') + 120
+        assert expected_chars == 545
+        assert CharacterTokenCounter().count([TextBlock(text="z" * 400), msg]) == 136
