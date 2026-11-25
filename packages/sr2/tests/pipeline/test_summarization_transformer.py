@@ -1633,3 +1633,245 @@ class TestSummarizationTransformerBuild:
         assert result.content[0].text == "named llm summary"
         assert len(named_llm.calls) == 1
         assert len(default_llm.calls) == 0
+
+
+# ---------------------------------------------------------------------------
+# spc-1119 AC7 / AC8: Message content (FR 9-11)
+# ---------------------------------------------------------------------------
+
+import logging
+
+from sr2.models import Message, ToolResultBlock, ToolUseBlock
+
+
+def _U(text: str) -> Message:
+    return Message(role="user", content=[TextBlock(text=text)])
+
+
+def _A_text(text: str) -> Message:
+    return Message(role="assistant", content=[TextBlock(text=text)])
+
+
+def _A_tc(n: int) -> Message:
+    # name "read" (4) + json {"path": "fN"} (14) = 18 chars -> 4 tokens
+    return Message(
+        role="assistant",
+        content=[ToolUseBlock(id=f"tc{n}", name="read", input={"path": f"f{n}"})],
+    )
+
+
+def _R_tc(n: int, chars: int) -> Message:
+    return Message(
+        role="user",
+        content=[ToolResultBlock(tool_use_id=f"tc{n}", content=f"r{n}" + "x" * (chars - 2))],
+    )
+
+
+def _msg_config(keep_tokens: int, **extra) -> object:
+    cfg = make_config(keep_strategy="keep_within_tokens", keep_tokens=keep_tokens)
+    cfg.config.update(extra)
+    return cfg
+
+
+def _r1_content() -> list[Message]:
+    return [
+        _U("P" * 400),
+        _A_tc(1), _R_tc(1, 4000),
+        _A_tc(2), _R_tc(2, 4000),
+        _A_tc(3), _R_tc(3, 400),
+    ]
+
+
+class ScriptedLLM:
+    """Fake LLM: returns `text`, `content`, or raises `exc`."""
+
+    def __init__(self, text: str | None = "S", exc: Exception | None = None, content=None):
+        self.text, self.exc, self.content = text, exc, content
+        self.calls: list[CompletionRequest] = []
+
+    async def complete(self, request: CompletionRequest) -> CompletionResponse:
+        self.calls.append(request)
+        if self.exc is not None:
+            raise self.exc
+        content = self.content if self.content is not None else [TextBlock(text=self.text)]
+        return CompletionResponse(id="f", content=content, stop_reason="end_turn", usage=TokenUsage())
+
+
+def _summary_text(msg) -> str:
+    assert isinstance(msg, Message) and msg.role == "user"
+    assert len(msg.content) == 1 and isinstance(msg.content[0], TextBlock)
+    return msg.content[0].text
+
+
+class TestMessageSummarization:
+    @pytest.mark.asyncio
+    async def test_ac7_r1_span_replaced_by_one_headed_summary(self):
+        """AC7-r1: [U(prompt), U(header+S), A[tc3], R[tc3]], header count=4."""
+        llm = ScriptedLLM("S")
+        content = _r1_content()
+        t = build_transformer(config=_msg_config(110), llm=llm)
+        result = await t.transform(content, make_events())
+        assert len(llm.calls) == 1
+        new = result.content
+        assert len(new) == 4
+        assert new[0] == content[0]
+        assert _summary_text(new[1]) == "[Summary of 4 earlier messages]\n\nS"
+        assert new[2] == content[5] and new[3] == content[6]
+
+    @pytest.mark.asyncio
+    async def test_ac7_r2_kept_window_extended_to_keep_tool_pair(self):
+        """AC7-r2: keep_tokens fits only R[tc3]; window extends back to A[tc3]."""
+        content = _r1_content()
+        t = build_transformer(config=_msg_config(102), llm=ScriptedLLM("S"))
+        result = await t.transform(content, make_events())
+        new = result.content
+        assert new[0] == content[0]
+        assert _summary_text(new[1]).startswith("[Summary of 4 earlier messages]")
+        assert new[2:] == [content[5], content[6]]
+
+    @pytest.mark.asyncio
+    async def test_ac7_r3_protected_prompt_is_first_real_user_text(self):
+        """AC7-r3: a leading tool-result-only user message is in the span, not the prompt."""
+        lead = _R_tc(0, 400)
+        prompt = _U("P" * 400)
+        content = [lead, prompt, _A_tc(1), _R_tc(1, 4000), _A_tc(3), _R_tc(3, 400)]
+        llm = ScriptedLLM("S")
+        t = build_transformer(config=_msg_config(110), llm=llm)
+        result = await t.transform(content, make_events())
+        new = result.content
+        assert new[0] == prompt
+        assert _summary_text(new[1]) == "[Summary of 3 earlier messages]\n\nS"
+        assert new[2:] == content[4:]
+        rendered = llm.calls[0].messages[0].content[0].text
+        assert "r0" in rendered  # the leading message was summarised
+
+    @pytest.mark.asyncio
+    async def test_ac7_r4_empty_span_is_noop(self):
+        """AC7-r4: everything fits keep_tokens -> no LLM call, content unchanged."""
+        llm = ScriptedLLM("S")
+        content = [_U("P" * 400), _A_tc(1), _R_tc(1, 40)]
+        t = build_transformer(config=_msg_config(10_000), llm=llm)
+        result = await t.transform(content, make_events())
+        assert llm.calls == []
+        assert result.content is None
+
+    @pytest.mark.asyncio
+    async def test_ac7_r5_second_compaction_folds_previous_summary(self):
+        """AC7-r5: summary1 is inside the new span; exactly one summary remains."""
+        llm = ScriptedLLM("S2")
+        summary1 = _U("[Summary of 4 earlier messages]\n\nS1")
+        content = [_U("P" * 400), summary1, _A_tc(3), _R_tc(3, 4000), _A_tc(4), _R_tc(4, 400)]
+        t = build_transformer(config=_msg_config(110), llm=llm)
+        result = await t.transform(content, make_events())
+        new = result.content
+        assert summary1 not in new
+        summaries = [m for m in new if isinstance(m, Message) and "[Summary of" in _summary_text_or_empty(m)]
+        assert len(summaries) == 1
+        assert _summary_text(new[1]) == "[Summary of 3 earlier messages]\n\nS2"
+        assert "S1" in llm.calls[0].messages[0].content[0].text
+
+    @pytest.mark.asyncio
+    async def test_ac7_r6_request_render(self):
+        """AC7-r6: system = summarization_prompt; one user message with role, text,
+        tool name + JSON args, tool-result text; no tools."""
+        llm = ScriptedLLM("S")
+        content = [
+            _U("P" * 400),
+            _A_text("thinking aloud ALPHA"),
+            Message(role="assistant", content=[ToolUseBlock(id="t9", name="grep_files", input={"pattern": "BETA"})]),
+            Message(role="user", content=[ToolResultBlock(tool_use_id="t9", content="GAMMA" + "x" * 4000)]),
+            _A_tc(3), _R_tc(3, 400),
+        ]
+        cfg = _msg_config(110, summarization_prompt="CUSTOM PROMPT")
+        t = build_transformer(config=cfg, llm=llm)
+        await t.transform(content, make_events())
+        req = llm.calls[0]
+        assert [b.text for b in req.system] == ["CUSTOM PROMPT"]
+        assert len(req.messages) == 1 and req.messages[0].role == "user"
+        text = req.messages[0].content[0].text
+        for needle in ("assistant", "user", "thinking aloud ALPHA", "grep_files",
+                       json.dumps({"pattern": "BETA"}), "GAMMA"):
+            assert needle in text, needle
+        assert not req.tools
+
+    @pytest.mark.asyncio
+    async def test_ac7_r7_default_and_custom_header_and_textblock_path_unchanged(self):
+        """AC7-r7: summary_header unset -> default with {count}; custom header honoured;
+        TextBlock-only content keeps today's bare summary block."""
+        t = build_transformer(config=_msg_config(110, summary_header="<<{count} msgs>>"), llm=ScriptedLLM("S"))
+        result = await t.transform(_r1_content(), make_events())
+        assert _summary_text(result.content[1]) == "<<4 msgs>>\n\nS"
+
+        llm = MockLLM("plain")
+        t = build_transformer(config=make_config(keep_strategy="keep_within_tokens", keep_tokens=4), llm=llm)
+        result = await t.transform(make_text_blocks(8), make_events())
+        assert result.content[0] == TextBlock(text="plain")
+        assert len(result.content) == 5
+
+
+def _summary_text_or_empty(m: Message) -> str:
+    return m.content[0].text if m.content and isinstance(m.content[0], TextBlock) else ""
+
+
+class TestMessageSummarizationFailures:
+    async def _fail(self, llm, caplog, content=None, **extra):
+        content = content or _r1_content()
+        t = build_transformer(config=_msg_config(110, **extra), llm=llm)
+        with caplog.at_level(logging.WARNING, logger="sr2.pipeline.transformers.summarization"):
+            result = await t.transform(content, make_events())
+        assert result.content is None
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        return t, warnings[0]
+
+    @pytest.mark.asyncio
+    async def test_ac8_r1_llm_raises(self, caplog):
+        """AC8-r1: raise -> no change, one WARNING naming timeout, nothing escapes."""
+        _, rec = await self._fail(ScriptedLLM(exc=RuntimeError("timeout")), caplog)
+        assert "timeout" in rec.getMessage()
+
+    @pytest.mark.asyncio
+    async def test_ac8_r2_empty_summary(self, caplog):
+        """AC8-r2: no TextBlock / empty text -> no change, WARNING."""
+        await self._fail(ScriptedLLM(content=[]), caplog)
+        caplog.clear()
+        await self._fail(ScriptedLLM(text="   "), caplog)
+
+    @pytest.mark.asyncio
+    async def test_ac8_r3_summary_not_smaller_than_span(self, caplog):
+        """AC8-r3: counted summary >= span -> no change, WARNING."""
+        content = [_U("P" * 400), _A_tc(1), _R_tc(1, 40), _A_tc(3), _R_tc(3, 400)]
+        await self._fail(ScriptedLLM("L" * 4000), caplog, content=content)
+
+    @pytest.mark.asyncio
+    async def test_ac8_r4_no_retry_before_growth(self, caplog):
+        """AC8-r4: after a failure, growth < retry_growth_tokens -> no LLM call."""
+        llm = ScriptedLLM(exc=RuntimeError("timeout"))
+        t, _ = await self._fail(llm, caplog, retry_growth_tokens=1000)
+        llm.exc = None
+        grown = _r1_content() + [_A_text("y" * 3996)]  # +999 tokens
+        result = await t.transform(grown, make_events())
+        assert len(llm.calls) == 1
+        assert result.content is None
+
+    @pytest.mark.asyncio
+    async def test_ac8_r5_retry_after_growth(self, caplog):
+        """AC8-r5: after a failure, growth >= retry_growth_tokens -> LLM called again."""
+        llm = ScriptedLLM(exc=RuntimeError("timeout"))
+        t, _ = await self._fail(llm, caplog, retry_growth_tokens=1000)
+        llm.exc = None
+        grown = _r1_content() + [_A_text("y" * 4000), _A_tc(5), _R_tc(5, 40)]  # +1000+ tokens
+        result = await t.transform(grown, make_events())
+        assert len(llm.calls) == 2
+        assert result.content is not None
+
+    @pytest.mark.asyncio
+    async def test_ac8_default_retry_growth_is_10000(self, caplog):
+        """AC8 default: retry_growth_tokens unset -> 10000; +9999 tokens does not retry."""
+        llm = ScriptedLLM(exc=RuntimeError("timeout"))
+        t, _ = await self._fail(llm, caplog)
+        llm.exc = None
+        await t.transform(_r1_content() + [_A_text("y" * 39996)], make_events())
+        assert len(llm.calls) == 1
+        await t.transform(_r1_content() + [_A_text("y" * 40000)], make_events())
+        assert len(llm.calls) == 2
