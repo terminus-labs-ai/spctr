@@ -1402,17 +1402,6 @@ class SR2:
                 )
             )
 
-            # FR9: Queue tool_result_received on the engine bus (internal subscribers).
-            self._engine.bus.queue(
-                Event(
-                    name="tool_result_received",
-                    phase=EventPhase.COMPLETED,
-                    source_layer="orchestrator",
-                    data=tool_result_blocks,
-                    iteration_seq=iteration_seq,
-                )
-            )
-
             # FR10: Queue assistant_iteration_response — the intermediate CompletionResponse
             # from this tool-use iteration (NOT the final turn response).
             intermediate_response = CompletionResponse(
@@ -1444,6 +1433,20 @@ class SR2:
                     phase=EventPhase.COMPLETED,
                     source_layer="orchestrator",
                     data=intermediate_response,
+                    iteration_seq=iteration_seq,
+                )
+            )
+
+            # FR9: Queue tool_result_received on the engine bus (internal
+            # subscribers). It follows assistant_iteration_response so the
+            # session layer records the assistant message before its results
+            # even when the batch is drained by end_turn (repeat-guard stop).
+            self._engine.bus.queue(
+                Event(
+                    name="tool_result_received",
+                    phase=EventPhase.COMPLETED,
+                    source_layer="orchestrator",
+                    data=tool_result_blocks,
                     iteration_seq=iteration_seq,
                 )
             )
