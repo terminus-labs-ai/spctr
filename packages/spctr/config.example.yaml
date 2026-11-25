@@ -150,9 +150,25 @@ pipeline:
     # Conversation history layer
     - name: conversation
       target: messages
+      # Session compaction: when this layer's content reaches
+      # token_budget * token_threshold_pct tokens, the layer emits
+      # token_threshold and the summarize transformer replaces the span
+      # between the first user prompt and the kept window with one summary.
+      token_budget: 190000
+      token_threshold_pct: 0.6
       resolvers:
         - type: session   # prior turns from this session
         - type: input     # current user message
+      transformers:
+        - name: compact
+          type: summarize
+          subscriptions: [{event: token_threshold}]
+          config:
+            keep_strategy: keep_within_tokens
+            keep_tokens: 50000          # newest messages kept verbatim
+            retry_growth_tokens: 10000  # after a failed summary, wait for this much growth
+            summarization_prompt: "Summarize the earlier conversation and tool work concisely, keeping file paths, decisions and open problems."
+            summary_header: "[Summary of {count} earlier messages]"
 
 # Zulip interface (--interface zulip) — see docs/CONFIG-REFERENCE.md
 # zulip:

@@ -278,6 +278,44 @@ Ordered list of context compilation layers. Each layer:
 | `target` | str | Target: `"system"`, `"tools"`, or `"messages"` |
 | `resolvers` | list | Resolver configs that produce content for this layer |
 | `tool_providers` | list | Tool provider configs (for `target: "tools"` layers) |
+| `token_budget` | int or null | Layer token budget; enables the layer's budget events. Default `null` (off) |
+| `token_threshold_pct` | float or null | Emit `token_threshold` once content reaches `token_budget * token_threshold_pct` tokens. Default `null` (off) |
+| `transformers` | list | Transformer configs that rewrite this layer's content when a subscribed event fires |
+
+#### Session compaction
+
+Off by default. To keep a long tool loop under the model's context limit, give the layer holding the `session` resolver a token budget, a threshold and a `summarize` transformer subscribed to `token_threshold`. Session content grows with every tool iteration; once it passes the threshold, the transformer replaces everything between the first user prompt and the kept window with one user message (`summary_header`, then the summary text), and the loop's next request is compiled from the shortened content.
+
+```yaml
+    - name: conversation
+      target: messages
+      token_budget: 190000
+      token_threshold_pct: 0.6
+      resolvers:
+        - type: session
+        - type: input
+      transformers:
+        - name: compact
+          type: summarize
+          subscriptions: [{event: token_threshold}]
+          config:
+            keep_strategy: keep_within_tokens
+            keep_tokens: 50000
+            retry_growth_tokens: 10000
+            summarization_prompt: "..."
+            summary_header: "[Summary of {count} earlier messages]"
+```
+
+| `config` key | Default | Description |
+|--------------|---------|-------------|
+| `keep_strategy` | `keep_last_n` | Use `keep_within_tokens` for session messages |
+| `keep_tokens` | `0` | Newest messages kept verbatim, extended back so a tool call is never split from its results |
+| `retry_growth_tokens` | `10000` | After a failed summary (call raised, empty text, or not smaller than the span) content is left unchanged, a WARNING is logged, and no new summary call is made until content grows by this many tokens |
+| `summarization_prompt` | `"Summarize the following conversation turns concisely."` | System prompt of the summary call |
+| `summary_header` | `"[Summary of {count} earlier messages]"` | First line of the summary message; `{count}` is the number of messages replaced |
+| `model` | `default` | Key under `models` for the summary call; it goes through that model's context guard |
+
+The first user message with real text is never summarised. A previous summary falls inside the next span and is summarised again. Pair this with `models.default.context_safety_ratio` so the provider guard sheds before the endpoint rejects a request.
 
 #### Resolver types
 
