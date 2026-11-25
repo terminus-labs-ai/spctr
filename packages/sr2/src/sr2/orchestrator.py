@@ -836,17 +836,10 @@ class SR2:
         # The assistant message goes out as assistant_iteration_response with
         # its full content (thinking, text, tool_use), matching what the
         # default session subscriptions record, so every not_run result stays
-        # paired with its tool_use in the next turn's history.
+        # paired with its tool_use in the next turn's history. The assistant
+        # event is queued before the results, matching turn(), so history
+        # order does not depend on what else lands in the same batch.
         if executed is None:
-            self._engine.bus.queue(
-                Event(
-                    name="tool_result_received",
-                    phase=EventPhase.COMPLETED,
-                    source_layer="orchestrator",
-                    data=list(result_blocks),
-                    iteration_seq=iteration_seq,
-                )
-            )
             self._engine.bus.queue(
                 Event(
                     name="assistant_iteration_response",
@@ -858,6 +851,15 @@ class SR2:
                         stop_reason="tool_use",
                         usage=TokenUsage(),
                     ),
+                    iteration_seq=iteration_seq,
+                )
+            )
+            self._engine.bus.queue(
+                Event(
+                    name="tool_result_received",
+                    phase=EventPhase.COMPLETED,
+                    source_layer="orchestrator",
+                    data=list(result_blocks),
                     iteration_seq=iteration_seq,
                 )
             )
