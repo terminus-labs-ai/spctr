@@ -1,8 +1,8 @@
 """SessionResolver: accumulates conversation history across turns.
 
 Returns PRIOR history on each resolve() call, then captures new events
-(user_input, assistant_response, tool_use_emitted, tool_result_received)
-for subsequent calls.
+(user_input, assistant_response, assistant_iteration_response,
+tool_result_received) for subsequent calls.
 """
 
 from __future__ import annotations
@@ -20,9 +20,16 @@ from sr2.protocols.llm import CompletionResponse
 _DEFAULT_SUBSCRIPTIONS = [
     EventSubscription(event_name="user_input", phase=EventPhase.STARTING),
     EventSubscription(event_name="assistant_response", phase=EventPhase.COMPLETED),
-    EventSubscription(event_name="tool_use_emitted", phase=EventPhase.COMPLETED),
+    EventSubscription(event_name="assistant_iteration_response", phase=EventPhase.COMPLETED),
     EventSubscription(event_name="tool_result_received", phase=EventPhase.COMPLETED),
 ]
+
+# Tool-loop event names, ranked in the order their messages are appended.
+_TOOL_LOOP_ORDER = {
+    "assistant_iteration_response": 0,
+    "tool_use_emitted": 0,
+    "tool_result_received": 1,
+}
 
 
 class SessionResolver:
@@ -40,7 +47,10 @@ class SessionResolver:
     Supported events:
       - user_input: appends a user Message from event.data (list[ContentBlock])
       - assistant_response: appends an assistant Message from CompletionResponse.content
+      - assistant_iteration_response: appends the tool iteration's full assistant
+        Message (thinking, text and tool_use blocks) from CompletionResponse.content
       - tool_use_emitted: appends an assistant Message containing tool_use blocks
+        (only when a config subscribes to it explicitly)
       - tool_result_received: appends a user Message containing tool_result blocks
     """
 
@@ -71,17 +81,19 @@ class SessionResolver:
         self.execution_count += 1
 
         # Determine if this firing is purely for tool-loop event capture.
-        # Tool-loop fires (tool_use_emitted, tool_result_received) only append
-        # to history — they must NOT re-emit the history snapshot, which would
-        # duplicate content already placed in the layer on the initial fire.
-        _tool_loop_names = {"tool_use_emitted", "tool_result_received"}
+        # Tool-loop fires return only the messages they add, so the layer
+        # holds the running turn without re-emitting the history snapshot
+        # already placed there on the initial fire.
         event_names = {e.name for e in events}
-        is_tool_loop_only = bool(events) and event_names.issubset(_tool_loop_names)
+        is_tool_loop_only = bool(events) and event_names.issubset(_TOOL_LOOP_ORDER)
 
         # Snapshot prior history for output (copy so mutations don't corrupt state).
-        # Tool-loop firings return empty — history was already placed in the layer
-        # on the initial (user_input / turn_start) fire.
         output: list[Message] = [] if is_tool_loop_only else list(self._history)
+        history_len_before = len(self._history)
+        if is_tool_loop_only:
+            # The assistant message precedes its tool results on the wire,
+            # whatever order the orchestrator queued the events in.
+            events = sorted(events, key=lambda e: _TOOL_LOOP_ORDER[e.name])
 
         # Capture new events into history for subsequent calls
         for event in events:
@@ -97,6 +109,13 @@ class SessionResolver:
                         Message(role="assistant", content=list(response.content))
                     )
 
+            elif event.name == "assistant_iteration_response":
+                iteration: CompletionResponse | None = event.data
+                if iteration is not None:
+                    self._history.append(
+                        Message(role="assistant", content=list(iteration.content))
+                    )
+
             elif event.name == "tool_use_emitted":
                 tool_blocks: list[ContentBlock] | None = event.data
                 if tool_blocks:
@@ -110,6 +129,9 @@ class SessionResolver:
                     self._history.append(
                         Message(role="user", content=list(result_blocks))
                     )
+
+        if is_tool_loop_only:
+            output = list(self._history[history_len_before:])
 
         return ResolvedContent(
             resolver_name=self.name,

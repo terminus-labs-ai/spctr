@@ -1204,7 +1204,7 @@ class SR2:
         iteration_seq = 0
 
         # Build the mutable request we'll feed to the LLM each iteration.
-        # Between iterations we'll add assistant + tool_result messages directly.
+        # Between iterations it is recompiled from the pipeline.
         current_request = compiled
 
         # sr2-37: Empty-response retry budget — at most ONE retry per turn.
@@ -1524,22 +1524,6 @@ class SR2:
                     meta=iteration.repeat_guard_event,
                 )
 
-            # Append assistant message (with tool_use blocks) and tool_result
-            # user message to the conversation for the next LLM call.
-            assistant_msg = Message(role="assistant", content=assistant_content)
-            tool_result_msg = Message(
-                role="user",
-                content=list(tool_result_blocks),  # type: ignore[arg-type]
-            )
-
-            # Build the next request by extending messages.
-            next_messages = list(current_request.messages) + [assistant_msg, tool_result_msg]
-            current_request = CompletionRequest(
-                system=current_request.system,
-                messages=next_messages,
-                tools=current_request.tools,
-            )
-
             # Inform the engine about the tool results so session/state resolvers
             # can capture them for future turns.
             tool_result_events = [
@@ -1553,6 +1537,11 @@ class SR2:
             ]
             await self._engine.continue_turn(tool_result_events, iteration_seq)
             in_band_errors.extend(self._engine.bus.get_errors())
+
+            # spc-1118 (FR 6): the session layer now holds this iteration's
+            # assistant message and results, so the next request is what the
+            # pipeline compiles; transformers can change a running turn.
+            current_request = self._engine.compile()
 
             # FR13: emit iteration_complete to signal the end of this tool iteration.
             yield StreamEvent(type="iteration_complete", iteration=iteration_seq)
