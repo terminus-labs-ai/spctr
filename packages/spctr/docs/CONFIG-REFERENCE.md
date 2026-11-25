@@ -284,6 +284,7 @@ Ordered list of context compilation layers. Each layer:
 | `type` | Description | Config keys |
 |--------|-------------|-------------|
 | `static` | Static text (system prompt) | `text` (str) |
+| `markdown_file` | Markdown file(s) by path or glob; `{area}` placeholder allowed | `path` (str), `on_missing` (`skip`/`error`), `max_tokens` (int/null), `expand_imports` (bool, default false: a line that is only `@<path>` is replaced by that file, `~` and relative paths allowed, missing imports dropped), `import_max_depth` (int, default 5) |
 | `session` | Session history from current turn | none |
 | `input` | Current user message | none |
 | `plan` | Plan file resolution | `plans_root` (str), `project` (str) |
