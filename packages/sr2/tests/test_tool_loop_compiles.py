@@ -239,6 +239,44 @@ class TestAC4SessionLayerHoldsToolIterations:
         )
 
     @pytest.mark.asyncio
+    async def test_ac4_r3_next_turn_history_after_forced_final_answer_is_paired_and_ordered(self):
+        not_run = "NOT RUN."
+        llm = SequentialMockLLM(
+            [
+                _reply_tool("tc1", text="First."),
+                _reply_tool("tc2", text="Second.", thinking="One more."),
+                _reply_text("Final."),
+                _reply_text("Ack."),
+            ]
+        )
+        sr2 = _make_sr2(
+            llm,
+            _pipeline(
+                max_tool_iterations=1,
+                final_answer=FinalAnswerConfig(
+                    enabled=True, instruction="FINISH NOW.", not_run=not_run
+                ),
+            ),
+        )
+
+        await _drive(sr2, "loop")
+        await _drive(sr2, "next")
+
+        assert len(llm.stream_calls) == 4
+        _assert_request(
+            llm.stream_calls[3],
+            [
+                U("loop"),
+                A("tc1", text="First."),
+                R("tc1"),
+                A("tc2", text="Second.", thinking="One more."),
+                R("tc2", content=not_run),
+                A_text("Final."),
+                U("next"),
+            ],
+        )
+
+    @pytest.mark.asyncio
     async def test_ac4_r4_two_iterations_layer_holds_a1_r1_a2_r2_once_each(self):
         llm = _LayerSnapshotLLM(
             [
