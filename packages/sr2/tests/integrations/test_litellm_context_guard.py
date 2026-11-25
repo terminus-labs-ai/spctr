@@ -164,11 +164,13 @@ class TestReactiveShed:
     assert len(calls) == 1
 
   async def test_gives_up_when_nothing_left_to_shed(self):
+    from sr2.integrations.context_guard import ContextWindowExhaustedError
+
     overflow = RuntimeError("no node has context large enough for model 'x'")
     fake, calls = _capture_fake([overflow] * 10)
     callable_ = LiteLLMCallable(model="openai/test")
     with patch("litellm.acompletion", new=fake):
-      with pytest.raises(RuntimeError, match="no node has context"):
+      with pytest.raises(ContextWindowExhaustedError, match="no node has context"):
         await callable_.complete(CompletionRequest(
           messages=[Message(role="user", content=[TextBlock(text="huge single turn")])]
         ))
@@ -216,3 +218,143 @@ class TestProtectedPromptOnOverflow:
     assert calls, "the request must reach the endpoint at least once"
     for sent in calls:
       assert {"role": "user", "content": prompt_text} in sent["messages"]
+
+
+# --- spc-1117: recognition wired into the retry, safety ratio, typed failure ---
+
+_GUFO = (
+  "litellm.BadRequestError: OpenAIException - prompt has 215081 tokens but the"
+  " context is 215040; increase --context or shorten the conversation"
+)
+
+
+def _single_turn() -> CompletionRequest:
+  return CompletionRequest(
+    messages=[Message(role="user", content=[TextBlock(text="huge single turn")])]
+  )
+
+
+class TestReactiveRecognitionSpc1117:
+  async def test_ac1_r8_gufo_wording_sheds_and_retries(self):
+    resp = _mock_litellm_response()
+    fake, calls = _capture_fake([RuntimeError(_GUFO), resp])
+    callable_ = LiteLLMCallable(model="openai/test")
+    with patch("litellm.acompletion", new=fake):
+      out = await callable_.complete(_request(turns=4, size=100))
+    assert len(calls) == 2
+    assert len(calls[1]["messages"]) < len(calls[0]["messages"])
+    assert out.content[0].text == "Hi there"
+
+  async def test_ac1_r9_context_window_exceeded_type_sheds_and_retries(self):
+    import litellm
+
+    overflow = litellm.ContextWindowExceededError("x", model="m", llm_provider="openai")
+    resp = _mock_litellm_response()
+    fake, calls = _capture_fake([overflow, resp])
+    callable_ = LiteLLMCallable(model="openai/test")
+    with patch("litellm.acompletion", new=fake):
+      out = await callable_.complete(_request(turns=4, size=100))
+    assert len(calls) == 2
+    assert len(calls[1]["messages"]) < len(calls[0]["messages"])
+    assert out.content[0].text == "Hi there"
+
+
+class TestSafetyRatioSpc1117:
+  # 8 turns of 4000 chars ≈ 8 * 1000+ tokens; L chosen so the request is
+  # between floor(L*0.5) and L.
+  _LIMIT = 12000
+
+  def _request(self):
+    return _request(turns=8, size=4000, first_size=20)
+
+  async def test_ac2_r4_ratio_sheds_below_limit(self):
+    request = self._request()
+    full = len(LiteLLMCallable(model="openai/test")._build_messages(request))
+    est = _wire_tokens(LiteLLMCallable(model="openai/test")._build_messages(request))
+    assert self._LIMIT // 2 < est <= self._LIMIT
+    fake, calls = _capture_fake([_mock_litellm_response()])
+    callable_ = LiteLLMCallable(model="openai/test", context_limit=self._LIMIT, context_safety_ratio=0.5)
+    with patch("litellm.acompletion", new=fake):
+      await callable_.complete(request)
+    sent = calls[0]["messages"]
+    assert len(sent) < full
+    assert _wire_tokens(sent) <= self._LIMIT // 2
+    assert "context_safety_ratio" not in calls[0]
+
+  async def test_ac2_r5_ratio_unset_sends_untouched(self):
+    request = self._request()
+    fake, calls = _capture_fake([_mock_litellm_response()])
+    callable_ = LiteLLMCallable(model="openai/test", context_limit=self._LIMIT)
+    with patch("litellm.acompletion", new=fake):
+      await callable_.complete(request)
+    assert len(calls[0]["messages"]) == 8
+
+  async def test_ac2_r6_ratio_without_limit_has_no_effect(self):
+    fake, calls = _capture_fake([_mock_litellm_response()])
+    callable_ = LiteLLMCallable(model="openai/test", context_safety_ratio=0.5)
+    with patch("litellm.acompletion", new=fake):
+      await callable_.complete(_request(turns=8, size=40000))
+    assert len(calls[0]["messages"]) == 8
+    assert "context_safety_ratio" not in calls[0]
+
+
+class TestExhaustedSpc1117:
+  async def test_ac3_r1_nothing_to_shed_raises_exhausted(self):
+    from sr2.integrations.context_guard import ContextWindowExhaustedError
+
+    overflow = RuntimeError("no node has context large enough for model 'x'")
+    fake, calls = _capture_fake([overflow] * 10)
+    callable_ = LiteLLMCallable(model="openai/test")
+    with patch("litellm.acompletion", new=fake):
+      with pytest.raises(ContextWindowExhaustedError) as excinfo:
+        await callable_.complete(_single_turn())
+    err = excinfo.value
+    assert err.__cause__ is overflow
+    assert "no node has context" in str(err)
+    assert err.limit is None
+    assert err.estimated_tokens > 0
+    assert len(calls) == 1
+
+  async def test_ac3_r2_retries_exhausted_raises_exhausted(self):
+    from sr2.integrations.context_guard import ContextWindowExhaustedError
+    from sr2.integrations.litellm import MAX_CONTEXT_OVERFLOW_RETRIES
+
+    overflow = RuntimeError(_GUFO)
+    fake, calls = _capture_fake([overflow] * (MAX_CONTEXT_OVERFLOW_RETRIES + 5))
+    # Limit large enough that the proactive check sends all 20 turns.
+    callable_ = LiteLLMCallable(
+      model="openai/test", context_limit=1_000_000, context_safety_ratio=0.85,
+    )
+    with patch("litellm.acompletion", new=fake):
+      with pytest.raises(ContextWindowExhaustedError) as excinfo:
+        await callable_.complete(_request(turns=20, size=100))
+    assert excinfo.value.limit == 850_000
+    assert excinfo.value.__cause__ is overflow
+    assert len(calls) == MAX_CONTEXT_OVERFLOW_RETRIES + 1
+
+  async def test_ac3_r3_non_context_error_not_wrapped(self):
+    from sr2.integrations.context_guard import ContextWindowExhaustedError
+
+    boom = RuntimeError("bad tool schema")
+    fake, calls = _capture_fake([boom])
+    callable_ = LiteLLMCallable(model="openai/test")
+    with patch("litellm.acompletion", new=fake):
+      with pytest.raises(RuntimeError) as excinfo:
+        await callable_.complete(_request(turns=2, size=10))
+    assert excinfo.value is boom
+    assert not isinstance(excinfo.value, ContextWindowExhaustedError)
+
+  async def test_ac3_r4_stream_raises_exhausted(self):
+    from sr2.integrations.context_guard import ContextWindowExhaustedError
+
+    overflow = RuntimeError("no node has context large enough for model 'x'")
+    fake, calls = _capture_fake([overflow] * 10)
+    callable_ = LiteLLMCallable(model="openai/test")
+    with patch("litellm.acompletion", new=fake):
+      with pytest.raises(ContextWindowExhaustedError) as excinfo:
+        [e async for e in callable_.stream(_single_turn())]
+    assert excinfo.value.__cause__ is overflow
+    assert "no node has context" in str(excinfo.value)
+    assert excinfo.value.limit is None
+    assert excinfo.value.estimated_tokens > 0
+    assert len(calls) == 1

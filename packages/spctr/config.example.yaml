@@ -121,6 +121,8 @@ models:
   default:
     model: openai/YOUR_MODEL_NAME   # e.g. openai/gpt-4o, anthropic/claude-opus-4-7
     base_url: http://localhost:11434/v1  # omit for hosted APIs (OpenAI, Anthropic)
+    # context_limit: 229000        # token ceiling the endpoint accepts; enables the context guard
+    # context_safety_ratio: 0.85   # shed against floor(context_limit * ratio); 0 < ratio <= 1
 
 # SR2 pipeline — context compilation, token budgets, layers
 pipeline:

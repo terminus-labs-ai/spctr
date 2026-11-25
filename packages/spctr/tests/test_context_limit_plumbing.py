@@ -44,3 +44,34 @@ class TestContextLimitPassthrough:
             MockLLM.return_value = MagicMock()
             build_llm(_cfg())
         assert "context_limit" not in MockLLM.call_args.kwargs
+
+
+class TestContextSafetyRatioSpc1117:
+    def test_ac2_r1_build_llm_forwards_limit_and_ratio(self):
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
+            MockLLM.return_value = MagicMock()
+            build_llm(ModelConfig(model="m", context_limit=229000, context_safety_ratio=0.85))
+        assert MockLLM.call_args.kwargs["context_limit"] == 229000
+        assert MockLLM.call_args.kwargs["context_safety_ratio"] == 0.85
+
+    def test_ac2_r1_real_callable_applies_ratio(self):
+        llm = build_llm(ModelConfig(model="m", context_limit=229000, context_safety_ratio=0.85))
+        assert llm._context_limit == 194650
+        assert "context_safety_ratio" not in llm._kwargs
+
+    def test_ac2_r2_out_of_range_ratio_rejected(self):
+        import pytest
+        from pydantic import ValidationError
+
+        for bad in (0, -0.1, 1.5):
+            with pytest.raises(ValidationError):
+                ModelConfig(model="m", context_safety_ratio=bad)
+
+    def test_ac2_r3_default_ratio_is_one_and_not_forwarded(self):
+        cfg = ModelConfig(model="m")
+        assert cfg.context_safety_ratio == 1.0
+        with patch("spctr.live_llm.LiteLLMCallable") as MockLLM:
+            MockLLM.return_value = MagicMock()
+            build_llm(cfg)
+        assert "context_safety_ratio" not in MockLLM.call_args.kwargs
+        assert "context_limit" not in MockLLM.call_args.kwargs

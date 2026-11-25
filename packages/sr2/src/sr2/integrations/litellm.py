@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from collections.abc import AsyncIterator
 from typing import Any
 
 import litellm
 
 from sr2.integrations.context_guard import (
+  ContextWindowExhaustedError,
   estimate_request_tokens,
   is_context_overflow_error,
   requested_output_tokens,
@@ -50,7 +52,8 @@ def _safe_parse_tool_arguments(arguments: str) -> tuple[dict | None, str | None]
 
 class LiteLLMCallable:
   def __init__(self, model: str, base_url: str | None = None,
-               context_limit: int | None = None, **kwargs) -> None:
+               context_limit: int | None = None,
+               context_safety_ratio: float = 1.0, **kwargs) -> None:
     # When hitting an OpenAI-compatible endpoint with a bare model name,
     # litellm needs a provider prefix to route the call correctly.
     if base_url is not None and "/" not in model:
@@ -62,7 +65,11 @@ class LiteLLMCallable:
     # obsidian-pt2k.1: total token ceiling (input estimate + requested
     # output) the serving endpoint accepts, in the hub's own estimate units.
     # None disables the guard and every request goes out as compiled.
-    self._context_limit = context_limit
+    # context_safety_ratio (0 < r <= 1) leaves a margin below that ceiling;
+    # it is consumed here and never forwarded to litellm.
+    self._context_limit = (
+      None if context_limit is None else math.floor(context_limit * context_safety_ratio)
+    )
 
   @property
   def model(self) -> str:
@@ -182,7 +189,8 @@ class LiteLLMCallable:
 
     A context-length rejection (estimates under-count vs. the node) sheds one
     more turn and retries, bounded by MAX_CONTEXT_OVERFLOW_RETRIES. Any other
-    error, and a request with nothing left to shed, propagate immediately.
+    error propagates immediately; an overflow with nothing left to shed, or
+    with retries exhausted, raises ContextWindowExhaustedError.
     """
     attempt = 0
     while True:
@@ -205,11 +213,16 @@ class LiteLLMCallable:
           model=self._model, messages=messages, **self._kwargs, **extra,
         )
       except Exception as exc:
-        if attempt >= MAX_CONTEXT_OVERFLOW_RETRIES or not is_context_overflow_error(exc):
+        if not is_context_overflow_error(exc):
           raise
-        shed = shed_oldest_messages(messages)
+        shed = None if attempt >= MAX_CONTEXT_OVERFLOW_RETRIES else shed_oldest_messages(messages)
         if shed is None:
-          raise
+          raise ContextWindowExhaustedError(
+            estimate_request_tokens(messages, extra.get("tools"))
+            + requested_output_tokens(self._kwargs),
+            self._context_limit,
+            str(exc),
+          ) from exc
         messages = shed
         attempt += 1
         logger.warning(

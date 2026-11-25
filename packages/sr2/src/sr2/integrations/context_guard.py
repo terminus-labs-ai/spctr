@@ -36,6 +36,8 @@ _OVERFLOW_PATTERNS: list[re.Pattern[str]] = [
     r"context window",
     r"prompt is too long",
     r"input length.*exceed",
+    r"prompt has \d+ tokens but the context is \d+",
+    r"shorten the conversation",
   )
 ]
 
@@ -129,7 +131,49 @@ def _is_tool_result_only(content: Any) -> bool:
   )
 
 
+_OVERFLOW_CODE = "context_length_exceeded"
+
+
+class ContextWindowExhaustedError(RuntimeError):
+  """The provider rejected the request as too long and trimming cannot fix it."""
+
+  def __init__(self, estimated_tokens: int, limit: int | None, provider_message: str) -> None:
+    super().__init__(
+      f"request does not fit the context window after trimming"
+      f" (estimated {estimated_tokens} tokens incl. reserved output, limit {limit}): {provider_message}"
+    )
+    self.estimated_tokens = estimated_tokens
+    self.limit = limit
+
+
+def _has_overflow_code(exc: BaseException) -> bool:
+  """True when the exception's ``code`` or JSON ``body`` names the overflow code."""
+  if getattr(exc, "code", None) == _OVERFLOW_CODE:
+    return True
+  body = getattr(exc, "body", None)
+  if not isinstance(body, dict):
+    return False
+  if body.get("code") == _OVERFLOW_CODE:
+    return True
+  error = body.get("error")
+  return isinstance(error, dict) and error.get("code") == _OVERFLOW_CODE
+
+
 def is_context_overflow_error(exc: BaseException | str) -> bool:
-  """True when *exc* is a provider rejection of the request as too long."""
+  """True when *exc* is a provider rejection of the request as too long.
+
+  An exception matches on litellm's ContextWindowExceededError type, an
+  OpenAI-style ``context_length_exceeded`` code, or its text; a string
+  matches on text only.
+  """
+  if not isinstance(exc, str):
+    try:
+      from litellm import ContextWindowExceededError
+    except ImportError:
+      ContextWindowExceededError = None
+    if ContextWindowExceededError is not None and isinstance(exc, ContextWindowExceededError):
+      return True
+    if _has_overflow_code(exc):
+      return True
   message = exc if isinstance(exc, str) else str(exc)
   return any(pattern.search(message) for pattern in _OVERFLOW_PATTERNS)

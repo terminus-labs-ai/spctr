@@ -83,6 +83,7 @@ def build_llm(model_cfg: ModelConfig) -> LiteLLMCallable:
     # strictly opt-in per profile.
     if model_cfg.context_limit is not None:
         kwargs["context_limit"] = model_cfg.context_limit
+        kwargs["context_safety_ratio"] = model_cfg.context_safety_ratio
     return LiteLLMCallable(**kwargs)
 
 

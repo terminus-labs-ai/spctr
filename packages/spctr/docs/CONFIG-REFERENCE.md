@@ -193,6 +193,14 @@ Sampling parameters forwarded to the LLM provider. Common options:
 | `max_tokens` | int | `32768` | Max response tokens. Injected when neither `max_tokens` nor `max_completion_tokens` is set; an explicit value (including `null`) is forwarded unchanged |
 | `stream` | bool | `true` | Enable streaming |
 
+### `context_limit` (int or null, default: `null`)
+
+Total token ceiling (input estimate plus requested output, in llm-relay's estimate units) the serving endpoint accepts. When set, the context guard drops the oldest turns before sending a request over the limit, and sheds and retries when the provider rejects a request as too long. A rejection with nothing left to shed, or after the retry bound, fails with `ContextWindowExhaustedError` carrying the estimate, the limit and the provider message. Must be positive; `null` disables the proactive check. Not forwarded to the provider.
+
+### `context_safety_ratio` (float, default: `1.0`)
+
+Fraction of `context_limit` the proactive guard sheds against: requests must fit `floor(context_limit * context_safety_ratio)`, leaving a margin for estimate error. Must satisfy `0 < ratio <= 1`. No effect without `context_limit`. Not forwarded to the provider.
+
 ### `call_timeout_seconds` (float or null, default: `900.0`)
 
 Wall-clock cap on one model call, streamed or not. A call past it is aborted with
@@ -861,6 +869,7 @@ not just the agent file.
 | `models.default.api_key` | Subsequent calls use the new key |
 | `models.default.params` | New sampling params take effect |
 | `models.default.call_timeout_seconds`, `models.default.stall_timeout_seconds` | New guard limits apply to the next call; a call in flight keeps its own |
+| `models.default.context_limit`, `models.default.context_safety_ratio` | The rebuilt callable guards the next call with the new limit |
 | `models.default.stream_retries`, `models.default.stream_retry_backoff_seconds` | New retry settings apply to the next streamed call |
 | `pipeline.*` | Each conversation rebuilds its SR2 on its next turn |
 | `agent.tools` | Tools added, removed, or reconfigured |

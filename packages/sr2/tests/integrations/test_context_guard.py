@@ -247,3 +247,57 @@ class TestIsContextOverflowError:
 
   def test_accepts_raw_string(self):
     assert is_context_overflow_error("no node has context large enough for model 'x'")
+
+
+class _CodedError(Exception):
+  """Exception carrying OpenAI-style ``code`` / ``body`` attributes."""
+
+  def __init__(self, message: str, code=None, body=None):
+    super().__init__(message)
+    if code is not None:
+      self.code = code
+    if body is not None:
+      self.body = body
+
+
+class TestOverflowRecognitionSpc1117:
+  """spc-1117 AC1: Gufo wording, litellm's typed error and the overflow code."""
+
+  def test_ac1_r1_gufo_prompt_has_tokens_wording(self):
+    assert is_context_overflow_error(
+      "litellm.BadRequestError: OpenAIException - prompt has 215081 tokens but"
+      " the context is 215040; increase --context or shorten the conversation"
+    )
+
+  def test_ac1_r1_gufo_token_wording_alone(self):
+    assert is_context_overflow_error("prompt has 215081 tokens but the context is 215040")
+
+  def test_ac1_r2_shorten_the_conversation(self):
+    assert is_context_overflow_error("... please shorten the conversation")
+
+  def test_ac1_r3_litellm_context_window_exceeded_type(self):
+    import litellm
+
+    exc = litellm.ContextWindowExceededError("x", model="m", llm_provider="openai")
+    assert is_context_overflow_error(exc)
+
+  def test_ac1_r4_code_attribute(self):
+    exc = _CodedError("bad request", code="context_length_exceeded")
+    assert not is_context_overflow_error(str(exc))
+    assert is_context_overflow_error(exc)
+
+  def test_ac1_r5_nested_body_error_code(self):
+    exc = _CodedError("bad request", body={"error": {"code": "context_length_exceeded"}})
+    assert is_context_overflow_error(exc)
+
+  def test_ac1_r6_flat_body_code(self):
+    exc = _CodedError("bad request", body={"code": "context_length_exceeded"})
+    assert is_context_overflow_error(exc)
+
+  def test_ac1_r7_other_errors_not_recognised(self):
+    assert not is_context_overflow_error(RuntimeError("litellm.BadRequestError: bad tool schema"))
+    assert not is_context_overflow_error(_CodedError("bad request", code="invalid_request_error"))
+    assert not is_context_overflow_error(_CodedError("bad request", body="not a dict"))
+    assert not is_context_overflow_error(
+      _CodedError("bad request", body={"error": "context_length_exceeded"})
+    )

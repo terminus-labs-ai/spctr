@@ -70,6 +70,10 @@ class ModelConfig(BaseModel):
     # the qwen3.8 mesh's 229376). None disables the guard: overlong requests
     # go out and die on the endpoint's 400 as before.
     context_limit: int | None = Field(default=None, gt=0)
+    # Fraction of context_limit the proactive guard sheds against
+    # (floor(context_limit * ratio)), leaving a margin for estimate error.
+    # 1.0 keeps the full limit; no effect without context_limit.
+    context_safety_ratio: float = Field(default=1.0, gt=0, le=1)
     # Wall-clock cap on one model call; None disables it.
     call_timeout_seconds: float | None = Field(default=900.0, gt=0)
     # Max silence between stream events (from call start for the first); None disables it.
