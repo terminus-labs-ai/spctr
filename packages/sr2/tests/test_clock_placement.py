@@ -246,10 +246,11 @@ class TestClockOnToolLoopIterations:
         second_clocks = _clock_indices(llm.stream_calls[1].messages)
         assert len(first_clocks) == 1
         assert len(second_clocks) == 1
-        # Same block — the request was extended, not recompiled.
+        # Same clock block on both iterations: the clock did not re-render.
+        assert first_clocks == second_clocks
         assert (
             llm.stream_calls[1].messages[first_clocks[0]]
-            is llm.stream_calls[0].messages[first_clocks[0]]
+            == llm.stream_calls[0].messages[first_clocks[0]]
         )
 
 

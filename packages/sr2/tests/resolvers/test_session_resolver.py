@@ -15,16 +15,14 @@ Covers:
 """
 
 import pytest
-
 from sr2.config.models import EventSubscriptionConfig, ResolverConfig
 from sr2.models import Message, TextBlock, TokenUsage
 from sr2.pipeline.dependencies import Dependencies
-from sr2.pipeline.events import Event, EventPhase, EventSubscription
+from sr2.pipeline.events import Event, EventPhase
 from sr2.pipeline.models import ResolvedContent
 from sr2.pipeline.protocols import Resolver
 from sr2.pipeline.resolvers.session import SessionResolver
 from sr2.protocols.llm import CompletionResponse
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -529,3 +527,123 @@ class TestSessionResolverBuild:
         assert via_build.max_executions == via_init.max_executions
         assert via_build.name == via_init.name
         assert via_build.execution_count == via_init.execution_count
+
+
+# ---------------------------------------------------------------------------
+# spc-1118 (FR 5, AC4): tool iterations reach the session layer as they happen
+# ---------------------------------------------------------------------------
+#
+# Events are the ones the orchestrator queues for one tool iteration, in its
+# order: tool_use_emitted, tool_result_received, then
+# assistant_iteration_response (the iteration's full assistant content).
+# Like the layer, _deliver passes the resolver only the events it subscribes to.
+
+from sr2.models import ThinkingBlock, ToolResultBlock, ToolUseBlock
+
+
+def _tool_iteration_events(tc_id: str, text: str | None = None, thinking: str | None = None) -> list[Event]:
+    content = []
+    if thinking:
+        content.append(ThinkingBlock(text=thinking))
+    if text:
+        content.append(TextBlock(text=text))
+    tool_use = ToolUseBlock(id=tc_id, name="get_weather", input={"location": "Oslo"})
+    content.append(tool_use)
+    result = ToolResultBlock(tool_use_id=tc_id, content=f"result {tc_id}")
+    return [
+        Event(name="tool_use_emitted", phase=EventPhase.COMPLETED, source_layer="orchestrator", data=[tool_use]),
+        Event(name="tool_result_received", phase=EventPhase.COMPLETED, source_layer="orchestrator", data=[result]),
+        Event(
+            name="assistant_iteration_response",
+            phase=EventPhase.COMPLETED,
+            source_layer="orchestrator",
+            data=CompletionResponse(
+                id="iter-response",
+                content=content,
+                stop_reason="tool_use",
+                usage=TokenUsage(input_tokens=1, output_tokens=1),
+            ),
+        ),
+    ]
+
+
+async def _deliver(resolver: SessionResolver, events: list[Event]) -> ResolvedContent:
+    return await resolver.resolve(
+        [e for e in events if any(s.matches(e) for s in resolver.subscriptions)]
+    )
+
+
+def _expected_assistant(tc_id: str, text: str | None = None, thinking: str | None = None) -> Message:
+    content = []
+    if thinking:
+        content.append(ThinkingBlock(text=thinking))
+    if text:
+        content.append(TextBlock(text=text))
+    content.append(ToolUseBlock(id=tc_id, name="get_weather", input={"location": "Oslo"}))
+    return Message(role="assistant", content=content)
+
+
+def _expected_results(tc_id: str) -> Message:
+    return Message(role="user", content=[ToolResultBlock(tool_use_id=tc_id, content=f"result {tc_id}")])
+
+
+class TestSessionResolverToolIterations:
+    @pytest.mark.asyncio
+    async def test_ac4_r1_tool_iteration_adds_full_assistant_then_results(self):
+        resolver = SessionResolver(make_config())
+        await resolver.resolve([make_user_input_event("run a tool")])
+
+        result = await _deliver(resolver, _tool_iteration_events("tc1", text="Let me look."))
+
+        assert result.content == [_expected_assistant("tc1", text="Let me look."), _expected_results("tc1")]
+
+    @pytest.mark.asyncio
+    async def test_ac4_r2_assistant_message_carries_thinking_block(self):
+        resolver = SessionResolver(make_config())
+        await resolver.resolve([make_user_input_event("run a tool")])
+
+        result = await _deliver(
+            resolver,
+            _tool_iteration_events("tc1", text="Let me look.", thinking="I should check.")
+        )
+
+        assert result.content[0] == _expected_assistant("tc1", text="Let me look.", thinking="I should check.")
+        assert isinstance(result.content[0].content[0], ThinkingBlock)
+
+    @pytest.mark.asyncio
+    async def test_ac4_r3_next_turn_history_holds_full_assistant_then_results(self):
+        resolver = SessionResolver(make_config())
+        await resolver.resolve([make_user_input_event("run a tool")])
+        await _deliver(resolver, _tool_iteration_events("tc1", text="Let me look."))
+        await resolver.resolve([make_assistant_response_event("Done.")])
+
+        next_turn = await resolver.resolve([make_user_input_event("next")])
+
+        assert next_turn.content == [
+            Message(role="user", content=[TextBlock(text="run a tool")]),
+            _expected_assistant("tc1", text="Let me look."),
+            _expected_results("tc1"),
+            Message(role="assistant", content=[TextBlock(text="Done.")]),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_ac4_r4_two_iterations_add_a1_r1_a2_r2_without_duplicates(self):
+        resolver = SessionResolver(make_config())
+        await resolver.resolve([make_user_input_event("run two tools")])
+
+        first = await _deliver(resolver, _tool_iteration_events("tc1", text="First."))
+        second = await _deliver(resolver, _tool_iteration_events("tc2", text="Second."))
+        await resolver.resolve([make_assistant_response_event("Done.")])
+        next_turn = await resolver.resolve([make_user_input_event("next")])
+
+        a1, r1 = _expected_assistant("tc1", text="First."), _expected_results("tc1")
+        a2, r2 = _expected_assistant("tc2", text="Second."), _expected_results("tc2")
+        assert first.content + second.content == [a1, r1, a2, r2]
+        assert next_turn.content == [
+            Message(role="user", content=[TextBlock(text="run two tools")]),
+            a1,
+            r1,
+            a2,
+            r2,
+            Message(role="assistant", content=[TextBlock(text="Done.")]),
+        ]

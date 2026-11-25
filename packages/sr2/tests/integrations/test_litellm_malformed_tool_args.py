@@ -540,13 +540,14 @@ class TestTextWithToolCallsUnchanged:
 
     turn2_request = await _run_two_turns(fake, _RecordingExecutor())
 
-    # Captured from the pre-change code (aa7229e) for this exact scenario.
+    # Captured from the pre-change code (aa7229e) for this exact scenario,
+    # except the assistant tool-call message now keeps its text (dec-849).
     non_system = [m for m in turn2_request["messages"] if m["role"] != "system"]
     assert non_system == [
       {"role": "user", "content": "scan the vault"},
       {
         "role": "assistant",
-        "content": None,
+        "content": "Let me look.",
         "tool_calls": [
           {
             "id": "tc_ok",
