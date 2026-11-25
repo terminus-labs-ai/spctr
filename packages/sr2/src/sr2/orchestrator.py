@@ -833,22 +833,31 @@ class SR2:
         # records the assistant message and its tool results. An executed
         # iteration's pair is already on the bus (turn() queued it before the
         # guard stop) — queuing it again would duplicate the history (AC9).
+        # The assistant message goes out as assistant_iteration_response with
+        # its full content (thinking, text, tool_use), matching what the
+        # default session subscriptions record, so every not_run result stays
+        # paired with its tool_use in the next turn's history.
         if executed is None:
-            self._engine.bus.queue(
-                Event(
-                    name="tool_use_emitted",
-                    phase=EventPhase.COMPLETED,
-                    source_layer="orchestrator",
-                    data=list(tool_blocks),
-                    iteration_seq=iteration_seq,
-                )
-            )
             self._engine.bus.queue(
                 Event(
                     name="tool_result_received",
                     phase=EventPhase.COMPLETED,
                     source_layer="orchestrator",
                     data=list(result_blocks),
+                    iteration_seq=iteration_seq,
+                )
+            )
+            self._engine.bus.queue(
+                Event(
+                    name="assistant_iteration_response",
+                    phase=EventPhase.COMPLETED,
+                    source_layer="orchestrator",
+                    data=CompletionResponse(
+                        id="iter-response",
+                        content=list(assistant_content),
+                        stop_reason="tool_use",
+                        usage=TokenUsage(),
+                    ),
                     iteration_seq=iteration_seq,
                 )
             )
