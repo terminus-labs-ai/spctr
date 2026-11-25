@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -330,14 +331,22 @@ def test_listing_rows_shape_and_marker():
     assert f"1–{_RESUME_LIST_LIMIT} of {_RESUME_SNAPSHOT_LIMIT}+" in cap_lines[0][0]
 
 
-def test_listing_converts_utc_last_activity_to_local():
+def test_listing_converts_utc_last_activity_to_local(monkeypatch):
     # A UTC-aware last_activity renders in local time (the InMemory path).
-    _lines, rows = render_session_listing(
-        [SessionSummary("u", 1, datetime(2026, 10, 30, 13, 0, tzinfo=timezone.utc))],
-        "other",
-        15,
-    )
-    assert rows == [f"1  {_local(datetime(2026, 10, 30, 13, 0))}  1  u"]
+    # Pin the zone: the old expectation fed _local() a *naive* 13:00, which
+    # astimezone() echoes unchanged, so the row only matched on UTC hosts.
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    try:
+        _lines, rows = render_session_listing(
+            [SessionSummary("u", 1, datetime(2026, 10, 30, 13, 0, tzinfo=timezone.utc))],
+            "other",
+            15,
+        )
+    finally:
+        time.tzset()
+    # 2026-10-30 is still EDT (UTC-4; DST ends Nov 1), so 13:00Z renders 09:00.
+    assert rows == ["1  2026-10-30 09:00  1  u"]
 
 
 def test_resolve_resume_target_index_and_exact():
