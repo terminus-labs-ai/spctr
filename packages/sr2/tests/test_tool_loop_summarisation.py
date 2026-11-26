@@ -234,10 +234,14 @@ class TestAC9ToolLoopSummarisation:
             A("tc3"),
             R("tc3"),
         ]
+        # spc-1125 adds a wiring warning from the same logger at build time, so
+        # count the warnings this row is about: the failed summary call.
         warnings = [
             r
             for r in caplog.records
-            if r.levelno == logging.WARNING and r.name == "sr2.pipeline.transformers.summarization"
+            if r.levelno == logging.WARNING
+            and r.name == "sr2.pipeline.transformers.summarization"
+            and "content left unchanged" in r.getMessage()
         ]
         assert len(warnings) == 1
         assert "summary backend down" in warnings[0].getMessage()

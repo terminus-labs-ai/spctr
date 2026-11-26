@@ -8,6 +8,10 @@ Covers:
   - History capture: assistant_response events captured into internal history
   - Resolve output: first call with no prior history returns empty content
   - Resolve output: current turn's events are captured but not included in output
+  - Replay scope (spc-1125): only a turn-start fire (a batch carrying
+    ``user_input``) replays history; every other fire emits its own delta, so
+    a foreign event riding in the batch (``token_threshold``) cannot append a
+    second copy of the conversation to the layer
   - Multi-turn accumulation: history grows across resolve() calls
   - Chronological ordering preserved
   - execution_count increments per call
@@ -217,16 +221,21 @@ class TestSessionResolverFirstTurn:
 class TestSessionResolverUserInputCapture:
     @pytest.mark.asyncio
     async def test_user_input_captured_into_history(self):
-        """After resolving with a user_input event, the user message
-        is captured and appears in the NEXT resolve call's output."""
+        """A captured user_input message appears in the NEXT TURN's snapshot.
+
+        spc-1125 retarget: only a turn-start fire (a batch carrying
+        ``user_input``) replays history, because the layer appends whatever a
+        fire emits and a replay outside the turn start duplicates the whole
+        conversation. A later fire therefore returns just its own messages.
+        """
         resolver = SessionResolver(make_config(max_executions=100))
         user_event = make_user_input_event("hello")
 
-        # First call: captures "hello", returns empty (no prior history)
+        # Turn 1: captures "hello", returns empty (no prior history)
         await resolver.resolve([user_event])
 
-        # Second call: should return the captured user message
-        result = await resolver.resolve([])
+        # Turn 2's snapshot carries the captured user message.
+        result = await resolver.resolve([make_user_input_event("turn 2")])
         assert len(result.content) == 1
         msg = result.content[0]
         assert isinstance(msg, Message)
@@ -256,16 +265,16 @@ class TestSessionResolverUserInputCapture:
 class TestSessionResolverAssistantResponseCapture:
     @pytest.mark.asyncio
     async def test_assistant_response_captured_into_history(self):
-        """After resolving with an assistant_response event, the assistant
-        message is captured and appears in a subsequent resolve call."""
+        """An assistant_response fire emits the message it captures (spc-1125).
+
+        The fire is a delta fire: what it captures is what it returns, and the
+        turn's next snapshot holds it as part of the history.
+        """
         resolver = SessionResolver(make_config(max_executions=100))
         assistant_event = make_assistant_response_event("I can help")
 
-        # First call: captures assistant response
-        await resolver.resolve([assistant_event])
+        result = await resolver.resolve([assistant_event])
 
-        # Second call: should return the captured assistant message
-        result = await resolver.resolve([])
         assert len(result.content) == 1
         msg = result.content[0]
         assert isinstance(msg, Message)
@@ -280,8 +289,7 @@ class TestSessionResolverAssistantResponseCapture:
         resolver = SessionResolver(make_config(max_executions=100))
         assistant_event = make_assistant_response_event("response text")
 
-        await resolver.resolve([assistant_event])
-        result = await resolver.resolve([])
+        result = await resolver.resolve([assistant_event])
 
         msg = result.content[0]
         assert isinstance(msg, Message)
@@ -354,7 +362,7 @@ class TestSessionResolverMultiTurn:
         await resolver.resolve([make_user_input_event("u2")])
         await resolver.resolve([make_assistant_response_event("a2")])
 
-        result = await resolver.resolve([])
+        result = await resolver.resolve([make_user_input_event("u3")])
         roles = [msg.role for msg in result.content]
         assert roles == ["user", "assistant", "user", "assistant"]
 
@@ -366,31 +374,35 @@ class TestSessionResolverMultiTurn:
 
 class TestSessionResolverEdgeCases:
     @pytest.mark.asyncio
-    async def test_resolve_with_no_matching_events_returns_current_history(self):
-        """Non-matching events don't affect history; current history is returned."""
+    async def test_resolve_with_no_matching_events_replays_nothing(self):
+        """A foreign-event fire emits nothing (spc-1125).
+
+        ``Layer.check_budget`` queues ``token_threshold`` on every pass over
+        the threshold, and that event rides into the tool-loop batches. The old
+        contract — hand back the whole history — appended a second copy of the
+        conversation to a layer that already held it (obsidian-4pkd: 88 wire
+        messages became 152). History replays only at the turn start.
+        """
         resolver = SessionResolver(make_config(max_executions=100))
 
         # Seed one turn of history
         await resolver.resolve([make_user_input_event("seeded")])
         await resolver.resolve([make_assistant_response_event("reply")])
 
-        # Call with non-matching event
+        # A fire woken by an unrelated event adds nothing and emits nothing.
         result = await resolver.resolve([make_other_event("layer_ready")])
 
-        assert len(result.content) == 2
-        assert result.content[0].role == "user"
-        assert result.content[1].role == "assistant"
+        assert result.content == []
 
     @pytest.mark.asyncio
-    async def test_resolve_with_empty_events_returns_current_history(self):
-        """Empty events list doesn't capture anything; returns existing history."""
+    async def test_resolve_with_empty_events_replays_nothing(self):
+        """Empty events list captures nothing and emits nothing (spc-1125)."""
         resolver = SessionResolver(make_config(max_executions=100))
 
         await resolver.resolve([make_user_input_event("msg")])
         result = await resolver.resolve([])
 
-        assert len(result.content) == 1
-        assert result.content[0].role == "user"
+        assert result.content == []
 
     @pytest.mark.asyncio
     async def test_user_input_event_with_no_data_is_ignored(self):
@@ -447,14 +459,14 @@ class TestSessionResolverEdgeCases:
         resolver = SessionResolver(make_config(max_executions=100))
 
         await resolver.resolve([make_user_input_event("persistent")])
-        result1 = await resolver.resolve([])
+        result1 = await resolver.resolve([make_user_input_event("turn 2")])
 
         # Mutate the returned list
         result1.content.clear()
 
         # Internal history should be unaffected
-        result2 = await resolver.resolve([])
-        assert len(result2.content) == 1
+        result2 = await resolver.resolve([make_user_input_event("turn 3")])
+        assert len(result2.content) == 2
         assert result2.content[0].content[0].text == "persistent"
 
 

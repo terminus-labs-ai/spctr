@@ -167,7 +167,10 @@ The pipeline runs on an **EventBus** (pub/sub). Components subscribe to event na
 A `Layer` is the core pipeline unit. It:
 - Holds `resolvers`, `transformers`, `tool_providers` (all implementing their respective protocols)
 - Subscribes components to the shared bus; accumulates content as events arrive
-- Enforces a `token_budget` (per-layer cap); emits `overflow` then `force_truncate` if exceeded
+- Enforces a `token_budget` (per-layer cap); emits `overflow` then `force_truncate` if exceeded.
+  A messages-target truncation drops whole tool pairs and never the run's
+  prompt — without it the compiled request has no user-role message and the
+  provider answers `400 'No user query found in messages'` (spc-1125)
 - Compiles to one of three `CompilationTarget`s, set explicitly via the
   **required** `LayerConfig.target`: `"system"` → SYSTEM, `"messages"` → MESSAGES,
   `"tools"` → TOOLS
@@ -197,7 +200,7 @@ Each component also exposes `subscriptions: list[EventSubscription]`, `max_execu
 | `StaticResolver` | `static` | `turn_start` | Fixed `TextBlock` from config |
 | `StaticTextResolver` | `static_text` | `turn_start` | Config `TextBlock` with `{area}` interpolation |
 | `InputResolver` | `input` | `user_input` | `Message(role='user')` wrapping event data |
-| `SessionResolver` | `session` | `user_input` + `assistant_response` | Prior turn history as `list[Message]` |
+| `SessionResolver` | `session` | `user_input` + `assistant_response` | Turn-start fire replays prior history; later fires emit only their own new messages (`list[Message]`) — a foreign event in the batch must not replay it (spc-1125) |
 | `EventPayloadResolver` | `event_payload` | configurable | Event payload blocks as provenance entries |
 | `MemoryResolver` | `memory` | `user_input` | Matched memories as `TextBlock` |
 | `MarkdownFileResolver` | `markdown_file` | `turn_start` | Markdown files loaded from config |
@@ -206,7 +209,7 @@ Each component also exposes `subscriptions: list[EventSubscription]`, `max_execu
 
 | Name | Entry point key | Trigger | Effect |
 |---|---|---|---|
-| `SummarizationTransformer` | `summarize` | configurable | LLM-compresses older blocks; keep_last_n or keep_within_tokens strategy |
+| `SummarizationTransformer` | `summarize` | configurable | LLM-compresses older blocks; keep_last_n or keep_within_tokens strategy. Unbounded `max_executions` when subscribed to a context-pressure event (`token_threshold`/`overflow`), unless the YAML caps it (spc-1125) |
 | `MemoryExtractionTransformer` | `memory_extraction` | `assistant_response` | Extracts memories from response text, saves to MemoryStore; pass-through (content=None) |
 | `CompactionTransformer` | `compaction` | configurable | Applies rule-based compaction (schema_and_sample, result_summary) to layer content |
 

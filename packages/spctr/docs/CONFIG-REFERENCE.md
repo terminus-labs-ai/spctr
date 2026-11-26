@@ -286,6 +286,8 @@ Ordered list of context compilation layers. Each layer:
 
 Off by default. To keep a long tool loop under the model's context limit, give the layer holding the `session` resolver a token budget, a threshold and a `summarize` transformer subscribed to `token_threshold`. Session content grows with every tool iteration; once it passes the threshold, the transformer replaces everything between the first user prompt and the kept window with one user message (`summary_header`, then the summary text), and the loop's next request is compiled from the shortened content.
 
+A summariser subscribed to `token_threshold` or `overflow` compacts on every crossing: `max_executions` defaults to 1, which would stop the transformer after its first pass and leave the layer to grow back into the provider's limit, so an unset `max_executions` is treated as unbounded for those subscriptions (a WARNING names it at startup). Set `max_executions` explicitly to pin a cap. Compaction is not the layer's only relief: over `token_budget` the layer force-truncates, and a messages-target layer drops whole tool pairs and never the run's prompt — a request whose prompt was truncated away carries no user-role message at all (tool results travel as `role="tool"`) and the provider rejects it with `400 'No user query found in messages'`.
+
 ```yaml
     - name: conversation
       target: messages

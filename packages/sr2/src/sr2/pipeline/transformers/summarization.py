@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 
 from sr2.config.models import ConfigError, TransformerConfig
 from sr2.models import (
@@ -28,11 +29,43 @@ _DEFAULT_SUMMARIZATION_PROMPT = "Summarize the following conversation turns conc
 _DEFAULT_SUMMARY_HEADER = "[Summary of {count} earlier messages]"
 _DEFAULT_RETRY_GROWTH_TOKENS = 10000
 
+# Events that fire whenever context pressure is present rather than once. A
+# summariser woken by one of them is an accumulator: capping it at the config
+# default of a single execution stops protecting the run after the first
+# compaction (spc-1125).
+_PRESSURE_EVENTS = frozenset({"token_threshold", "overflow"})
+
 _SOURCES_OMITTED_REASON = (
     "summarization: transform() receives content blocks without entry identity, "
     "so it declares no per-block source ids; the Layer resolves the summarized "
     "blocks to their real stored entry ids at flush time (FR5)."
 )
+
+
+def _effective_max_executions(
+    config: TransformerConfig, subscriptions: list[EventSubscription]
+) -> int:
+    """The config cap, unbounded for a summariser woken by context pressure.
+
+    ``TransformerConfig.max_executions`` defaults to 1. A transformer
+    subscribed to ``token_threshold`` fires on every pass over the threshold,
+    so honouring the default summarises once per run and then leaves the layer
+    to grow into the litellm guard (spc-1125). An explicit ``max_executions``
+    in the YAML always wins.
+    """
+    if "max_executions" in config.model_fields_set:
+        return config.max_executions
+    if not subscriptions:
+        return config.max_executions
+    if not any(s.event_name in _PRESSURE_EVENTS for s in subscriptions):
+        return config.max_executions
+    logger.warning(
+        "summarization: transformer %r subscribed to a context-pressure event runs"
+        " without an execution cap (max_executions unset; the default of 1 would"
+        " stop compaction after the first pass). Set max_executions to pin a limit.",
+        config.name or "summarization",
+    )
+    return sys.maxsize
 
 
 class SummarizationTransformer:
@@ -57,7 +90,6 @@ class SummarizationTransformer:
         self._llm = llm
         self._token_counter: TokenCounter = token_counter or CharacterTokenCounter()
         self._session_id = session_id
-        self.max_executions: int = config.max_executions
         self.execution_count: int = 0
         # Counted content size at the last failed Message summary (FR 11).
         self._failed_at_tokens: int | None = None
@@ -65,6 +97,7 @@ class SummarizationTransformer:
         self.subscriptions: list[EventSubscription] = build_subscriptions(
             config.subscriptions, PHASE_MAP, []
         )
+        self.max_executions = _effective_max_executions(config, self.subscriptions)
 
     # ------------------------------------------------------------------
     # Factory

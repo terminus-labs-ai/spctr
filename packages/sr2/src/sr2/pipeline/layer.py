@@ -12,7 +12,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable
 
-from sr2.models import ContentBlock, Message, TextBlock, ToolDefinition
+from sr2.models import (
+    ContentBlock,
+    Message,
+    TextBlock,
+    ToolDefinition,
+    ToolResultBlock,
+    ToolUseBlock,
+)
 from ulid import ULID
 from sr2.pipeline.compilation import PositionStrategy, get_compilation_targets
 from sr2.pipeline.event_bus import EventBus
@@ -364,6 +371,55 @@ def _synthesize_entries(
             )
         )
     return entries
+
+
+# ---------------------------------------------------------------------------
+# Message-group helpers for budget truncation (spc-1125, dec-854)
+# ---------------------------------------------------------------------------
+
+
+def _has_user_text(item: object) -> bool:
+    """True when *item* is a user Message carrying real text."""
+    return isinstance(item, Message) and item.role == "user" and any(
+        isinstance(b, TextBlock) and b.text.strip() for b in item.content
+    )
+
+
+def _tool_call_ids(item: object) -> set[str]:
+    """The tool-use ids of an assistant Message, empty for anything else."""
+    if not isinstance(item, Message):
+        return set()
+    return {b.id for b in item.content if isinstance(b, ToolUseBlock)}
+
+
+def _answers_only(item: object, call_ids: set[str]) -> bool:
+    """True when *item* is made up solely of results answering ``call_ids``."""
+    if not isinstance(item, Message) or not call_ids:
+        return False
+    results = [b for b in item.content if isinstance(b, ToolResultBlock)]
+    return bool(results) and len(results) == len(item.content) and all(
+        b.tool_use_id in call_ids for b in results
+    )
+
+
+def _prompt_index(content: list) -> int | None:
+    """Index of the run's prompt: the earliest user Message with real text."""
+    return next((i for i, item in enumerate(content) if _has_user_text(item)), None)
+
+
+def _group_end(content: list, index: int) -> int:
+    """End index of the group at *index*: the item plus the results it called.
+
+    A tool-call message and its results change together or the wire request
+    carries half a pair, which upstream rejects.
+    """
+    if index >= len(content):
+        return index
+    end = index + 1
+    call_ids = _tool_call_ids(content[index])
+    while end < len(content) and _answers_only(content[end], call_ids):
+        end += 1
+    return end
 
 
 class Layer:
@@ -849,6 +905,17 @@ class Layer:
             )
 
     def force_truncate(self) -> str | None:
+        """Drop the oldest content until the layer fits ``token_budget``.
+
+        A messages-target layer drops whole tool pairs and never the run's
+        prompt (dec-854). The prompt is what makes the compiled request a
+        request: tool results compile to ``role="tool"`` wire messages, so a
+        truncation that eats the prompt plus the summary sends a conversation
+        the provider rejects with ``400 'No user query found in messages'``
+        (spc-1125). When even the prompt-plus-current-turn cannot fit, the
+        content stays as it is and the warning says so; the litellm guard is
+        the backstop for a request that still leaves over the limit.
+        """
         if self.token_budget is None:
             return None
 
@@ -857,6 +924,9 @@ class Layer:
             return None
 
         self._force_truncated = True
+        if self.target == CompilationTarget.MESSAGES:
+            return self._truncate_messages()
+
         removed = 0
         while self._content and self._token_counter.count(self._content) > self.token_budget:
             self._content.pop(0)
@@ -866,6 +936,31 @@ class Layer:
             f"Layer '{self.name}': force-truncated {removed} block(s) "
             f"to fit budget of {self.token_budget} tokens"
         )
+
+    def _truncate_messages(self) -> str:
+        """Force-truncate a messages layer by whole tool groups (dec-854)."""
+        budget = self.token_budget
+        removed = 0
+        while True:
+            content = self._content
+            if self._token_counter.count(content) <= budget:
+                return (
+                    f"Layer '{self.name}': force-truncated {removed} block(s) "
+                    f"to fit budget of {budget} tokens"
+                )
+            # With the prompt heading the layer, the oldest droppable group is
+            # the one after it; the prompt itself is pinned at index 0.
+            start = 1 if _prompt_index(content) == 0 else 0
+            end = _group_end(content, start)
+            if end >= len(content):
+                # Only the prompt and the current turn are left.
+                return (
+                    f"Layer '{self.name}': cannot fit budget of {budget} tokens"
+                    f" without dropping the run's prompt"
+                    f" ({removed} block(s) dropped)"
+                )
+            self._content = content[:start] + content[end:]
+            removed += end - start
 
     # -- compile --------------------------------------------------------------
 

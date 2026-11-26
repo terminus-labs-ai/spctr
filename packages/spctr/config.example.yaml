@@ -163,6 +163,9 @@ pipeline:
         - name: compact
           type: summarize
           subscriptions: [{event: token_threshold}]
+          # max_executions defaults to 1. Left unset on a token_threshold
+          # subscription it means unbounded, so every crossing compacts; set it
+          # here only to cap the number of summary calls in one run (spc-1125).
           config:
             keep_strategy: keep_within_tokens
             keep_tokens: 50000          # newest messages kept verbatim

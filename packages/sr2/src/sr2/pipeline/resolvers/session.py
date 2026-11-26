@@ -1,8 +1,10 @@
 """SessionResolver: accumulates conversation history across turns.
 
-Returns PRIOR history on each resolve() call, then captures new events
-(user_input, assistant_response, assistant_iteration_response,
-tool_result_received) for subsequent calls.
+The turn-start fire (the batch carrying ``user_input``) returns the PRIOR
+history; every later fire in the turn returns only the messages it adds. Each
+fire also captures its events (user_input, assistant_response,
+assistant_iteration_response, tool_result_received) into the history for the
+next turn's snapshot.
 """
 
 from __future__ import annotations
@@ -31,6 +33,11 @@ _TOOL_LOOP_ORDER = {
     "tool_result_received": 1,
 }
 
+# Event names this resolver consumes. Anything else can ride in the same
+# pending batch (``Layer.check_budget`` queues ``token_threshold`` on every
+# pass over the threshold) and must not change how the batch is read.
+_HANDLED_EVENTS = frozenset({"user_input", "assistant_response", *_TOOL_LOOP_ORDER})
+
 
 class SessionResolver:
     """Accumulates user/assistant messages across turns.
@@ -40,7 +47,10 @@ class SessionResolver:
     iterations).
 
     Each resolve() call:
-      1. Snapshots the current history as output (copy).
+      1. Emits the prior history (copy) when the batch starts a turn, else the
+         delta of the messages captured by this call. Emitting the snapshot on
+         any other fire appends a second copy of the conversation to a layer
+         that already holds it (spc-1125).
       2. Captures matching events into internal history for next turn.
       3. Increments execution_count.
 
@@ -80,26 +90,26 @@ class SessionResolver:
     async def resolve(self, events: list[Event]) -> ResolvedContent:
         self.execution_count += 1
 
-        # Only the turn-start fire (user_input) emits the history snapshot.
-        # Every later fire in the turn (tool loop, end of turn) returns only
-        # the messages it adds: the layer already holds the snapshot, and
-        # re-emitting it would double the layer's content.
-        event_names = {e.name for e in events}
-        is_tool_loop_only = bool(events) and event_names.issubset(_TOOL_LOOP_ORDER)
-        emits_delta_only = bool(events) and event_names.issubset(
-            {"assistant_response", *_TOOL_LOOP_ORDER}
-        )
+        # Only the turn-start fire (the batch carrying ``user_input``) emits the
+        # history snapshot. Every later fire in the turn (tool loop, end of
+        # turn) returns only the messages it adds: the layer already holds the
+        # snapshot, and re-emitting it appends a second copy of the whole
+        # conversation. Foreign events in the batch are ignored here — spc-1125
+        # was ``token_threshold`` riding in with the tool events and flipping
+        # this fire back to a full replay on every iteration past the threshold.
+        handled = [e for e in events if e.name in _HANDLED_EVENTS]
+        emits_delta_only = not any(e.name == "user_input" for e in handled)
 
         # Snapshot prior history for output (copy so mutations don't corrupt state).
         output: list[Message] = [] if emits_delta_only else list(self._history)
         history_len_before = len(self._history)
-        if is_tool_loop_only:
+        if all(e.name in _TOOL_LOOP_ORDER for e in handled):
             # The assistant message precedes its tool results on the wire,
             # whatever order the orchestrator queued the events in.
-            events = sorted(events, key=lambda e: _TOOL_LOOP_ORDER[e.name])
+            handled = sorted(handled, key=lambda e: _TOOL_LOOP_ORDER[e.name])
 
         # Capture new events into history for subsequent calls
-        for event in events:
+        for event in handled:
             if event.name == "user_input":
                 data: list[ContentBlock] | None = event.data
                 if data:
