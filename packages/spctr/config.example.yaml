@@ -202,6 +202,10 @@ pipeline:
 #   stop_handoff_message: "⏹ stopped {agent}"
 #   stop_turn_message: "⏹ stopped"
 #   stop_idle_message: "nothing running"
+#   model_none_message: "No models are configured."
+#   model_list_message: "Available models: {names}"
+#   model_unknown_message: "Unknown model '{name}'. Available: {names}"
+#   model_switched_message: "Switched to model '{name}'."
 
 # Direct-mode alternative: replace the Zulip block above; --interface zulip selects it.
 # Example peer 8 is a placeholder: use the intended human's user ID.

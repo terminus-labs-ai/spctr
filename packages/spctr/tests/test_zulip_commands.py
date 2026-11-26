@@ -308,3 +308,57 @@ async def test_reload_without_switch_is_unchanged():
     iface._reload_config()
 
     assert agent.config.active_model == "coding"
+
+
+# ---------------------------------------------------------------------------
+# spc-1122 — !model reply texts come from ZulipConfig fields
+# ---------------------------------------------------------------------------
+CUSTOM = {
+    "model_none_message": "NONE-X",
+    "model_list_message": "LIST<{names}>",
+    "model_unknown_message": "UNK<{name}|{names}>",
+    "model_switched_message": "SW<{name}>",
+}
+
+
+def test_defaults_equal_previous_literals():
+    config = ZulipConfig(zuliprc="/unused.zuliprc")
+    assert config.model_none_message == "No models are configured."
+    assert config.model_list_message == "Available models: {names}"
+    assert config.model_unknown_message == (
+        "Unknown model '{name}'. Available: {names}"
+    )
+    assert config.model_switched_message == "Switched to model '{name}'."
+
+
+def _custom_iface():
+    iface, agent = _iface()
+    iface._config = iface._config.model_copy(update=CUSTOM)
+    return iface, agent
+
+
+async def test_custom_none_message():
+    iface, agent = _custom_iface()
+    agent.config.models = {}
+    await _send(iface, "!model coding")
+    assert _reply(iface._client) == "NONE-X"
+
+
+async def test_custom_list_message():
+    iface, _ = _custom_iface()
+    await _send(iface, "!model")
+    assert _reply(iface._client) == f"LIST<{AVAILABLE}>"
+
+
+async def test_custom_unknown_message():
+    iface, agent = _custom_iface()
+    await _send(iface, "!model nope")
+    assert _reply(iface._client) == f"UNK<nope|{AVAILABLE}>"
+    assert agent.config.active_model == "default"
+
+
+async def test_custom_switched_message():
+    iface, agent = _custom_iface()
+    await _send(iface, "!model coding")
+    assert _reply(iface._client) == "SW<coding>"
+    assert agent.config.active_model == "coding"

@@ -599,6 +599,10 @@ zulip:
   stop_handoff_message: "⏹ stopped {agent}"
   stop_turn_message: "⏹ stopped"
   stop_idle_message: "nothing running"
+  model_none_message: "No models are configured."
+  model_list_message: "Available models: {names}"
+  model_unknown_message: "Unknown model '{name}'. Available: {names}"
+  model_switched_message: "Switched to model '{name}'."
 ```
 
 | Field | Type | Default | Description |
@@ -627,6 +631,10 @@ zulip:
 | `stop_handoff_message` | str | `"⏹ stopped {agent}"` | Stream mode: reply to `!stop` after cancelling this topic's active handoff. Direct mode ignores it |
 | `stop_turn_message` | str | `"⏹ stopped"` | Stream mode: reply to `!stop` after cancelling this topic's running turn and queued turns. Direct mode ignores it |
 | `stop_idle_message` | str | `"nothing running"` | Stream mode: reply to `!stop` when this topic has no running turn. Direct mode ignores it |
+| `model_none_message` | str | `"No models are configured."` | Reply to `!model` when the agent config declares no model profiles |
+| `model_list_message` | str | `"Available models: {names}"` | Reply to a bare `!model`; `{names}` is the comma-separated profile names in declaration order |
+| `model_unknown_message` | str | `"Unknown model '{name}'. Available: {names}"` | Reply to `!model <name>` when no profile has that name; `{name}` is the requested name and `{names}` the profile list |
+| `model_switched_message` | str | `"Switched to model '{name}'."` | Reply after `!model <name>` switches the active profile; `{name}` is the new profile |
 
 For direct mode, replace the Zulip block with a minimal configuration like this example, substituting the intended human's user ID for `8`:
 

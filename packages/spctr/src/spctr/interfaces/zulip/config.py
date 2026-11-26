@@ -111,6 +111,11 @@ class ZulipConfig(BaseModel):
         stop_handoff_message: Stream mode: reply after stopping a handoff.
         stop_turn_message: Stream mode: reply after stopping a topic turn.
         stop_idle_message: Stream mode: reply when ``!stop`` finds no turn.
+        model_none_message: ``!model`` reply when no model profiles exist.
+        model_list_message: Bare ``!model`` reply; ``{names}`` lists profiles.
+        model_unknown_message: ``!model`` reply for an unknown profile;
+            ``{name}`` and ``{names}``.
+        model_switched_message: ``!model`` reply after a switch; ``{name}``.
     """
     model_config = ConfigDict(strict=True)
 
@@ -140,6 +145,10 @@ class ZulipConfig(BaseModel):
     stop_handoff_message: str = "⏹ stopped {agent}"
     stop_turn_message: str = "⏹ stopped"
     stop_idle_message: str = "nothing running"
+    model_none_message: str = "No models are configured."
+    model_list_message: str = "Available models: {names}"
+    model_unknown_message: str = "Unknown model '{name}'. Available: {names}"
+    model_switched_message: str = "Switched to model '{name}'."
 
     @model_validator(mode="before")
     @classmethod

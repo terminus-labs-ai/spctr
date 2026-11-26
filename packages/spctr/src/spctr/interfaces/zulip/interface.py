@@ -972,17 +972,21 @@ class ZulipInterface:
         pointer file is written from this interface.
         """
         name = parse_model_command(content)
+        texts = self._config
         models = getattr(self._agent.config, "models", None) or {}
         if not models:
-            await self._send_reply(channel_id, topic, "No models are configured.")
+            await self._send_reply(channel_id, topic, texts.model_none_message)
             return
         names = ", ".join(models)  # declaration order, as configured
         if not name:
-            await self._send_reply(channel_id, topic, f"Available models: {names}")
+            await self._send_reply(
+                channel_id, topic, texts.model_list_message.format(names=names)
+            )
             return
         if name not in models:
             await self._send_reply(
-                channel_id, topic, f"Unknown model '{name}'. Available: {names}"
+                channel_id, topic,
+                texts.model_unknown_message.format(name=name, names=names),
             )
             return
         current = self._agent.config
@@ -990,7 +994,9 @@ class ZulipInterface:
             current.model_copy(update={"active_model": name})
         )
         self._active_model_override = name
-        await self._send_reply(channel_id, topic, f"Switched to model '{name}'.")
+        await self._send_reply(
+            channel_id, topic, texts.model_switched_message.format(name=name)
+        )
 
     async def _owned_stop(
         self, channel_id: int, topic: str, content: Any
