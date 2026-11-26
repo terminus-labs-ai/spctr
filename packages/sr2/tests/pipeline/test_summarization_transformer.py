@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
 
 import pytest
 
@@ -41,7 +40,7 @@ from sr2.pipeline.event_bus import EventBus
 from sr2.pipeline.events import Event, EventPhase, EventSubscription
 from sr2.pipeline.models import ResolvedContent, TransformationResult
 from sr2.pipeline.protocols import Transformer
-from sr2.pipeline.provenance import Entry, EntryOrigin, InMemoryProvenanceStore
+from sr2.pipeline.provenance import InMemoryProvenanceStore
 from sr2.pipeline.stores.sqlite import SQLiteProvenanceStore
 from sr2.protocols.llm import CompletionRequest, CompletionResponse
 
@@ -837,108 +836,6 @@ class TestRealStoreSeam:
             assert source_id in stored_ids, (
                 f"source id {source_id!r} is not a stored entry — dangling lineage"
             )
-
-    def test_r1_declared_source_id_is_carried_when_it_resolves(self, tmp_path):
-        """r1 / AC1: a summarized block whose real stored id is visible is chained to it.
-
-        The summarized block is written to the real store *before* it joins
-        the layer content — at summarize time it is stored content with a
-        known id, the case-table run — and carries that id in its provenance
-        meta. The stored summary entry's source links must be exactly that id,
-        never an id the store has not seen.
-        """
-        real_id = "SR2127REALID0000000000000A"
-
-        async def _drive(store):
-            if isinstance(store, SQLiteProvenanceStore):
-                await store.connect()
-            try:
-                # Stored first, through the store's own write path, so the id
-                # is a real ledger row before summarize time.
-                await store.write(
-                    Entry(
-                        id=real_id,
-                        content=TextBlock(text="block being summarized"),
-                        sources=(),
-                        origin=EntryOrigin(kind="resolver", name="fixture"),
-                        layer="conversation",
-                        session_id="sr2-127-session",
-                        created_at=datetime.now(tz=timezone.utc),
-                    )
-                )
-
-                llm = MockLLM(response_text="Declared summary.")
-                transformer = build_transformer(config=make_config(keep_last_n=3), llm=llm)
-                transformer._provenance_store = store
-                layer = make_layer_with(transformer, store)
-
-                # The summarized block carries its real stored id; the rest of
-                # the content has no visible id, so the declared one is the
-                # only source the transformer can legitimately name.
-                annotated = TextBlock(
-                    text="block being summarized",
-                    meta={
-                        "provenance": {
-                            "source_ids": ["SR2127FAKEID0000000000000B", real_id]
-                        }
-                    },
-                )
-                filler = make_text_blocks(6, prefix="tail")
-                layer.add_content(
-                    ResolvedContent(
-                        resolver_name="session",
-                        source_layer="conversation",
-                        content=[annotated, *filler],
-                    )
-                )
-                await layer.process_pending()
-
-                layer.handle_event(make_events()[0])
-                await layer.process_pending()
-            finally:
-                if isinstance(store, SQLiteProvenanceStore):
-                    await store.close()
-
-        # InMemory store
-        store = InMemoryProvenanceStore()
-        run_async(_drive(store))
-
-        async def _sources_in_memory():
-            entries = []
-            for sid in ("sr2-127-session", "default", ""):
-                entries.extend(await store.get_session(sid))
-            return entries
-
-        entries = run_async(_sources_in_memory())
-        summaries = [
-            e for e in entries
-            if isinstance(e.content, TextBlock) and e.content.text == "Declared summary."
-        ]
-        assert len(summaries) == 1, "summary block must map to a stored entry (FR1)"
-        assert summaries[0].origin.kind == "transformer"
-        assert summaries[0].sources == (real_id,), (
-            "the summary entry must chain to the summarized block's real stored "
-            f"id; got {summaries[0].sources!r}"
-        )
-
-        # SQLite store — asserted over raw ledger rows.
-        db_path = tmp_path / "decl.db"
-        run_async(_drive(SQLiteProvenanceStore(path=db_path)))
-        rows, links = rows_from_db(db_path)
-        stored_ids = {row[0] for row in rows}
-        summary_rows = [
-            row for row in rows
-            if json.loads(row[1]).get("text") == "Declared summary."
-        ]
-        assert len(summary_rows) == 1, "summary block must map to a stored entry (FR1)"
-        summary = summary_rows[0]
-        assert summary[2] == "transformer"
-        sources = sorted(sid for eid, sid in links if eid == summary[0])
-        assert sources == [real_id], (
-            "the summary entry's stored source links must be exactly the "
-            f"block's real stored id; got {sources!r}"
-        )
-        assert all(sid in stored_ids for sid in sources)
 
     def test_r2_summary_lineage_reaches_original_turn_entries(self):
         """r2 / AC1 + FR1 + FR5: the summary block maps to a stored entry whose

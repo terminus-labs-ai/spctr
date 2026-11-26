@@ -138,13 +138,10 @@ class SummarizationTransformer:
         # source lineage: the omission is recorded in the result's provenance
         # declaration, and the Layer synthesizes the summary block against
         # the real stored entry ids it holds at flush time (FR5).
-        declared_sources = await self._resolve_real_source_ids(to_summarize)
         declaration: dict = {
-            "sources_omitted": not declared_sources,
+            "sources_omitted": True,
             "sources_omitted_reason": _SOURCES_OMITTED_REASON,
         }
-        if declared_sources:
-            declaration["sources"] = list(declared_sources)
 
         # Emit event
         event = Event(
@@ -359,36 +356,3 @@ class SummarizationTransformer:
                 {"sources_omitted": True, "sources_omitted_reason": _SOURCES_OMITTED_REASON}
             ],
         )
-
-    async def _resolve_real_source_ids(
-        self, blocks: list[ContentBlock]
-    ) -> tuple[str, ...]:
-        """Real stored entry ids for the summarized blocks, if any is resolvable.
-
-        Only ids already present in the provenance store are declared — this
-        transformer never invents an id (FR5). When no block carries a stored
-        id this returns empty and the Layer resolves the summarized blocks
-        from the turn's write set at flush time.
-        """
-        store = getattr(self, "_provenance_store", None)
-        if store is None:
-            # No store handle: nothing can be confirmed to resolve.
-            return ()
-        for block in blocks:
-            meta = getattr(block, "meta", None)
-            if not isinstance(meta, dict):
-                continue
-            declared = meta.get("provenance")
-            if not isinstance(declared, dict):
-                continue
-            candidates = declared.get("source_ids")
-            if isinstance(candidates, str):
-                candidates = (candidates,)
-            if not isinstance(candidates, (list, tuple)):
-                continue
-            for candidate in candidates:
-                if not isinstance(candidate, str) or not candidate:
-                    continue
-                if await store.get(candidate) is not None:
-                    return (candidate,)
-        return ()
