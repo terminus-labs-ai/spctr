@@ -934,7 +934,6 @@ def _blocked_reply(reply: dict, vocabulary: tuple[str, ...]) -> None:
         f"reply is not explicit about blocking: {reply!r}")
 
 
-@pytest.mark.baseline_debt("spc-965")
 def test_own_account_cold_topic_admitted_with_context_ac16a(tmp_path):
     """AC16-a: own-account seeds are placed before the trigger as assistant
     context, the turn is admitted, the reply lands, nothing refuses.
@@ -1024,7 +1023,6 @@ def test_own_account_cold_topic_admitted_with_context_ac16a(tmp_path):
         harness.close(run)
 
 
-@pytest.mark.baseline_debt("spc-965")
 def test_cold_topic_history_id_sorted_when_probe_out_of_order_ac1(tmp_path):
     """spc-1058 AC1: the FR 9a admitted history is built id-ascending.
 
@@ -1122,7 +1120,6 @@ def test_cold_topic_history_id_sorted_when_probe_out_of_order_ac1(tmp_path):
         harness.close(run)
 
 
-@pytest.mark.baseline_debt("spc-965")
 def test_own_account_plus_foreign_message_refused_ac16b(tmp_path):
     """AC16-b: one own-account seed plus a prior Diego message is still
     refused with the unsupported-history reply and no model work."""
@@ -1162,7 +1159,6 @@ def test_own_account_plus_foreign_message_refused_ac16b(tmp_path):
         harness.close(run)
 
 
-@pytest.mark.baseline_debt("spc-965")
 def test_other_bot_message_refused_ac16c(tmp_path):
     """AC16-c: another BOT's message is not own-account context — refused,
     no model work (FR 9 unchanged for foreign senders)."""
@@ -1187,7 +1183,6 @@ def test_other_bot_message_refused_ac16c(tmp_path):
         harness.close(run)
 
 
-@pytest.mark.baseline_debt("spc-965")
 def test_probe_failure_blocks_ac16d(tmp_path):
     """AC16-d: a malformed probe answer blocks the turn with the probe-failure
     reply and no model work (unchanged for the FR 9a code path)."""
