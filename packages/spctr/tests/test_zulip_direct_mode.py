@@ -390,9 +390,11 @@ def patched_credentials(monkeypatch):
     return direct_mod
 
 
-def _dm_interface(patched_credentials, client: FakeDMClient, config=None):
+def _dm_interface(patched_credentials, client: FakeDMClient, monkeypatch, config=None):
     iface = ZulipDMInterface(config or _direct_config())
-    patched_credentials.ZulipClient = lambda **kw: client
+    # Installed via monkeypatch so the real ZulipClient is restored at test
+    # teardown (spc-1065): no fake outlives the test that installed it.
+    monkeypatch.setattr(patched_credentials, "ZulipClient", lambda **kw: client)
     return iface
 
 
@@ -446,12 +448,12 @@ def test_implements_the_interface_protocol():
     assert iface.name == "zulip"
 
 
-def test_start_registers_queue_and_reads_bot_identity(patched_credentials):
+def test_start_registers_queue_and_reads_bot_identity(patched_credentials, monkeypatch):
     """Bot identity (including her OWN user_id) comes from registration —
     no extra HTTP identity call. ``_started`` marks the registered-queue
     state (the promoted channel's public readiness fact)."""
     client = FakeDMClient()
-    iface = _dm_interface(patched_credentials, client)
+    iface = _dm_interface(patched_credentials, client, monkeypatch)
     assert iface._started is False
     asyncio.run(iface.start(agent=None))
     assert client.register_calls == 1
@@ -462,11 +464,11 @@ def test_start_registers_queue_and_reads_bot_identity(patched_credentials):
     assert iface._started is False
 
 
-def test_start_without_peer_fails_explicitly(patched_credentials):
+def test_start_without_peer_fails_explicitly(patched_credentials, monkeypatch):
     """Even a block that reached start() without an integer peer_id (a
     caller bypassing the schema) fails startup with the declared error,
     and start() opens no transport when it does."""
-    iface = _dm_interface(patched_credentials, FakeDMClient())
+    iface = _dm_interface(patched_credentials, FakeDMClient(), monkeypatch)
     iface._config = iface._config.model_copy(update={"peer_id": None})
     with pytest.raises(ValueError, match="peer_id"):
         asyncio.run(iface.start(agent=None))
@@ -500,9 +502,9 @@ def test_construction_without_peer_fails_explicitly():
         direct_mod.ZulipConfigView = original
 
 
-def test_admits_uses_registration_bot_metadata(patched_credentials):
+def test_admits_uses_registration_bot_metadata(patched_credentials, monkeypatch):
     client = FakeDMClient()
-    iface = _dm_interface(patched_credentials, client)
+    iface = _dm_interface(patched_credentials, client, monkeypatch)
     asyncio.run(iface.start(agent=None))
     assert iface.admits({"type": "private", "id": 1, "sender_id": DIEGO_ID})
     assert not iface.admits({"type": "private", "id": 2, "sender_id": BOT_ID})
@@ -515,7 +517,7 @@ def test_admits_uses_registration_bot_metadata(patched_credentials):
     )
 
 
-def test_poll_returns_admitted_dmshaped_messages(patched_credentials):
+def test_poll_returns_admitted_dmshaped_messages(patched_credentials, monkeypatch):
     client = FakeDMClient([[
         _dm_event(1, DIEGO_ID, "hey"),
         _dm_event(2, BOT_ID, "reply"),            # own account: never
@@ -526,7 +528,7 @@ def test_poll_returns_admitted_dmshaped_messages(patched_credentials):
          "message": {"id": 6, "type": "private", "sender_id": "8",
                      "content": "string id"}},
     ]])
-    iface = _dm_interface(patched_credentials, client)
+    iface = _dm_interface(patched_credentials, client, monkeypatch)
     asyncio.run(iface.start(agent=None))
     admitted = asyncio.run(iface.poll())
     assert [(m.message_id, m.sender_id, m.text) for m in admitted] == [
@@ -534,9 +536,9 @@ def test_poll_returns_admitted_dmshaped_messages(patched_credentials):
     ]
 
 
-def test_send_targets_peer_via_client(patched_credentials):
+def test_send_targets_peer_via_client(patched_credentials, monkeypatch):
     client = FakeDMClient()
-    iface = _dm_interface(patched_credentials, client)
+    iface = _dm_interface(patched_credentials, client, monkeypatch)
     asyncio.run(iface.start(agent=None))
     assert asyncio.run(iface.send("hi diego")) == 5001
     assert client.sends == [(DIEGO_ID, "hi diego")]
@@ -577,12 +579,12 @@ def _drive_run(iface, agent, until, timeout=5.0):
     return asyncio.run(_main())
 
 
-def test_run_handles_admitted_dm_end_to_end(patched_credentials):
+def test_run_handles_admitted_dm_end_to_end(patched_credentials, monkeypatch):
     client = FakeDMClient([[
         _dm_event(1, BOT_ID, "own reply"),
         _dm_event(2, DIEGO_ID, "hey iris"),
     ]])
-    iface = _dm_interface(patched_credentials, client)
+    iface = _dm_interface(patched_credentials, client, monkeypatch)
     session = StubSession(reply="hey you")
     agent = StubAgent(session)
     asyncio.run(iface.start(agent=agent))
@@ -598,12 +600,12 @@ def test_run_handles_admitted_dm_end_to_end(patched_credentials):
     assert iface._last_event_id >= 2
 
 
-def test_run_reuses_one_session_and_survives_turn_failure(patched_credentials):
+def test_run_reuses_one_session_and_survives_turn_failure(patched_credentials, monkeypatch):
     client = FakeDMClient([
         [_dm_event(1, DIEGO_ID, "one")],
         [_dm_event(2, DIEGO_ID, "two")],
     ])
-    iface = _dm_interface(patched_credentials, client)
+    iface = _dm_interface(patched_credentials, client, monkeypatch)
     session = StubSession(reply="ok")
     agent = StubAgent(session)
     asyncio.run(iface.start(agent=agent))
@@ -619,9 +621,9 @@ def test_run_reuses_one_session_and_survives_turn_failure(patched_credentials):
     assert len(client.sends) == 2
 
 
-def test_stop_closes_session_and_transport(patched_credentials):
+def test_stop_closes_session_and_transport(patched_credentials, monkeypatch):
     client = FakeDMClient()
-    iface = _dm_interface(patched_credentials, client)
+    iface = _dm_interface(patched_credentials, client, monkeypatch)
     session = StubSession()
     agent = StubAgent(session)
     asyncio.run(iface.start(agent=agent))
@@ -630,12 +632,12 @@ def test_stop_closes_session_and_transport(patched_credentials):
     assert session.closed and client.closed
 
 
-def test_poll_transport_error_propagates(patched_credentials):
+def test_poll_transport_error_propagates(patched_credentials, monkeypatch):
     class BoomClient(FakeDMClient):
         async def get_events(self, queue_id, last_event_id=-1):
             raise ZulipError("down")
 
-    iface = _dm_interface(patched_credentials, BoomClient())
+    iface = _dm_interface(patched_credentials, BoomClient(), monkeypatch)
     asyncio.run(iface.start(agent=None))
     with pytest.raises(ZulipError):
         asyncio.run(iface.poll())
@@ -669,3 +671,20 @@ def test_cli_zulip_via_loaded_config_block_selects_dm():
     )
     cfg = ZulipConfig(**block)
     assert _load_interface("zulip", config=cfg) is ZulipDMInterface
+
+
+class TestNoModuleAttributeLeak:
+    def test_direct_module_attributes_are_restored(self):
+        """spc-1065 (AC2): after every test in this file has run (each
+        installs a fake ZulipClient via monkeypatch on the direct module),
+        the direct module again carries the REAL objects, verified by
+        identity against the client module's own definitions."""
+        import spctr.interfaces.zulip.client as client_mod
+        import spctr.interfaces.zulip.direct as direct_mod
+
+        assert (
+            direct_mod.ZulipClient is client_mod.ZulipClient
+        ), f"ZulipClient leaked: {direct_mod.ZulipClient!r}"
+        assert (
+            direct_mod.load_zulip_credentials is client_mod.load_zulip_credentials
+        ), f"load_zulip_credentials leaked: {direct_mod.load_zulip_credentials!r}"
