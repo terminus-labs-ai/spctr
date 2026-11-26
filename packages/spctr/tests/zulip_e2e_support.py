@@ -337,6 +337,33 @@ class ZulipServer:
         )
         return msg_id
 
+    def reorder_topic(self, channel: int, topic: str,
+                      permutation: list[int]) -> None:
+        """Scramble a topic's recorded history order; each entry keeps its id.
+
+        ``permutation`` indexes the ledger as it stands: position ``i`` takes
+        the entry currently at ``permutation[i]``, so ``[2, 0, 1]`` hands the
+        topic probe third, first, second while every message keeps its own
+        ``id``.  A mis-shaped permutation raises :class:`IndexError`.  The
+        ledger is reordered IN PLACE, so the change is what the next history
+        fetch (``GET /api/v1/messages``, what a client's
+        ``get_topic_messages`` calls) serves — exactly as a real server
+        handing a topic back out of chronological order would be.
+        """
+        ledger = self._messages.setdefault((channel, topic), [])
+        ledger[:] = [ledger[i] for i in permutation]
+
+    def topic_ledger(self, channel: int, topic: str) -> list[dict]:
+        """The recorded history list for (channel, topic), oldest first.
+
+        Test-side reader for the ledger ``seed_message`` and ``push_message``
+        write and ``_history_call`` serves, so a fixture can assert on the
+        recorded order WITHOUT naming a private attribute.  The list is the
+        live one: reordering it (see ``reorder_topic``) is what the next
+        history fetch serves.  A topic nothing recorded yields an empty list.
+        """
+        return self._messages.setdefault((channel, topic), [])
+
     def push_message(self, channel: int, topic: str, sender_id: int, content: str) -> int:
         """Deliver one message event to the queue AND record it in history.
 

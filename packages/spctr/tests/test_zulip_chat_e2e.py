@@ -67,6 +67,11 @@ from zulip_e2e_support import (  # noqa: E402
 
 BOT_SEND_USER = "bot@e2e.local"  # synthetic zuliprc identity
 
+# The spctr test directory, for the AC1-r3 private-ledger source scan
+# (spc-1067): this file is one level below it, so the scan covers every test
+# module and helper under packages/spctr/tests.
+_TESTS_DIR = Path(__file__).resolve().parent
+
 # AC16 (FR 9a, spc-1056).  Pinned here — as the frozen
 # ``test_existing_topic_refusal`` pins the refusal by its topic vocabulary —
 # because a bare ``len(replies) == N`` cannot tell "admitted and answered"
@@ -1029,6 +1034,13 @@ def test_cold_topic_history_id_sorted_when_probe_out_of_order_ac1(tmp_path):
     third, first, second.  The Session history the trigger answers from is
     still the id order: assistant-authored, first, second, third, with the
     trigger itself the current input and never context.
+
+    spc-1067: the fixture's scramble goes through the fake's public
+    ``reorder_topic`` helper — whose in-place reorder (and id preservation)
+    this fixture pins on a rotate back to the base state — and the recorded
+    ledger is read through the fake's public ``topic_ledger`` reader, so no
+    test touches the fake's internals; the behaviour assertions after the
+    launch are unchanged.
     """
     harness = Harness(workdir=tmp_path / "ac1-sort", resume_enabled=False)
     run, cwd, env = harness.build()
@@ -1040,11 +1052,39 @@ def test_cold_topic_history_id_sorted_when_probe_out_of_order_ac1(tmp_path):
         third = run.zulip.seed_message(CONFIGURED_CHANNEL, "sortask",
                                        OWN_ID, "AC1SORT_THREE")
         assert first < second < third  # the fixture's chronological order
-        ledger = run.zulip._messages[(CONFIGURED_CHANNEL, "sortask")]
-        assert [m["id"] for m in ledger] == [first, second, third]
+        # AC1-r1 (spc-1067): the fake's public helper reorders a (channel,
+        # topic) ledger IN PLACE — position i takes the entry currently at
+        # permutation[i], every entry keeps its own id — so the fetch path
+        # AC1 names answers in that order.  ``[2, 0, 1]`` on this topic puts
+        # the ids third, first, second; ``[1, 2, 0]`` puts them back, so the
+        # probe below stays the fixture's one and only fetch of the ledger.
+        ledger = run.zulip.topic_ledger(CONFIGURED_CHANNEL, "sortask")
+        assert [m["id"] for m in ledger] == [first, second, third], ledger
+        run.zulip.reorder_topic(CONFIGURED_CHANNEL, "sortask", [2, 0, 1])
+        assert [m["id"] for m in ledger] == [third, first, second], ledger
+        run.zulip.reorder_topic(CONFIGURED_CHANNEL, "sortask", [2, 0, 1])
+        assert [m["id"] for m in ledger] == [second, third, first], ledger
+        assert [m["content"] for m in ledger] == [
+            "AC1SORT_TWO", "AC1SORT_THREE", "AC1SORT_ONE"], ledger
+        run.zulip.reorder_topic(CONFIGURED_CHANNEL, "sortask", [1, 2, 0])
+        assert [m["id"] for m in ledger] == [third, first, second], ledger
         # Scramble the recorded order while each entry keeps its own id:
         # the probe now returns the list as third, first, second.
-        ledger[:] = [ledger[2], ledger[0], ledger[1]]
+        run.zulip.reorder_topic(CONFIGURED_CHANNEL, "sortask", [2, 0, 1])
+        # AC1-r3 (spc-1067): no test under packages/spctr/tests reads or
+        # writes the fake's private (channel, topic) ledger; the only
+        # remaining references are the fake's own internals in
+        # zulip_e2e_support.py.  The attribute name is assembled here, so no
+        # line of this scan carries it and no line needs an exclusion: every
+        # hit in the tree is a real reach.
+        reach = "zulip" + "." + "_messages"
+        reaches = [f"{path.relative_to(_TESTS_DIR)}:{lineno}: {line.strip()}"
+                   for path in sorted(_TESTS_DIR.rglob("*.py"))
+                   for lineno, line in enumerate(
+                       path.read_text(encoding="utf-8").splitlines(), 1)
+                   if reach in line and path.name != "zulip_e2e_support.py"]
+        assert reaches == [], (
+            f"tests still touch the fake's private ledger: {reaches}")
         harness.launch(run, cwd, env)
         assert run.wait_started(), _startup_failure(run)
 
