@@ -132,7 +132,12 @@ from spctr.reminders import (
     ReminderOrigin,
 )
 from spctr.reminders import tool as reminders_tool
-from spctr.schedules import Schedule, ScheduleEngine
+from spctr.schedules import (
+    Schedule,
+    start_platform_engine,
+    stop_platform_engine,
+    sync_platform_engine,
+)
 from spctr.tools.schedule_tool import (
     ScheduleOrigin,
     ScheduleTurnScope,
@@ -721,15 +726,10 @@ class ZulipInterface:
         claims only ``platform: zulip`` files of the shared directory and
         posts through this interface's Zulip client to the row's stream
         and topic; the tool gets the engine (``run_now``), the stream
-        resolver and the stream-name lookup through its seams.
+        resolver and the stream-name lookup through its seams. Shared
+        construction lives in :func:`start_platform_engine` (spc-1098);
+        this interface keeps its send seam, lock and stamp.
         """
-        schedules = getattr(agent, "schedules", None)
-        if schedules is None:
-            return
-        if not asyncio.iscoroutinefunction(
-            getattr(schedules.store, "recover_claimed_async", None)
-        ):
-            return
 
         async def send(row: Schedule, content: str) -> None:
             # Raised, not swallowed: the engine logs a failed post. A row
@@ -741,21 +741,15 @@ class ZulipInterface:
                 content=content,
             )
 
-        engine = ScheduleEngine(
-            schedules.store,
+        engine = start_platform_engine(
+            getattr(agent, "schedules", None),
             send=send,
-            poll_seconds=schedules.poll_seconds,
-            tz=schedules.tz,
-            agent_name=schedules.agent_name,
-            command_timeout=schedules.command_timeout,
-            agent_timeout=schedules.agent_timeout,
             platform="zulip",
+            channel_resolver=self._resolve_channel,
+            channel_namer=self._schedule_channel_name,
         )
-        tool = getattr(schedules, "tool", None)
-        if tool is not None:
-            tool._engine = engine
-            tool.set_channel_resolver(self._resolve_channel)
-            tool.set_channel_namer(self._schedule_channel_name)
+        if engine is None:
+            return
         self._schedules_engine = engine
         self._schedules_stamp = getattr(agent, "schedules_stamped", 0)
         self._schedules_start_task = asyncio.ensure_future(engine.start())
@@ -765,12 +759,7 @@ class ZulipInterface:
         engine = self._schedules_engine
         self._schedules_engine = None
         self._schedules_stamp = None
-        if engine is None:
-            return
-        try:
-            await engine.stop()
-        except asyncio.CancelledError:
-            pass
+        await stop_platform_engine(engine)
 
     async def _sync_schedules(self) -> None:
         """Re-seat the engine after a live config reload (FR23).
@@ -779,15 +768,14 @@ class ZulipInterface:
         restart on their own lock.
         """
         async with self._schedules_lock:
-            runtime = self._runtime_of(self._agent)
-            stamp = getattr(runtime, "schedules_stamped", None) if runtime else None
-            if self._schedules_stamp is not None:
-                if stamp == self._schedules_stamp:
-                    return
-                await self._stop_schedules()
-            handle = getattr(self._agent, "schedules", None)
-            if self._schedules_engine is None and handle is not None:
-                self._start_schedules(self._agent)
+            await sync_platform_engine(
+                self._agent,
+                runtime=self._runtime_of(self._agent),
+                stamp=self._schedules_stamp,
+                has_engine=self._schedules_engine is not None,
+                stop=self._stop_schedules,
+                start=self._start_schedules,
+            )
 
     def _schedules_topic(self) -> str:
         """``schedules.zulip_topic`` from the agent config in force."""

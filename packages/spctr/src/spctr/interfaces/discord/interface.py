@@ -44,7 +44,12 @@ from spctr.reminders import (
   ReminderOrigin,
 )
 from spctr.reminders import tool as reminders_tool
-from spctr.schedules import Schedule, ScheduleEngine
+from spctr.schedules import (
+  Schedule,
+  start_platform_engine,
+  stop_platform_engine,
+  sync_platform_engine,
+)
 from spctr.tools.schedule_tool import ScheduleOrigin, ScheduleTurnScope, schedule_turn_scope
 from spctr.interfaces.discord.handler import (
   CommandContext,
@@ -389,14 +394,11 @@ class DiscordInterface:
   # ---- schedules (spc-185, FR23/FR35) ---------------------------------------
 
   def _start_schedules(self, agent: Any) -> None:
-    """Start the schedule engine when this agent has a schedules handle."""
-    schedules = getattr(agent, "schedules", None)
-    if schedules is None:
-      return
-    if not asyncio.iscoroutinefunction(
-      getattr(schedules.store, "recover_claimed_async", None)
-    ):
-      return
+    """Start the schedule engine when this agent has a schedules handle.
+
+    Shared construction lives in :func:`start_platform_engine`
+    (spc-1098); this interface keeps its send seam and stamp.
+    """
 
     async def send(row: Schedule, content: str) -> None:
       # The row's topic is Zulip-only; Discord posts are channel-scoped.
@@ -406,25 +408,17 @@ class DiscordInterface:
       if error is not None:
         raise error
 
-    engine = ScheduleEngine(
-      schedules.store,
+    engine = start_platform_engine(
+      getattr(agent, "schedules", None),
       send=send,
-      poll_seconds=schedules.poll_seconds,
-      tz=schedules.tz,
-      agent_name=schedules.agent_name,
-      command_timeout=schedules.command_timeout,
-      agent_timeout=schedules.agent_timeout,
       platform="discord",
-    )
-    # Wire the engine into the tool so run_now works.
-    if hasattr(schedules, "tool") and schedules.tool is not None:
-      schedules.tool._engine = engine
-      # FR10/FR11 (spc-186): the same post-construction seam seats the
+      # FR10/FR11 (spc-186): the post-construction seam seats the
       # guild-scoped channel resolver on the schedule tool. The Runtime
       # built this tool before any interface existed to register one.
-      set_resolver = getattr(schedules.tool, "set_channel_resolver", None)
-      if set_resolver is not None:
-        set_resolver(self._resolve_channel)
+      channel_resolver=self._resolve_channel,
+    )
+    if engine is None:
+      return
     self._schedules_engine = engine
     self._schedules_stamp = getattr(agent, "schedules_stamped", 0)
     self._schedules_start_task = asyncio.ensure_future(engine.start())
@@ -434,24 +428,18 @@ class DiscordInterface:
     engine = self._schedules_engine
     self._schedules_engine = None
     self._schedules_stamp = None
-    if engine is None:
-      return
-    try:
-      await engine.stop()
-    except asyncio.CancelledError:
-      pass
+    await stop_platform_engine(engine)
 
   async def _sync_schedules(self) -> None:
     """Re-seat the engine after a live config reload (FR23)."""
-    runtime = self._runtime_of(self._agent)
-    stamp = getattr(runtime, "schedules_stamped", None) if runtime else None
-    if self._schedules_stamp is not None:
-      if stamp == self._schedules_stamp:
-        return
-      await self._stop_schedules()
-    handle = getattr(self._agent, "schedules", None)
-    if self._schedules_engine is None and handle is not None:
-      self._start_schedules(self._agent)
+    await sync_platform_engine(
+      self._agent,
+      runtime=self._runtime_of(self._agent),
+      stamp=self._schedules_stamp,
+      has_engine=self._schedules_engine is not None,
+      stop=self._stop_schedules,
+      start=self._start_schedules,
+    )
 
   # ---- schedules turn scope ------------------------------------------------
 

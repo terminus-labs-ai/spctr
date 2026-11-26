@@ -29,7 +29,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 from zoneinfo import ZoneInfo
 
 from spctr.schedules.agent import AgentResult, run_agent_dispatch, split_message
@@ -440,3 +440,89 @@ class ScheduleEngine:
         logger.info(
             "schedule manual run: agent=%s id=%s", self._name, sched.id
         )
+
+
+# ---------------------------------------------------------------------------
+# Platform engine seams (FR47, spc-1098): the Zulip and Discord interfaces
+# once carried near-identical _start/_stop/_sync_schedules bodies. These
+# helpers hold the shared construction, stop and re-seat logic; each
+# interface supplies its own send seam and keeps its lock, stamp and state
+# fields.
+
+
+def start_platform_engine(
+    schedules: Any,
+    *,
+    send: Callable[[Schedule, str], Awaitable[None]],
+    platform: str,
+    channel_resolver: Callable[..., Any] | None = None,
+    channel_namer: Callable[..., Any] | None = None,
+) -> ScheduleEngine | None:
+    """Build and wire a platform-scoped engine from an agent's schedules handle.
+
+    Returns ``None`` when the handle is absent or its store lacks async
+    recovery, in which case nothing runs and the caller registers no state.
+    When present, the tool receives the engine (for ``run_now``) plus the
+    given resolver and namer seams (FR47).
+    """
+    if schedules is None:
+        return None
+    if not asyncio.iscoroutinefunction(
+        getattr(schedules.store, "recover_claimed_async", None)
+    ):
+        return None
+    engine = ScheduleEngine(
+        schedules.store,
+        send=send,
+        poll_seconds=schedules.poll_seconds,
+        tz=schedules.tz,
+        agent_name=schedules.agent_name,
+        command_timeout=schedules.command_timeout,
+        agent_timeout=schedules.agent_timeout,
+        platform=platform,
+    )
+    tool = getattr(schedules, "tool", None)
+    if tool is not None:
+        tool._engine = engine
+        if channel_resolver is not None:
+            tool.set_channel_resolver(channel_resolver)
+        if channel_namer is not None:
+            tool.set_channel_namer(channel_namer)
+    return engine
+
+
+async def stop_platform_engine(engine: ScheduleEngine | None) -> None:
+    """End a platform engine, leaving unrun files intact (FR35)."""
+    if engine is None:
+        return
+    try:
+        await engine.stop()
+    except asyncio.CancelledError:
+        pass
+
+
+async def sync_platform_engine(
+    agent: Any,
+    *,
+    runtime: Any,
+    stamp: int | None,
+    has_engine: bool,
+    stop: Callable[[], Awaitable[None]],
+    start: Callable[[Any], None],
+) -> None:
+    """Re-seat the engine after a live config reload (FR23).
+
+    Same stamp: no-op. Changed stamp: stop, then re-check for a start. No
+    engine yet with a live schedules handle: start. The caller owns
+    serialization (the Zulip interface wraps the call in its own lock).
+    """
+    rt_stamp = getattr(runtime, "schedules_stamped", None) if runtime else None
+    stopped = False
+    if stamp is not None:
+        if rt_stamp == stamp:
+            return
+        await stop()
+        stopped = True
+    handle = getattr(agent, "schedules", None)
+    if (not has_engine or stopped) and handle is not None:
+        start(agent)
