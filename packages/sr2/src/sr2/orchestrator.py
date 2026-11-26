@@ -511,7 +511,7 @@ class SR2:
         self._repeat_guard: RepeatGuardConfig = pipeline_config.repeat_guard
         # spc-1062: same-failure tripwire (state itself is per turn).
         self._tripwire: TripwireConfig = pipeline_config.tripwire
-        self.session_id =session_id if session_id is not None else str(ULID())
+        self.session_id = session_id if session_id is not None else str(ULID())
         self._circuit_breaker = CircuitBreaker(
             failure_threshold=pipeline_config.circuit_breaker_failure_threshold,
             recovery_timeout=pipeline_config.circuit_breaker_recovery_timeout,
