@@ -133,6 +133,16 @@ cd /data/worktrees/spctr/<bead> && uv sync --frozen && ./scripts/run_tests.sh
 `uv sync` installs both workspace members from the committed root
 `uv.lock`; never edit `uv.lock` by hand — regenerate it with `uv lock`.
 
+### Collected node-ID diff (v3 acceptance gate, spc-1066)
+
+Pass/fail counts and sorted FAIL-set equality cannot detect silent test loss: an added test and a deleted test cancel in the totals (spc-1058, Agent G finding r1). Every v3 full-suite acceptance run on spctr therefore includes the base↔head collected-set comparison:
+
+```bash
+uv run --frozen python scripts/collect_diff.py <base-ref>    # e.g. origin/main
+```
+
+The tool collects every workspace member's pytest node IDs (`pytest --collect-only -q`, the same per-member invocations as `scripts/run_tests.sh`) at the base ref — in a detached scratch `git worktree`, never a copy of the live worktree — and at the current head, then reports the added and removed sets by node ID. Exit 0 means nothing was removed (additions never fail the gate); exit 1 means some collected test nodes were removed, each of which needs justification against the bead's acceptance criteria in the evidence record or explicit sanction via `--allow <node-id-or-prefix>`; exit 2 means the check itself could not run. The report (added / removed / sanctioned lists plus per-member counts) goes into the acceptance evidence next to the suite result.
+
 To co-develop `sr2`, edit `packages/sr2` directly in the workspace — it
 is a member now, installed editable, and its suite runs through
 `MEMBER=packages/sr2 ./scripts/run_tests.sh`.
