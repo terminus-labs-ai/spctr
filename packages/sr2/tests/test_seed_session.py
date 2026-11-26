@@ -49,6 +49,25 @@ def make_assistant_message(text: str = "Hi there") -> Message:
     return make_message("assistant", text)
 
 
+def turn_start_event():
+    """The event batch that makes SessionResolver replay history (spc-1125).
+
+    Only a turn-start fire — a batch carrying ``user_input`` — returns the
+    history snapshot; any other fire emits just the messages it adds. Reading
+    seeded history therefore goes through a turn start.
+    """
+    from sr2.pipeline.events import Event, EventPhase
+
+    return [
+        Event(
+            name="user_input",
+            phase=EventPhase.STARTING,
+            source_layer="core",
+            data=[TextBlock(text="turn input")],
+        )
+    ]
+
+
 def make_config_no_session() -> PipelineConfig:
     """Config with no SessionResolver in any layer."""
     return PipelineConfig(
@@ -660,7 +679,7 @@ class TestSessionResolverSeedMethod:
         messages = [make_user_message("seeded"), make_assistant_message("seeded reply")]
         resolver.seed(messages)
 
-        result = asyncio.run(resolver.resolve([]))
+        result = asyncio.run(resolver.resolve(turn_start_event()))
         resolved_texts = [
             block.text
             for msg in result.content
@@ -679,7 +698,7 @@ class TestSessionResolverSeedMethod:
         resolver.seed(messages)
         messages.clear()
 
-        result = asyncio.run(resolver.resolve([]))
+        result = asyncio.run(resolver.resolve(turn_start_event()))
         texts = [
             block.text
             for msg in result.content
@@ -696,7 +715,7 @@ class TestSessionResolverSeedMethod:
         resolver.seed([make_user_message("first"), make_assistant_message("first reply")])
         resolver.seed([make_user_message("second seed")])
 
-        result = asyncio.run(resolver.resolve([]))
+        result = asyncio.run(resolver.resolve(turn_start_event()))
         texts = [
             block.text
             for msg in result.content
@@ -716,7 +735,7 @@ class TestSessionResolverSeedMethod:
         resolver.seed([make_user_message("something")])
         resolver.seed([])
 
-        result = asyncio.run(resolver.resolve([]))
+        result = asyncio.run(resolver.resolve(turn_start_event()))
         assert result.content == [], "seed([]) did not clear history"
 
 
@@ -753,7 +772,7 @@ class TestLayerSeedMethod:
         messages = [make_user_message("layer seeded")]
         layer.seed(messages)
 
-        result = asyncio.run(resolver.resolve([]))
+        result = asyncio.run(resolver.resolve(turn_start_event()))
         texts = [
             block.text
             for msg in result.content
