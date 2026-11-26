@@ -225,6 +225,65 @@ class RepeatGuardConfig(BaseModel):
   """Appended to the note on repeat ``notes_before_stop``. ``{repeat}``."""
 
 
+# ---------------------------------------------------------------------------
+# Tripwire config (spc-1062 — agent-workflow-v3 Amendment 7, D38)
+# ---------------------------------------------------------------------------
+
+# ``note`` and ``escalation`` interpolate ``{first_call}``, ``{call}`` and
+# ``{failures}`` (one ``- <test id or failure line>`` per line).
+
+DEFAULT_TRIPWIRE_NOTE = (
+  "Harness tripwire: your test runs have shown the same failure since call "
+  "{first_call} without progress:\n{failures}\nDo not retry the same "
+  "approach. If the cause is outside your code (tests, fixtures, contract or "
+  "environment), stop now and escalate in your contract's format. If this "
+  "failure recurs, the harness ends the run with an escalation."
+)
+
+DEFAULT_TRIPWIRE_ESCALATION = (
+  "ESCALATION: tripwire\n{failures}\nThe harness ended the run: the same "
+  "test failure repeated without progress from call {first_call} to call "
+  "{call}."
+)
+
+
+class TripwireConfig(BaseModel):
+  """Same-failure tripwire in the tool loop (spec agent-workflow-v3 D38).
+
+  Off by default: a pipeline with no ``tripwire`` block never has its tool
+  results altered. When enabled, calls to ``tools`` whose ``command_argument``
+  matches ``command_pattern`` are test runs. A detection is a failing test run
+  showing the same failure (same assertion lines, else same failing test ids)
+  as a run at least ``min_span_calls`` calls earlier, with no progress between
+  them; progress is a run of the same selection with fewer failures than its
+  best so far. Each of the first ``notes_before_stop`` detections appends
+  ``note`` to the triggering result; the next one ends the turn with
+  ``escalation`` as its final text.
+  """
+
+  enabled: bool = False
+  tools: list[str] = ["terminal"]
+  """Tool names whose calls can be test runs."""
+
+  command_argument: str = "command"
+  """Tool argument holding the command line."""
+
+  command_pattern: str = r"pytest|run_tests"
+  """Regex a command must match to be a test run."""
+
+  min_span_calls: int = Field(30, ge=1)
+  """Calls the same failure must persist across before it is a detection."""
+
+  notes_before_stop: int = Field(1, ge=0)
+  """Detections answered with ``note`` before the next one stops the turn."""
+
+  note: str = DEFAULT_TRIPWIRE_NOTE
+  """Appended to the triggering test run's result."""
+
+  escalation: str = DEFAULT_TRIPWIRE_ESCALATION
+  """The stopped turn's final assistant text."""
+
+
 class EmbeddingIndexConfig(BaseModel):
   """Settings for an OpenAI-compatible embedding endpoint."""
 
@@ -352,5 +411,6 @@ class PipelineConfig(BaseModel):
   degradation: DegradationConfig | None = None
   final_answer: FinalAnswerConfig = FinalAnswerConfig()
   repeat_guard: RepeatGuardConfig = RepeatGuardConfig()
+  tripwire: TripwireConfig = TripwireConfig()
   continuity: ContinuityConfig | None = None
   retrieval_profiles: dict[str, RetrievalProfileConfig] = {}

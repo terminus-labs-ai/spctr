@@ -17,8 +17,9 @@ from typing import Any, Callable, Literal, TYPE_CHECKING
 
 from ulid import ULID
 
-from sr2.config.models import ConfigError, FinalAnswerConfig, LayerConfig, PipelineConfig, RepeatGuardConfig, ResolverConfig, ToolLoopLimitError, ToolProviderConfig, TransformerConfig
+from sr2.config.models import ConfigError, FinalAnswerConfig, LayerConfig, PipelineConfig, RepeatGuardConfig, ResolverConfig, ToolLoopLimitError, ToolProviderConfig, TransformerConfig, TripwireConfig
 from sr2.degradation.circuit_breaker import CircuitBreaker, CircuitBreakerOpenError
+from sr2.tripwire import Tripwire
 from sr2.pipeline.provenance import (
     TURN_ARCHIVE_LAYER,
     ContextAuthority,
@@ -508,7 +509,9 @@ class SR2:
         self._final_answer: FinalAnswerConfig = pipeline_config.final_answer
         # sr2-122: consecutive repeat guard (state itself is per turn, FR 16).
         self._repeat_guard: RepeatGuardConfig = pipeline_config.repeat_guard
-        self.session_id = session_id if session_id is not None else str(ULID())
+        # spc-1062: same-failure tripwire (state itself is per turn).
+        self._tripwire: TripwireConfig = pipeline_config.tripwire
+        self.session_id =session_id if session_id is not None else str(ULID())
         self._circuit_breaker = CircuitBreaker(
             failure_threshold=pipeline_config.circuit_breaker_failure_threshold,
             recovery_timeout=pipeline_config.circuit_breaker_recovery_timeout,
@@ -1228,6 +1231,8 @@ class SR2:
             if self._repeat_guard.enabled
             else None
         )
+        # spc-1062: the tripwire's state is per turn; None when disabled.
+        tripwire = Tripwire(self._tripwire) if self._tripwire.enabled else None
 
         while True:
             iteration = await self._run_tool_iteration(
@@ -1380,6 +1385,27 @@ class SR2:
             tool_result_blocks = iteration.tool_result_blocks
             assistant_content = iteration.assistant_content
 
+            # spc-1062 (spec agent-workflow-v3 D38): the tripwire observes the
+            # executed calls in assistant order, each paired with its own
+            # result by id, before any consumer sees the results: a note is
+            # appended to the triggering result; a stop ends the turn below.
+            # A repeat-guard stop ends the run anyway — it is not observed.
+            tripwire_stop = False
+            if tripwire is not None and iteration.repeat_guard_stop is None:
+                results_by_id = {rb.tool_use_id: rb for rb in tool_result_blocks}
+                for block in tool_use_blocks:
+                    result_block = results_by_id[block.id]
+                    action = tripwire.observe(block.name, block.input, result_block.content)
+                    if action == "stop":
+                        tripwire_stop = True
+                        break
+                    if action == "note":
+                        note = tripwire.message(self._tripwire.note)
+                        if isinstance(result_block.content, str):
+                            result_block.content = f"{result_block.content}\n\n{note}"
+                        else:
+                            result_block.content = [*result_block.content, TextBlock(text=note)]
+
             # FR9: Queue tool_use_emitted on the engine bus (internal subscribers).
             # obsidian-1fmv: data carries every ToolUseBlock from this iteration,
             # including malformed ones, but never the leading TextBlock —
@@ -1463,6 +1489,33 @@ class SR2:
 
             # Emit tool_result_received after all executor results are collected.
             yield StreamEvent(type="tool_result_received", tool_results=tool_result_blocks)
+
+            # spc-1062 (D38): the tripwire's second detection ends the turn
+            # with a harness-written escalation as its final text; no further
+            # LLM call or tool call runs. The bus pair queued above is drained
+            # by end_turn, as on the repeat-guard stop.
+            if tripwire_stop:
+                escalation = tripwire.message(self._tripwire.escalation)
+                await self._turn_archivist.archive_text(escalation)
+                escalation_block = TextBlock(text=escalation)
+                self._stamp_block(escalation_block, origin)
+                final_response = CompletionResponse(
+                    id="turn-response",
+                    content=[escalation_block],
+                    stop_reason="end_turn",
+                    usage=iteration.usage,
+                )
+                await self._finalize_turn(final_response)
+                yield StreamEvent(
+                    type="final_answer",
+                    iteration=iteration_seq,
+                    meta={"reason": "tripwire", "fallback_used": False},
+                )
+                yield StreamEvent(type="text", text=escalation)
+                if in_band_errors:
+                    yield StreamEvent(type="error", errors=in_band_errors)
+                yield StreamEvent(type="end")
+                return
 
             # sr2-122 (spec spc-959 FR 11, 17): the guard stopped the run in
             # this iteration. The stop note already replaced the triggering
