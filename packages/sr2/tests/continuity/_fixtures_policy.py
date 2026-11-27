@@ -289,11 +289,11 @@ _BASE_TIME = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
 # The spec's example coding profile — YAML authoritative, typed shape pinned
 # ---------------------------------------------------------------------------
 
-#: Name of the profile inside the ``retrieval_profiles`` mapping.
+#: Name of the profile inside the ``continuity.retrieval_profiles`` mapping.
 PROFILE_NAME = "coding"
 
 #: The spec's example coding profile verbatim (the value of a
-#: ``retrieval_profiles`` mapping). Authoritative: the typed config must be
+#: ``continuity.retrieval_profiles`` mapping). Authoritative: the typed config must be
 #: able to take this shape, which :func:`coding_profile` asserts.
 CODING_PROFILE_YAML = """\
 coding:
