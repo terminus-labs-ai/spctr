@@ -6,6 +6,8 @@ Covers:
   - Protocol conformance with Resolver protocol
   - History capture: user_input events captured into internal history
   - History capture: assistant_response events captured into internal history
+  - Delta fire (spc-1120): an assistant_response fire after the turn start
+    returns only the message it adds, not a history snapshot
   - Resolve output: first call with no prior history returns empty content
   - Resolve output: current turn's events are captured but not included in output
   - Replay scope (spc-1125): only a turn-start fire (a batch carrying
@@ -281,6 +283,25 @@ class TestSessionResolverAssistantResponseCapture:
         assert msg.role == "assistant"
         assert len(msg.content) == 1
         assert msg.content[0].text == "I can help"
+
+    @pytest.mark.asyncio
+    async def test_assistant_response_after_turn_start_emits_only_new_message(self):
+        """End-of-turn fire returns the delta, never the history snapshot (spc-1120).
+
+        The turn-start fire already handed the layer "hi", so replaying the
+        snapshot here would append the whole conversation a second time. Fails
+        against the pre-spc-1120 resolver, which emitted the prior history.
+        """
+        resolver = SessionResolver(make_config(max_executions=100))
+
+        # Turn start captures "hi" — the layer now holds it.
+        await resolver.resolve([make_user_input_event("hi")])
+
+        result = await resolver.resolve([make_assistant_response_event("Done")])
+
+        assert result.content == [
+            Message(role="assistant", content=[TextBlock(text="Done")])
+        ]
 
     @pytest.mark.asyncio
     async def test_assistant_response_extracts_content_from_completion_response(self):
