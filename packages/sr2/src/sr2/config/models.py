@@ -322,6 +322,9 @@ class ContinuityConfig(BaseModel):
   index: ContinuityIndexConfig | None = None
   """Optional retrieval backend and its YAML configuration."""
 
+  retrieval_profiles: "dict[str, RetrievalProfileConfig]" = {}
+  """Named retrieval policy profiles (spec: ``continuity.retrieval_profiles``)."""
+
   @model_validator(mode="after")
   def _validate_recent_budget_positive(self) -> "ContinuityConfig":
     if self.recent_token_budget <= 0:
@@ -374,7 +377,7 @@ class RetrievalRuleConfig(BaseModel):
 
 
 class RetrievalProfileConfig(BaseModel):
-  """One named retrieval profile from ``retrieval_profiles`` (spec example).
+  """One named retrieval profile from ``continuity.retrieval_profiles`` (spec example).
 
   ``rules`` keep the YAML order: deny rules win wherever they match,
   evaluated before any allow or boost is considered. The ``default`` decides
@@ -398,6 +401,9 @@ class RetrievalProfileConfig(BaseModel):
     return self
 
 
+ContinuityConfig.model_rebuild()
+
+
 class PipelineConfig(BaseModel):
   layers: list[LayerConfig]
   transformers: list[TransformerConfig] = []
@@ -413,4 +419,12 @@ class PipelineConfig(BaseModel):
   repeat_guard: RepeatGuardConfig = RepeatGuardConfig()
   tripwire: TripwireConfig = TripwireConfig()
   continuity: ContinuityConfig | None = None
-  retrieval_profiles: dict[str, RetrievalProfileConfig] = {}
+
+  @model_validator(mode="before")
+  @classmethod
+  def _reject_top_level_retrieval_profiles(cls, data):
+    if isinstance(data, dict) and "retrieval_profiles" in data:
+      raise _ValidatableConfigError(
+        "retrieval_profiles moved to continuity.retrieval_profiles"
+      )
+    return data
