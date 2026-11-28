@@ -14,6 +14,9 @@ Covers:
     ``user_input``) replays history; every other fire emits its own delta, so
     a foreign event riding in the batch (``token_threshold``) cannot append a
     second copy of the conversation to the layer
+  - Foreign-event hardening (spc-1129): a batch mixing a handled event with
+    ``token_threshold`` still emits the delta and keeps the handled events in
+    their own order (spec clause 11, third part)
   - Multi-turn accumulation: history grows across resolve() calls
   - Chronological ordering preserved
   - execution_count increments per call
@@ -679,4 +682,106 @@ class TestSessionResolverToolIterations:
             a2,
             r2,
             Message(role="assistant", content=[TextBlock(text="Done.")]),
+        ]
+
+
+# ---------------------------------------------------------------------------
+# 10. Foreign event in the batch (spc-1129) — spec clause 11, third part
+#
+# ``Layer.check_budget`` queues ``token_threshold`` on every pass over the
+# threshold, and that event rides into the pending batch beside the resolver's
+# own events. The resolver reads it as foreign: it must not flip an end-of-turn
+# fire back to a history replay, and it must not become part of the batch's own
+# ordering. ``token_threshold`` is not in the resolver's subscriptions, so
+# unlike ``_deliver`` these calls hand ``resolve()`` the raw mixed batch — that
+# is what no earlier test in this file does.
+# ---------------------------------------------------------------------------
+
+
+def token_threshold_event() -> Event:
+    """The event Layer.check_budget queues while a layer stays over threshold."""
+    return Event(
+        name="token_threshold",
+        phase=EventPhase.COMPLETED,
+        source_layer="session",
+        data={"used": 99999, "budget": 4000, "pct": 0.6},
+    )
+
+
+class TestSessionResolverForeignEventInBatch:
+    @pytest.mark.asyncio
+    async def test_mixed_foreign_batch_still_emits_the_delta(self):
+        """A foreign ``token_threshold`` must not flip the fire to a replay (spc-1129).
+
+        Turn 1 is seeded at the turn start, so a snapshot on this fire would
+        hand the layer a second copy of the conversation. The fire returns
+        exactly the assistant message it captures.
+
+        Fails against the pre-spc-1125 form that reads the unfiltered batch
+        (``any(e.name == "user_input" for e in events)``): there the foreign
+        event makes the batch look like a turn start and the content comes
+        back as turn 1's history instead of the delta.
+        """
+        resolver = SessionResolver(make_config(max_executions=100))
+
+        # Turn 1: the turn-start fire, which is the only snapshot fire.
+        await resolver.resolve([make_user_input_event("hi")])
+
+        # End of turn: the delta fire, with a foreign event riding in its batch.
+        result = await resolver.resolve(
+            [make_assistant_response_event("Done"), token_threshold_event()]
+        )
+
+        assert result.content == [
+            Message(role="assistant", content=[TextBlock(text="Done")])
+        ]
+
+    @pytest.mark.asyncio
+    async def test_foreign_event_still_does_not_replay_on_a_later_fire(self):
+        """The next end-of-turn fire also emits its delta, not a snapshot (spc-1129).
+
+        Guards the delta decision on a fire whose batch holds no event with a
+        rank in ``_TOOL_LOOP_ORDER`` either: an unfiltered read that keys off
+        tool-loop events would replay the whole history here, so the content is
+        pinned to the single new message.
+        """
+        resolver = SessionResolver(make_config(max_executions=100))
+
+        await resolver.resolve([make_user_input_event("hi")])
+        await resolver.resolve([make_assistant_response_event("Done")])
+
+        result = await resolver.resolve(
+            [make_assistant_response_event("Later"), token_threshold_event()]
+        )
+
+        assert result.content == [
+            Message(role="assistant", content=[TextBlock(text="Later")])
+        ]
+
+    @pytest.mark.asyncio
+    async def test_mixed_foreign_batch_does_not_reorder_the_handled_events(self):
+        """A foreign event between two handled events must not reorder them (spc-1129).
+
+        The orchestrator can queue the tool result before the iteration
+        response; the batch's own handled events keep their ranked order
+        (assistant message, then tool results) with the foreign event sitting
+        between them. ``assistant_iteration_response`` ranks 0 and
+        ``tool_result_received`` ranks 1, so a batch reordered to the opposite
+        order fails this assertion.
+        """
+        resolver = SessionResolver(make_config(max_executions=100))
+        await resolver.resolve([make_user_input_event("run a tool")])
+
+        iteration = _tool_iteration_events("tc1", text="Let me look.")
+        # iteration == [tool_use_emitted, tool_result_received,
+        # assistant_iteration_response]; keep the last two, foreign event in
+        # the middle, i.e. the results ahead of the assistant message.
+        batch = [iteration[2], token_threshold_event(), iteration[1]]
+
+        result = await resolver.resolve(batch)
+
+        assert [m.role for m in result.content] == ["assistant", "user"]
+        assert result.content == [
+            _expected_assistant("tc1", text="Let me look."),
+            _expected_results("tc1"),
         ]
