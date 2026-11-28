@@ -760,23 +760,28 @@ class TestSessionResolverForeignEventInBatch:
 
     @pytest.mark.asyncio
     async def test_mixed_foreign_batch_does_not_reorder_the_handled_events(self):
-        """A foreign event between two handled events must not reorder them (spc-1129).
+        """A foreign event between two handled events must not defeat their ranking (spc-1129).
 
-        The orchestrator can queue the tool result before the iteration
-        response; the batch's own handled events keep their ranked order
-        (assistant message, then tool results) with the foreign event sitting
-        between them. ``assistant_iteration_response`` ranks 0 and
-        ``tool_result_received`` ranks 1, so a batch reordered to the opposite
-        order fails this assertion.
+        The batch's handled events are queued OUT of their ``_TOOL_LOOP_ORDER``
+        rank order — ``tool_result_received`` (rank 1) before
+        ``assistant_iteration_response`` (rank 0) — with the foreign
+        ``token_threshold`` riding between them. The resolver must still emit
+        the ranked content (assistant message, then tool results), so the
+        only way this passes is the sort over the batch's own handled events:
+        without the ``_HANDLED_EVENTS`` filter (the unfiltered batch then
+        contains a non-ranked event, so the guard skips the sort), or with the
+        guard reading the unfiltered batch, the result comes back unsorted
+        (tool results first) and this assertion fails.
         """
         resolver = SessionResolver(make_config(max_executions=100))
         await resolver.resolve([make_user_input_event("run a tool")])
 
         iteration = _tool_iteration_events("tc1", text="Let me look.")
         # iteration == [tool_use_emitted, tool_result_received,
-        # assistant_iteration_response]; keep the last two, foreign event in
-        # the middle, i.e. the results ahead of the assistant message.
-        batch = [iteration[2], token_threshold_event(), iteration[1]]
+        # assistant_iteration_response]; queue the two handled events out of
+        # rank order (results rank 1, then iteration response rank 0) with the
+        # foreign event between them.
+        batch = [iteration[1], token_threshold_event(), iteration[2]]
 
         result = await resolver.resolve(batch)
 
